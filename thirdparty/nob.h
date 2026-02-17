@@ -210,10 +210,10 @@
     (NOB_ASSERT((size_t)index < NOB_ARRAY_LEN(array)), array[(size_t)index])
 
 typedef enum {
-    NOB_INFO,
-    NOB_WARNING,
-    NOB_ERROR,
-    NOB_NO_LOGS,
+    NOB_INFO = 3,
+    NOB_WARNING = 2,
+    NOB_ERROR = 1,
+    NOB_NO_LOGS = 0,
 } Nob_Log_Level;
 
 // Any messages with the level below nob_minimal_log_level are going to be suppressed.
@@ -2910,6 +2910,8 @@ NOBDEF char *nob_temp_running_executable_path(void)
         #define NANOS_PER_SEC NOB_NANOS_PER_SEC
     #endif // NOB_STRIP_PREFIX
 #endif // NOB_STRIP_PREFIX_GUARD_
+
+#define NOB_VERSION "3.2.2"
 
 /*
    Revision history:

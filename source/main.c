@@ -22,14 +22,34 @@
 #ifndef _WIN32
 #include <strings.h>
 #endif
+#undef NOB_IMPLEMENTATION
 
+#include "config.h"
+#include "text.c"
 #include "renderer.c"
 
-#define MAX_RECENT 5
+#if SAVE_FILE
+#include "save.c"
+#endif
+
 char* recent_files[MAX_RECENT] = {0};
 int recent_count = 0;
 
-#define MAX_HISTORY 100
+char flash_text[256] = {0};
+Uint32 flash_until = 0;
+float flash_alpha = 0.0f;
+
+typedef struct {
+    const char *name;
+    const char *path;
+} FontEntry;
+
+static FontEntry default_fonts[] = DEFAULT_FONTS_MAP;
+static const int default_font_count =
+    sizeof(default_fonts) / sizeof(default_fonts[0]);
+
+static int flash_debug_enabled = AMP_FLASH_DEBUG_DEFAULT;
+static int flash_debug_level = AMP_FLASH_DEBUG_LEVEL_DEFAULT;
 
 static float clampf(float v, float lo, float hi) {
     if (v < lo) return lo;
@@ -46,44 +66,6 @@ static void draw_rect(SDL_Renderer* ren, SDL_Rect r, SDL_Color c) {
     SDL_RenderFillRect(ren, &r);
 }
 
-static TTF_Font* ui_font = NULL;
-static int ui_font_size = 18;
-static char ui_font_label[128] = "Iosevka";
-static char ui_font_path[260] = "";
-
-static int load_ui_font(const char* path, const char* label) {
-    if (!path || !path[0]) return 0;
-    TTF_Font* font = TTF_OpenFont(path, ui_font_size);
-    if (!font) return 0;
-    if (ui_font) TTF_CloseFont(ui_font);
-    ui_font = font;
-    strncpy(ui_font_path, path, sizeof(ui_font_path) - 1);
-    ui_font_path[sizeof(ui_font_path) - 1] = '\0';
-    if (label) {
-        strncpy(ui_font_label, label, sizeof(ui_font_label) - 1);
-        ui_font_label[sizeof(ui_font_label) - 1] = '\0';
-    }
-    return 1;
-}
-
-static void draw_text(SDL_Renderer* ren, int x, int y, const char* text, SDL_Color color) {
-    if (!text || !ui_font) return;
-    SDL_Surface* surf = TTF_RenderUTF8_Blended(ui_font, text, color);
-    if (!surf) return;
-    SDL_Texture* tex = SDL_CreateTextureFromSurface(ren, surf);
-    if (!tex) { SDL_FreeSurface(surf); return; }
-    SDL_Rect dst = { x, y, surf->w, surf->h };
-    SDL_FreeSurface(surf);
-    SDL_RenderCopy(ren, tex, NULL, &dst);
-    SDL_DestroyTexture(tex);
-}
-
-static void draw_text_shadow(SDL_Renderer* ren, int x, int y, const char* text, SDL_Color color) {
-    SDL_Color shadow = { 0, 0, 0, (Uint8)(color.a * 0.8f) };
-    draw_text(ren, x + 2, y + 2, text, shadow);
-    draw_text(ren, x, y, text, color);
-}
-
 static void format_time(double seconds, char* out, size_t out_size) {
     if (!out || out_size == 0) return;
     int s = (int)seconds;
@@ -95,36 +77,74 @@ static void format_time(double seconds, char* out, size_t out_size) {
 }
 
 static float volume_percent_to_gain(float percent) {
-    float min_db = -50.0f;
-    float max_db = 20.0f * log10f(2.0f);
-    float t = clampf(percent / 200.0f, 0.0f, 1.0f);
-    float db = min_db + (max_db - min_db) * t;
+    float db;
+    if (percent <= 100.0f) {
+        float t = percent / 100.0f;
+        db = -50.0f * (1.0f - t);
+    } else {
+        float t = (percent - 100.0f) / 100.0f;
+        db = 12.0f * t;
+    }
     return powf(10.0f, db / 20.0f);
 }
 
+/*
 static float gain_to_volume_percent(float gain) {
-    float min_db = -50.0f;
-    float max_db = 20.0f * log10f(2.0f);
-    float g = clampf(gain, 0.0001f, 2.0f);
-    float db = 20.0f * log10f(g);
-    float t = (db - min_db) / (max_db - min_db);
-    return clampf(t * 200.0f, 0.0f, 200.0f);
+    if (gain <= 0.0f) return 0.0f;
+    float db = 20.0f * log10f(gain);
+    if (db <= 0.0f) {
+        float t = (db + 50.0f) / 50.0f;
+        return clampf(t * 100.0f, 0.0f, 100.0f);
+    } else {
+        float t = db / 12.0f;
+        return clampf(100.0f + t * 100.0f, 100.0f, 200.0f);
+    }
 }
+*/
 
 static int point_in_rect(int x, int y, SDL_Rect r) {
     return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
 }
 
-static int is_supported_video_file(const char* path) {
-    if (!path) return 0;
+#if CHECK_FILE_SIGNATURE
+static bool is_supported_video_file(const char* path) {
+    if (!path) return false;
+
+    av_log_set_level(AV_LOG_ERROR);
+
+    AVFormatContext* ctx = NULL;
+
+    if (avformat_open_input(&ctx, path, NULL, NULL) < 0)
+        return false;
+
+    if (avformat_find_stream_info(ctx, NULL) < 0) {
+        avformat_close_input(&ctx);
+        return false;
+    }
+
+    const char* name = ctx->iformat->name;
+
+    bool ok =
+        (name && (
+            strstr(name, "matroska") ||   /* mkv */
+            strstr(name, "mp4")           /* mp4/mov/m4a family */
+        ));
+
+    avformat_close_input(&ctx);
+    return ok;
+}
+#else
+static bool is_supported_video_file(const char* path) {
+    if (!path) return false;
     const char* ext = strrchr(path, '.');
-    if (!ext || !ext[1]) return 0;
+    if (!ext || !ext[1]) return false;
 #ifdef _WIN32
     return _stricmp(ext, ".mkv") == 0 || _stricmp(ext, ".mp4") == 0;
 #else
     return strcasecmp(ext, ".mkv") == 0 || strcasecmp(ext, ".mp4") == 0;
 #endif
 }
+#endif
 
 void amp_log_handler(Nob_Log_Level level, const char* fmt, va_list args) {
     time_t now = time(NULL);
@@ -149,6 +169,30 @@ void amp_log_handler(Nob_Log_Level level, const char* fmt, va_list args) {
     fprintf(stderr, "[%s] [%s] ", timebuf, level_str);
     vfprintf(stderr, fmt, args);
     fprintf(stderr, "\n");
+
+    if (flash_debug_enabled && level == (Nob_Log_Level)flash_debug_level) {
+        char flash_buf[256];
+        vsnprintf(flash_buf, sizeof(flash_buf), fmt, args);
+        snprintf(flash_text, sizeof(flash_text), "%s", flash_buf);
+        flash_until = SDL_GetTicks() + 1200;
+        flash_alpha = 1.0f;
+    }
+}
+
+void usage(FILE* out, const char* prog_name) {
+    fprintf(out, "Usage: %s [OPTIONS] [video_file]\n", prog_name);
+    fprintf(out, "Supported video formats: Matroska (MKV), MP4\n");
+    fprintf(out, "Options:\n");
+    fprintf(out, "  -h, --help                   Show this help message and exit\n");
+    fprintf(out, "  -v, --version                Show version information and exit\n");
+    fprintf(out, "  -p, --paused                 Start playback in paused state\n");
+    fprintf(out, "  -f, --fullscreen             Start in fullscreen mode\n");
+    fprintf(out, "  -m, --maximized              Start with window maximized\n");
+    fprintf(out, "  --volume [0-200]             Set initial audio volume (default: 100)\n");
+    fprintf(out, "  --speed [SPEED > 0]          Set initial playback speed (e.g. 0.5, 1.0, 1.5)\n");
+    fprintf(out, "  --flash-debug                Show log messages as on-screen flash\n");
+    fprintf(out, "  --no-flash-debug             Disable on-screen flash for log messages\n");
+    fprintf(out, "  --flash-debug-level [LEVEL]  Show log messages as on-screen flash (LEVEL: 0 - NO LOGS, 1 - INFO, 2 - WARNING, 3 - ERROR)\n");
 }
 
 void add_recent_file(const char* file) {
@@ -157,19 +201,37 @@ void add_recent_file(const char* file) {
     if(recent_count < MAX_RECENT) recent_count++;
 }
 
-char* open_file_dialog() {
-    const char* filters[] = { "*.mkv", "*.mp4" };
+char* get_absolute_path(const char* path) {
+    if (!path) return NULL;
+
+#ifdef _WIN32
+    char buf[4096];
+    if (_fullpath(buf, path, sizeof(buf))) {
+        return strdup(buf);
+    }
+#else
+    char buf[4096];
+    if (realpath(path, buf)) {
+        return strdup(buf);
+    }
+#endif
+
+    return strdup(path);
+}
+
+char* open_file_dialog(const char* filters[], int filter_count, const char* filter_desc, bool allow_multiple, const char* title, const char* default_path) {
     char const* filename = tinyfd_openFileDialog(
-        "Open Video File",
-        "",
-        2,
+        title ? title : "Select File",
+        default_path ? default_path : "",
+        filter_count,
         filters,
-        "Video Files",
-        0
+        filter_desc,
+        allow_multiple ? 1 : 0
     );
     if (!filename) return NULL;
     if (!is_supported_video_file(filename)) return NULL;
-    return strdup(filename);
+    char* abs_path = get_absolute_path(filename);
+    return abs_path;
 }
 
 #ifdef _WIN32
@@ -223,54 +285,17 @@ HMENU create_windows_menu(SDL_Window* window) {
 int main(int argc, char** argv) {
     nob_set_log_handler(amp_log_handler);
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
-        nob_log(NOB_ERROR, "SDL_Init Error: %s", SDL_GetError());
-        return 1;
-    }
-    if (TTF_Init() != 0) {
-        nob_log(NOB_ERROR, "TTF_Init Error: %s", TTF_GetError());
-        return 1;
-    }
-    nob_log(NOB_INFO, "SDL and TTF initialized successfully");
-#ifdef _WIN32
-    if (!load_ui_font("assets/Iosevka-Regular.ttc", "Iosevka") &&
-        !load_ui_font("C:/Windows/Fonts/iosevka.ttf", "Iosevka") &&
-        !load_ui_font("C:/Windows/Fonts/seguiemj.ttf", "Segoe UI")) {
-        load_ui_font("C:/Windows/Fonts/segoeui.ttf", "Segoe UI");
-    }
-#else
-    load_ui_font("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "DejaVu Sans");
-#endif
-#ifdef _WIN32
-    SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE);
-#endif
-
     VideoRenderer* vr = NULL;
     char* video_file = NULL;
-    if(argc > 1 && is_supported_video_file(argv[1])) video_file = argv[1];
-
-    SDL_Window* win = SDL_CreateWindow(
-        "(no file selected)",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        800, 600,
-        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED
-    );
-
-    if(!win) { nob_log(NOB_ERROR, "SDL_CreateWindow failed: %s", SDL_GetError()); return 1; }
-
-    SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if(!ren) { SDL_DestroyWindow(win); nob_log(NOB_ERROR, "SDL_CreateRenderer failed: %s", SDL_GetError()); return 1; }
-
-#ifdef _WIN32
-    HMENU win_menu = create_windows_menu(win);
-    HWND win_hwnd = get_hwnd(win);
-#endif
-
     bool running = true;
     bool fullscreen = false;
     bool maximized = false;
+    int windowed_x = SDL_WINDOWPOS_CENTERED;
+    int windowed_y = SDL_WINDOWPOS_CENTERED;
+    int windowed_w = INITIAL_WINDOW_WIDTH;
+    int windowed_h = INITIAL_WINDOW_HEIGHT;
+    int windowed_valid = 0;
     bool paused = false;
-    bool was_paused = false;
     bool dragging_timeline = false;
     bool volume_dragging = false;
     bool menu_open = false;
@@ -288,14 +313,140 @@ int main(int argc, char** argv) {
     Uint32 last_tick = SDL_GetTicks();
     float volume_percent = 100.0f;
     float playback_speed = 1.0f;
-    char flash_text[64] = {0};
-    Uint32 flash_until = 0;
     float pause_alpha = 0.0f;
     int audio_scroll = 0;
     int subtitle_scroll = 0;
-    int font_scroll = 0;
-    int playback_scroll = 0;
     SDL_Event e;
+
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--flash-debug") == 0) {
+            flash_debug_enabled = 1;
+        } else if (strcmp(argv[i], "--flash-debug-level") == 0 && i + 1 < argc) {
+            int lvl = atoi(argv[i + 1]);
+            if (lvl >= 0 && lvl <= 3) 
+                flash_debug_level = lvl;
+            else {
+                nob_log(NOB_WARNING, "Invalid flash debug level: %s. Must be 0-3.", argv[i + 1]);
+            }
+            i++;
+        } else if (strcmp(argv[i], "--no-flash-debug") == 0) {
+            flash_debug_enabled = 0;
+        } else if (strcmp(argv[i], "--start-paused") == 0 || strcmp(argv[i], "--paused") == 0 || strcmp(argv[i], "-p") == 0) {
+            paused = true;
+        } else if ((strcmp(argv[i], "--volume") == 0 || strcmp(argv[i], "-v") == 0) && i + 1 < argc) {
+            float vol = atof(argv[i + 1]);
+            if (vol >= 0.0f && vol <= 200.0f)
+                volume_percent = vol;
+            else {
+                nob_log(NOB_WARNING, "Invalid volume percent: %s. Must be 0-200.", argv[i + 1]);
+            }
+            i++;
+        } else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {
+            float spd = atof(argv[i + 1]);
+            if (spd > 0.0f)
+                playback_speed = spd;
+            else {
+                nob_log(NOB_WARNING, "Invalid playback speed: %s. Must be > 0.", argv[i + 1]);
+            }
+            i++;
+        } else if (strcmp(argv[i], "--fullscreen") == 0 || strcmp(argv[i], "-f") == 0) {
+            fullscreen = true;
+        } else if (strcmp(argv[i], "--maximized") == 0 || strcmp(argv[i], "-m") == 0) {
+            maximized = true;
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            usage(stdout, argv[0]);
+            return 0;
+        } else if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
+            fprintf(stdout, "amp version %d.%d.%d\n", (AMP_VERSION >> 16) & 0xFF, (AMP_VERSION >> 8) & 0xFF, AMP_VERSION & 0xFF);
+            return 0;
+        } else if (strcmp(argv[i], "--info") == 0 || strcmp(argv[i], "-i") == 0) {
+            fprintf(stdout, "amp - A simple video player\n");
+            fprintf(stdout, "version: %d.%d.%d\n", (AMP_VERSION >> 16) & 0xFF, (AMP_VERSION >> 8) & 0xFF, AMP_VERSION & 0xFF);
+            usage(stdout, argv[0]);
+            fprintf(stdout, "Compiled with:\n");
+            fprintf(stdout, "  Nob version: %s\n", NOB_VERSION);
+            fprintf(stdout, "  SDL2 version: %d.%d.%d\n", SDL_MAJOR_VERSION, SDL_MINOR_VERSION, SDL_PATCHLEVEL);
+            fprintf(stdout, "  TTF version: %d.%d.%d\n", TTF_MAJOR_VERSION, TTF_MINOR_VERSION, TTF_PATCHLEVEL);
+            fprintf(stdout, "  FFmpeg version: %d.%d.%d\n", LIBAVFORMAT_VERSION_MAJOR, LIBAVFORMAT_VERSION_MINOR, LIBAVFORMAT_VERSION_MICRO);
+            fprintf(stdout, "  LibAss version: %d.%d.%d\n", (LIBASS_VERSION >> 24) & 0xFF, (LIBASS_VERSION >> 16) & 0xFF, (LIBASS_VERSION >> 8) & 0xFF);
+            fprintf(stdout, "  Compiler: %s ", CC);
+            const char* flags[] = { CFLAGS, NULL };
+            for (int j = 0; flags[j]; j++) fprintf(stdout, "%s ", flags[j]);
+            fprintf(stdout, "\n");
+            fprintf(stdout, "(c) 2026 Markofwitch. All rights reserved.\n");
+            return 0;
+        } else if (argv[i][0] != '-') {
+            video_file = get_absolute_path(argv[i]);
+        } else {
+            nob_log(NOB_WARNING, "Unknown argument: %s", argv[i]);
+        }
+    }
+    
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
+        nob_log(NOB_ERROR, "SDL_Init Error: %s", SDL_GetError());
+        return 1;
+    }
+    if (TTF_Init() != 0) {
+        nob_log(NOB_ERROR, "TTF_Init Error: %s", TTF_GetError());
+        return 1;
+    }
+    nob_log(NOB_INFO, "SDL initialized successfully");
+    
+    bool font_loaded = false;
+    for (int i = 0; i < default_font_count; i++) {
+        if (load_ui_font(default_fonts[i].path, default_fonts[i].name)) {
+            nob_log(NOB_INFO, "Loaded UI font: %s from %s", default_fonts[i].name, default_fonts[i].path);
+            font_loaded = true;
+            break;
+        } else {
+            nob_log(NOB_WARNING, "Failed to load UI font: %s from %s", default_fonts[i].name, default_fonts[i].path);
+        }
+    }
+    if (!font_loaded) {
+        nob_log(NOB_ERROR, "Failed to load any UI font. Exiting.");
+        return 1;
+    }
+
+#ifdef _WIN32
+    SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE);
+#endif
+    if (video_file) {
+        nob_log(NOB_INFO, "Checking video file: %s", video_file);
+        if (!is_supported_video_file(video_file)) {
+            nob_log(NOB_ERROR, "Unsupported video file: %s", video_file);
+            video_file = NULL;
+        }
+    }
+    if (!video_file) {
+        nob_log(NOB_INFO, "No video file specified. Opening file dialog...");
+        video_file = open_file_dialog(
+            (const char*[]){"*.mkv", "*.mp4"}, 2, "Video Files (*.mkv, *.mp4)", false,
+            "Select Video File", NULL
+        );
+        if (!video_file || !is_supported_video_file(video_file)) {
+            nob_log(NOB_ERROR, "No file selected or unsupported file type. Exiting.");
+            return 1;
+        }  
+    } else {
+        nob_log(NOB_INFO, "Video file specified: %s", video_file);
+    }
+
+    SDL_Window* win = SDL_CreateWindow(
+        "(no file selected)",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        INITIAL_WINDOW_WIDTH, INITIAL_WINDOW_HEIGHT,
+        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_INPUT_FOCUS | SDL_WINDOW_MOUSE_FOCUS
+    );
+
+    if(!win) { nob_log(NOB_ERROR, "SDL_CreateWindow failed: %s", SDL_GetError()); return 1; }
+
+    SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if(!ren) { SDL_DestroyWindow(win); nob_log(NOB_ERROR, "SDL_CreateRenderer failed: %s", SDL_GetError()); return 1; }
+
+#ifdef _WIN32
+    HMENU win_menu = create_windows_menu(win);
+    HWND win_hwnd = get_hwnd(win);
+#endif
 
     if(video_file) {
         vr = vr_create(win, ren);
@@ -307,26 +458,34 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Pre-calculate UI layout for both input and rendering
-    SDL_Rect timeline_rect, volume_rect, hamburger, menu_panel, audio_box, subtitle_box, font_box, playback_box, overlay_rect;
+    #if SAVE_FILE
+        SaveState save_state = {0};
+        if (!load_save_state(SAVE_FILE_PATH, &save_state)) {
+            nob_log(NOB_INFO, "No save file found, starting with default settings");
+        } else {
+            nob_log(NOB_INFO, "Save file loaded successfully");
+            apply_save_state_to_vr(vr, &save_state, video_file);
+        }
+    #endif
+
+    SDL_Rect timeline_rect, timeline_hitbox, volume_rect, hamburger, menu_panel, audio_box, subtitle_box, font_box, playback_box, overlay_rect;
     int overlay_h = 100;
     int margin = 24;
     int w, h;
 
     while(running) {
-        // Update layout each frame based on window size
         {
             SDL_GetWindowSize(win, &w, &h);
             overlay_rect = (SDL_Rect){ 0, h - overlay_h, w, overlay_h };
-            timeline_rect = (SDL_Rect){ margin, h - overlay_h + 12, w - margin * 2 - 40, 6 };
+            timeline_rect = (SDL_Rect){ margin, h - overlay_h + 12, w - margin * 2 - 40, TIMELINE_HEIGHT };
+            timeline_hitbox = (SDL_Rect){ timeline_rect.x, timeline_rect.y - TIMELINE_HITBOX_PADDING, timeline_rect.w, TIMELINE_HEIGHT + TIMELINE_HITBOX_PADDING * 2 };
             volume_rect = (SDL_Rect){ w - margin - 32, h - overlay_h + 40, 6, 50 };
             hamburger = (SDL_Rect){ w - margin - 28, h - overlay_h + 12, 24, 20 };
             
-            // Position menu panel to the LEFT of hamburger - right edge of menu touches left edge of hamburger
-            int menu_x = hamburger.x - 250;  // Menu width is 250
+            int menu_x = hamburger.x - 250;
             if (menu_x < margin) menu_x = margin;
-            int menu_y = h - overlay_h - 180;  // Position above overlay
-            if (menu_y < margin) menu_y = h - overlay_h + 12;  // Fallback below if not enough space above
+            int menu_y = h - overlay_h - 180;
+            if (menu_y < margin) menu_y = h - overlay_h + 12;
             menu_panel = (SDL_Rect){ menu_x, menu_y, 250, 180 };
             audio_box = (SDL_Rect){ menu_panel.x + 12, menu_panel.y + 12, menu_panel.w - 24, 28 };
             subtitle_box = (SDL_Rect){ menu_panel.x + 12, menu_panel.y + 50, menu_panel.w - 24, 28 };
@@ -349,8 +508,12 @@ int main(int argc, char** argv) {
                     if(sysmsg->msg.win.msg == WM_COMMAND) {
                         int id = LOWORD(sysmsg->msg.win.wParam);
                         if(id == MENU_OPEN) {
-                            char* f = open_file_dialog();
+                            char* f = open_file_dialog(
+                                (const char*[]){"*.mkv", "*.mp4"}, 2, "Video Files (*.mkv, *.mp4)", false,
+                                "Select Video File", NULL
+                            );
                             if(f) {
+                                video_file = f;
                                 if(!vr) vr = vr_create(win, ren);
                                 if(vr_load(vr, f)) {
                                     vr_set_volume(vr, volume_percent_to_gain(volume_percent));
@@ -360,8 +523,10 @@ int main(int argc, char** argv) {
                                 } else {
                                     nob_log(NOB_ERROR, "Failed to load %s", f);
                                 }
-                                free(f);
                             }
+                            #if SAVE_FILE
+                                fill_save_state_from_vr(vr, &save_state, video_file);
+                            #endif
                         } else if(id >= MENU_RECENT_BASE && id < MENU_RECENT_BASE+MAX_RECENT) {
                             int idx = id - MENU_RECENT_BASE;
                             if(idx < recent_count) {
@@ -376,8 +541,23 @@ int main(int argc, char** argv) {
                         } else if(id == MENU_EXIT) running = false;
                         else if(id == MENU_FULLSCREEN) {
                             fullscreen = !fullscreen;
+                            if (fullscreen) {
+                                SDL_GetWindowPosition(win, &windowed_x, &windowed_y);
+                                SDL_GetWindowSize(win, &windowed_w, &windowed_h);
+                                windowed_valid = 1;
+                            }
                             SDL_SetWindowFullscreen(win, fullscreen?SDL_WINDOW_FULLSCREEN_DESKTOP:0);
-                            if (!fullscreen) SDL_MaximizeWindow(win);
+                            if (!fullscreen) {
+                                SDL_RestoreWindow(win);
+                                if (windowed_valid) {
+                                    SDL_SetWindowPosition(win, windowed_x, windowed_y);
+                                    SDL_SetWindowSize(win, windowed_w, windowed_h);
+                                }
+                                SDL_MaximizeWindow(win);
+                                maximized = true;
+                            } else {
+                                maximized = false;
+                            }
 #ifdef _WIN32
                             if (win_hwnd) {
                                 SetMenu(win_hwnd, fullscreen ? NULL : win_menu);
@@ -393,8 +573,12 @@ int main(int argc, char** argv) {
             if(e.type == SDL_KEYDOWN) {
                 SDL_Keycode key = e.key.keysym.sym;
                 if((key==SDLK_o)&&(e.key.keysym.mod & KMOD_CTRL)) {
-                    char* f = open_file_dialog();
+                    char* f = open_file_dialog(
+                        (const char*[]){"*.mkv", "*.mp4"}, 2, "Video Files (*.mkv, *.mp4)", false,
+                        "Select Video File", NULL
+                    );
                     if(f) {
+                        video_file = f;
                         if(!vr) vr = vr_create(win, ren);
                         if(vr_load(vr, f)) {
                             vr_set_volume(vr, volume_percent_to_gain(volume_percent));
@@ -404,19 +588,71 @@ int main(int argc, char** argv) {
                         } else {
                             nob_log(NOB_ERROR, "Failed to load %s", f);
                         }
-                        free(f);
+                    } else {
+                        nob_log(NOB_INFO, "No file selected");
                     }
+                    #if SAVE_FILE
+                        fill_save_state_from_vr(vr, &save_state, video_file);
+                    #endif
                 } else if(key==SDLK_F4 && (e.key.keysym.mod & KMOD_ALT)) running=0;
                 if(key==SDLK_F11 || (key==SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT))) {
-                    fullscreen=!fullscreen;
+                    fullscreen =! fullscreen;
+                    if (fullscreen) {
+                        SDL_GetWindowPosition(win, &windowed_x, &windowed_y);
+                        SDL_GetWindowSize(win, &windowed_w, &windowed_h);
+                        windowed_valid = 1;
+                    }
                     SDL_SetWindowFullscreen(win, fullscreen?SDL_WINDOW_FULLSCREEN_DESKTOP:0);
-                    if (!fullscreen) SDL_MaximizeWindow(win);
 #ifdef _WIN32
                     if (win_hwnd) {
                         SetMenu(win_hwnd, fullscreen ? NULL : win_menu);
                         DrawMenuBar(win_hwnd);
                     }
 #endif
+                    if (!fullscreen) {
+                        SDL_RestoreWindow(win);
+                        if (windowed_valid) {
+                            SDL_SetWindowPosition(win, windowed_x, windowed_y);
+                            SDL_SetWindowSize(win, windowed_w, windowed_h);
+                        }
+                        SDL_MaximizeWindow(win);
+                        maximized = true;
+                    } else {
+                        SDL_Rect bounds;
+                        int display_index = SDL_GetWindowDisplayIndex(win);
+                        if (display_index >= 0 && SDL_GetDisplayBounds(display_index, &bounds) == 0) {
+                            SDL_SetWindowPosition(win, bounds.x, bounds.y);
+                            SDL_SetWindowSize(win, bounds.w, bounds.h);
+                        }
+                        maximized = false;
+                    }
+                }
+                if (key==SDLK_m && (e.key.keysym.mod & KMOD_ALT)) {
+                    SDL_MinimizeWindow(win);
+                }
+                if (key == SDLK_ESCAPE) {
+                    if (menu_open) {
+                        menu_open = false;
+                        audio_menu_open = false;
+                        subtitle_menu_open = false;
+                        font_menu_open = false;
+                        playback_menu_open = false;
+                    } else if (fullscreen) {
+                        fullscreen = false;
+                        SDL_SetWindowFullscreen(win, 0);
+#ifdef _WIN32
+                        if (win_hwnd) {
+                            SetMenu(win_hwnd, win_menu);
+                            DrawMenuBar(win_hwnd);
+                        }
+#endif
+                        if (windowed_valid) {
+                            SDL_SetWindowPosition(win, windowed_x, windowed_y);
+                            SDL_SetWindowSize(win, windowed_w, windowed_h);
+                        }
+                        SDL_MaximizeWindow(win);
+                        maximized = true;
+                    }
                 }
                 if (key == SDLK_SPACE) {
                     paused = !paused;
@@ -454,7 +690,8 @@ int main(int argc, char** argv) {
                     if (history_pos > 0) {
                         history_pos--;
                         vr_seek(vr, timestamp_history[history_pos]);
-                        snprintf(flash_text, sizeof(flash_text), "Undo");
+                        snprintf(flash_text, sizeof(flash_text), "Undo to %.2fs", timestamp_history[history_pos]);
+                        nob_log(NOB_INFO, "Undo to %.2fs", timestamp_history[history_pos]);
                         flash_until = SDL_GetTicks() + 900;
                     }
                 }
@@ -462,17 +699,18 @@ int main(int argc, char** argv) {
                     if (history_pos < history_count - 1) {
                         history_pos++;
                         vr_seek(vr, timestamp_history[history_pos]);
-                        snprintf(flash_text, sizeof(flash_text), "Redo");
+                        snprintf(flash_text, sizeof(flash_text), "Redo to %.2fs", timestamp_history[history_pos]);
+                        nob_log(NOB_INFO, "Redo to %.2fs", timestamp_history[history_pos]);
                         flash_until = SDL_GetTicks() + 900;
                     }
                 }
             }
 
             if (e.type == SDL_MOUSEWHEEL && menu_open) {
-                int dy = e.wheel.y;  // positive = scroll up, negative = scroll down
+                int dy = e.wheel.y;
                 if (audio_menu_open) {
                     int count = vr ? vr_get_audio_track_count(vr) : 0;
-                    audio_scroll -= dy * 3;  // Faster scrolling
+                    audio_scroll -= dy * 3;
                     int max_scroll = count > 10 ? count - 10 : 0;
                     audio_scroll = audio_scroll < 0 ? 0 : (audio_scroll > max_scroll ? max_scroll : audio_scroll);
                 }
@@ -489,7 +727,6 @@ int main(int argc, char** argv) {
                 int my = e.button.y;
                 bool click_processed = false;
 
-                // Priority 1: Check hamburger button (can be outside overlay)
                 if (point_in_rect(mx, my, hamburger)) {
                     menu_open = !menu_open;
                     audio_menu_open = false;
@@ -498,7 +735,6 @@ int main(int argc, char** argv) {
                     playback_menu_open = false;
                     click_processed = true;
                 }
-                // Priority 2: Check menu panel clicks (can be outside overlay)
                 else if (menu_open && point_in_rect(mx, my, menu_panel)) {
                     bool handled = false;
                     
@@ -537,16 +773,15 @@ int main(int argc, char** argv) {
                     }
                     click_processed = true;
                 }
-                // Priority 3: Check menu dropdown items
                 else if (menu_open) {
                     bool handled = false;
                     
                     if (audio_menu_open && !handled) {
                         int count = vr ? vr_get_audio_track_count(vr) : 0;
-                        int max_items = 10;
+                        int max_items = MENU_MAX_VISIBLE_ITEMS;
                         int display_count = count > max_items ? max_items : count;
-                        int item_h = 28;
-                        SDL_Rect list = { menu_panel.x - 250, audio_box.y, 250 - (count > max_items ? 12 : 0), item_h * display_count };
+                        int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
+                        SDL_Rect list = { menu_panel.x - MENU_DROPDOWN_WIDTH, audio_box.y, MENU_DROPDOWN_WIDTH - (count > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h * display_count };
                         if (list.x < margin) list.x = margin;
                         if (point_in_rect(mx, my, list)) {
                             int item_y = (my - list.y) / item_h;
@@ -561,13 +796,23 @@ int main(int argc, char** argv) {
                     
                     if (subtitle_menu_open && !handled) {
                         int count = vr ? vr_get_subtitle_track_count(vr) : 0;
-                        int max_items = 10;
-                        // Add 1 for "Off" option
+                        int max_items = MENU_MAX_VISIBLE_ITEMS;
                         int total = count + 1;
                         int display_count = total > max_items ? max_items : total;
-                        int item_h = 22;
-                        SDL_Rect list = { menu_panel.x - 250, subtitle_box.y, 250 - (total > max_items ? 12 : 0), item_h * display_count };
+                        int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
+                        SDL_Rect list = {
+                            menu_panel.x - MENU_DROPDOWN_WIDTH,
+                            subtitle_box.y,
+                            MENU_DROPDOWN_WIDTH - (total > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0),
+                            item_h * display_count
+                        };
                         if (list.x < margin) list.x = margin;
+                        int win_w, win_h;
+                        SDL_GetWindowSize(win, &win_w, &win_h);
+                        if (list.y + list.h > win_h) {
+                            list.y = win_h - list.h;
+                            if (list.y < margin) list.y = margin;
+                        }
                         if (point_in_rect(mx, my, list)) {
                             int item_y = (my - list.y) / item_h;
                             if (item_y >= 0 && item_y < display_count) {
@@ -580,56 +825,63 @@ int main(int argc, char** argv) {
                     }
                     
                     if (font_menu_open && !handled) {
-                        int item_h = 28;
-                        // Position dropdown to the LEFT of the menu panel
-                        SDL_Rect list = { menu_panel.x - 250, font_box.y, 250, item_h * 4 };
+
+                        int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
+                        int count = default_font_count + 1;
+
+                        SDL_Rect list = {
+                            menu_panel.x - MENU_DROPDOWN_WIDTH,
+                            font_box.y,
+                            MENU_DROPDOWN_WIDTH,
+                            item_h * count
+                        };
+
                         if (list.x < margin) list.x = margin;
+
                         if (point_in_rect(mx, my, list)) {
+
                             int idx = (my - list.y) / item_h;
-                            if (idx >= 0 && idx < 4) {
-                                if (idx == 0) load_ui_font("thirdparty/fonts/Iosevka-Regular.ttf", "Iosevka");
-                                if (idx == 1) {
-#ifdef _WIN32
-                                    load_ui_font("C:/Windows/Fonts/segoeui.ttf", "Segoe UI");
-#elif __APPLE__
-                                    load_ui_font("/Library/Fonts/Arial.ttf", "Arial");
-#else
-                                    load_ui_font("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "DejaVu Sans");
-#endif
-                                }
-                                if (idx == 2) {
-#ifdef _WIN32
-                                    load_ui_font("C:/Windows/Fonts/consola.ttf", "Consolas");
-#elif __APPLE__
-                                    load_ui_font("/Library/Fonts/Monaco.ttf", "Monaco");
-#else
-                                    load_ui_font("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "DejaVu Mono");
-#endif
-                                }
-                                if (idx == 3) {
-                                    const char* ff[] = { "*.ttf", "*.otf" };
-                                    char const* font_file = tinyfd_openFileDialog("Select Font", "", 2, ff, "Fonts", 0);
-                                    if (font_file) load_ui_font(font_file, "Custom");
-                                }
+
+                            if (idx >= 0 && idx < default_font_count) {
+                                load_ui_font(default_fonts[idx].path,
+                                            default_fonts[idx].name);
                             }
+                            else if (idx == default_font_count) {
+
+                                const char* font_file = open_file_dialog(
+                                    (const char*[]){"*.ttf", "*.ttc", "*.otf"}, 3, "Font Files (*.ttf, *.ttc, *.otf)", false,
+                                    "Select Font File", NULL
+                                );
+
+                                if (font_file) load_ui_font(font_file,"Custom");
+                            }
+
                             font_menu_open = false;
                             handled = true;
                         }
                     }
-                    
+
                     if (playback_menu_open && !handled) {
-                        int item_h = 28;
-                        // Position dropdown to the LEFT of the menu panel
-                        SDL_Rect list = { menu_panel.x - 250, playback_box.y, 250, item_h * 6 };
+                        int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
+                        SDL_Rect list = { menu_panel.x - MENU_DROPDOWN_WIDTH, playback_box.y, MENU_DROPDOWN_WIDTH, item_h * 8 };
                         if (list.x < margin) list.x = margin;
+                        int win_w, win_h;
+                        SDL_GetWindowSize(win, &win_w, &win_h);
+                        if (list.y + list.h > win_h) {
+                            list.y = win_h - list.h;
+                            if (list.y < 0) list.y = 0;
+                        }
                         if (point_in_rect(mx, my, list)) {
                             int idx = (my - list.y) / item_h;
-                            float speeds[] = { 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f };
-                            if (idx >= 0 && idx < 6) {
-                                float old_speed = playback_speed;
+                            float speeds[] = { 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f, 5.0f };
+                            if (idx >= 0 && idx < 8) {
                                 playback_speed = speeds[idx];
-                                if (vr && fabs(old_speed - playback_speed) > 0.01f) {
+                                if (vr) {
+                                    vr_set_speed(vr, playback_speed);
                                     SDL_ClearQueuedAudio(vr->audio_dev);
+                                    if (playback_speed > 2.0f) {
+                                        vr->audio_clock_valid = 0;
+                                    }
                                 }
                             }
                             playback_menu_open = false;
@@ -637,7 +889,6 @@ int main(int argc, char** argv) {
                         }
                     }
                     
-                    // If clicked outside menu, close it
                     if (!handled && !point_in_rect(mx, my, menu_panel)) {
                         menu_open = false;
                         audio_menu_open = false;
@@ -647,26 +898,15 @@ int main(int argc, char** argv) {
                     }
                     click_processed = true;
                 }
-                // Priority 4: Handle overlay controls
                 else if (point_in_rect(mx, my, overlay_rect)) {
                     overlay_target = 1.0f;
-                    if (point_in_rect(mx, my, timeline_rect)) {
-                        // Click on timeline to seek directly
+                    if (point_in_rect(mx, my, timeline_hitbox)) {
                         double dur = vr ? vr_get_duration(vr) : 0.0;
                         if (dur > 0.0 && vr) {
                             double t = (double)(mx - timeline_rect.x) / (double)timeline_rect.w;
                             t = clampf((float)t, 0.0f, 1.0f);
-                            double seek_time = t * dur;
-                            // Add to history
-                            if (history_pos < history_count) {
-                                history_count = history_pos;
-                            }
-                            if (history_count < MAX_HISTORY) {
-                                timestamp_history[history_count] = vr_get_time(vr);
-                                history_count++;
-                                history_pos = history_count;
-                            }
-                            vr_seek(vr, seek_time);
+                            drag_time = t * dur;
+                            dragging_timeline = true;
                         }
                         click_processed = true;
                     } else if (point_in_rect(mx, my, volume_rect)) {
@@ -674,7 +914,6 @@ int main(int argc, char** argv) {
                         click_processed = true;
                     }
                 } else {
-                    // Clicked outside overlay (on video) - toggle pause if menu is closed
                     if (!menu_open && !click_processed) {
                         paused = !paused;
                         if (vr) vr_set_paused(vr, paused);
@@ -683,21 +922,43 @@ int main(int argc, char** argv) {
             }
 
             if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
+                if (dragging_timeline && vr) {
+                    double dur = vr_get_duration(vr);
+                    double seek_time = clampf((float)drag_time, 0.0f, (float)dur);
+                    if (history_pos < history_count) {
+                        history_count = history_pos;
+                    }
+                    if (history_count < MAX_HISTORY) {
+                        timestamp_history[history_count] = vr_get_time(vr);
+                        history_count++;
+                        history_pos = history_count;
+                    }
+                    vr_seek(vr, seek_time);
+                }
                 dragging_timeline = false;
                 volume_dragging = false;
             }
 
             if (e.type == SDL_MOUSEMOTION) {
+                if (dragging_timeline && vr) {
+                    int mx = e.motion.x;
+                    double dur = vr_get_duration(vr);
+                    if (dur > 0.0) {
+                        double t = (double)(mx - timeline_rect.x) / (double)timeline_rect.w;
+                        t = clampf((float)t, 0.0f, 1.0f);
+                        drag_time = t * dur;
+                    }
+                }
                 if (volume_dragging && vr) {
                     int my = e.motion.y;
                     float t = (float)(volume_rect.y + volume_rect.h - my) / (float)volume_rect.h;
-                    volume_percent = clampf(t, 0.0f, 1.0f) * 200.0f;
+                    volume_percent = clampf(t * 200.0f, 0.0f, 200.0f);
                     vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                 }
             }
         }
 
-        if(!maximized) { SDL_MaximizeWindow(win); maximized=1; }
+        if(!fullscreen && !maximized) { SDL_MaximizeWindow(win); maximized=true; }
 
         Uint32 now = SDL_GetTicks();
         float dt = (now - last_tick) / 1000.0f;
@@ -706,7 +967,6 @@ int main(int argc, char** argv) {
             if (now - last_mouse_move > 3000) overlay_target = 0.0f;
         }
         
-        if (vr) vr->playback_speed = playback_speed;
         overlay_alpha = lerpf(overlay_alpha, overlay_target, clampf(dt * 6.0f, 0.0f, 1.0f));
 
         SDL_SetRenderDrawColor(ren,0,0,0,255);
@@ -714,10 +974,42 @@ int main(int argc, char** argv) {
 
         if(vr) {
             if (!paused) {
+                vr_demux_packets(vr);
+                if (playback_speed <= 2.0f) {
+                    vr_decode_audio(vr);
+                }
                 vr_render_frame(vr);
-                int base_delay = 16;  // ~60fps
-                int speed_adjusted_delay = (int)(base_delay / (vr->playback_speed > 0 ? vr->playback_speed : 1.0f));
-                SDL_Delay(speed_adjusted_delay);
+                if (vr->audio_dev && playback_speed <= 2.0f) {
+                    double video_time = vr_get_video_time(vr);
+                    double audio_time = vr_get_audio_time(vr);
+                    double diff = video_time - audio_time;
+
+                    if (diff < -0.05) {
+                        int catchup = 0;
+                        while (diff < -0.02 && catchup < 8) {
+                            if (!vr_render_frame(vr)) break;
+                            video_time = vr_get_video_time(vr);
+                            audio_time = vr_get_audio_time(vr);
+                            diff = video_time - audio_time;
+                            catchup++;
+                        }
+                    } else if (diff > 0.01) {
+                        int delay_ms = (int)(diff * 1000.0);
+                        if (delay_ms > 120) delay_ms = 120;
+                        SDL_Delay(delay_ms);
+                    }
+                } else {
+                    double master_time = vr_get_master_time(vr);
+                    double video_time = vr_get_video_time(vr);
+                    int catchup = 0;
+                    while (video_time < master_time - 0.001 && catchup < 30) {
+                        vr_demux_packets(vr);
+                        if (!vr_render_frame(vr)) break;
+                        video_time = vr_get_video_time(vr);
+                        catchup++;
+                    }
+                    SDL_Delay(1);
+                }
             }
             SDL_Texture* tex = vr_get_texture(vr);
             if (tex) SDL_RenderCopy(ren, tex, NULL, NULL);
@@ -789,7 +1081,12 @@ int main(int argc, char** argv) {
                 char font_label[160];
                 snprintf(font_label, sizeof(font_label), "Font: %s", ui_font_label);
                 char playback_label[160];
-                snprintf(playback_label, sizeof(playback_label), "Speed: %.1fx", playback_speed);
+                char tmp[64];
+                snprintf(tmp, sizeof(tmp), "%.6f", playback_speed);
+                char *dot = strchr(tmp, '.');
+                char *end = tmp + strlen(tmp) - 1;
+                while (end > dot + 1 && *end == '0') *end-- = '\0';
+                snprintf(playback_label, sizeof(playback_label), "Speed: %sx", tmp);
                 draw_text_shadow(ren, audio_box.x + 8, audio_box.y + 3, audio_label, text);
                 draw_text_shadow(ren, subtitle_box.x + 8, subtitle_box.y + 3, sub_name, text);
                 draw_text_shadow(ren, font_box.x + 8, font_box.y + 3, font_label, text);
@@ -797,13 +1094,12 @@ int main(int argc, char** argv) {
 
                 if (audio_menu_open && vr) {
                     int count = vr_get_audio_track_count(vr);
-                    int max_items = 10;
-                    int item_h = 22;
+                    int max_items = MENU_MAX_VISIBLE_ITEMS;
+                    int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
                     int display_count = count > max_items ? max_items : count;
-                    SDL_Rect list = { menu_panel.x - 230, audio_box.y, 230, item_h * display_count };
+                    SDL_Rect list = { menu_panel.x - MENU_DROPDOWN_WIDTH, audio_box.y, MENU_DROPDOWN_WIDTH, item_h * display_count };
                     if (list.x < margin) list.x = margin;
                     
-                    // Clamp scroll
                     int max_scroll = count > max_items ? count - max_items : 0;
                     if (audio_scroll > max_scroll) audio_scroll = max_scroll;
                     if (audio_scroll < 0) audio_scroll = 0;
@@ -811,97 +1107,122 @@ int main(int argc, char** argv) {
                     draw_rect(ren, list, (SDL_Color){ 26, 26, 34, (Uint8)(220 * overlay_alpha) });
                     for (int i = 0; i < display_count; i++) {
                         int idx = audio_scroll + i;
-                        SDL_Rect item = { list.x, list.y + i * item_h, list.w - (count > max_items ? 12 : 0), item_h };
+                        SDL_Rect item = { list.x, list.y + i * item_h, list.w - (count > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
                         if (vr->current_audio == idx) draw_rect(ren, item, (SDL_Color){ 40, 80, 120, (Uint8)(180 * overlay_alpha) });
-                        draw_text_shadow(ren, item.x + 8, item.y + 2, vr_get_audio_track_name(vr, idx), text);
+                        draw_text_shadow(ren, item.x + MENU_DROPDOWN_TEXT_PADDING_X, item.y + MENU_DROPDOWN_TEXT_PADDING_Y, vr_get_audio_track_name(vr, idx), text);
                     }
                     
-                    // Draw scrollbar if needed
                     if (count > max_items) {
-                        SDL_Rect scrollbar_bg = { list.x + list.w - 10, list.y, 10, list.h };
+                        SDL_Rect scrollbar_bg = { list.x + list.w - MENU_DROPDOWN_SCROLLBAR_WIDTH, list.y, MENU_DROPDOWN_SCROLLBAR_WIDTH, list.h };
                         draw_rect(ren, scrollbar_bg, (SDL_Color){ 35, 35, 45, (Uint8)(200 * overlay_alpha) });
                         int scroll_h = (max_items * list.h) / count;
                         int scroll_y = list.y + (audio_scroll * list.h) / count;
-                        SDL_Rect scrollbar = { list.x + list.w - 10, scroll_y, 10, scroll_h };
+                        SDL_Rect scrollbar = { list.x + list.w - MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_y, MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_h };
                         draw_rect(ren, scrollbar, (SDL_Color){ 80, 80, 100, (Uint8)(220 * overlay_alpha) });
                     }
                 }
 
                 if (subtitle_menu_open && vr) {
                     int count = vr_get_subtitle_track_count(vr);
-                    int max_items = 10;
-                    int item_h = 22;
-                    int display_count = (count + 1) > max_items ? max_items : (count + 1);  // +1 for "Off" option
-                    SDL_Rect list = { menu_panel.x - 230, subtitle_box.y, 230, item_h * display_count };
+                    int max_items = MENU_MAX_VISIBLE_ITEMS;
+                    int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
+                    int display_count = (count + 1) > max_items ? max_items : (count + 1);
+                    SDL_Rect list = { menu_panel.x - MENU_DROPDOWN_WIDTH, subtitle_box.y, MENU_DROPDOWN_WIDTH, item_h * display_count };
                     if (list.x < margin) list.x = margin;
-                    
-                    // Clamp scroll
                     int max_scroll = (count + 1) > max_items ? (count + 1) - max_items : 0;
                     if (subtitle_scroll > max_scroll) subtitle_scroll = max_scroll;
                     if (subtitle_scroll < 0) subtitle_scroll = 0;
-                    
+                    int win_w, win_h;
+                    SDL_GetWindowSize(win, &win_w, &win_h);
+                    if (list.y + list.h > win_h) {
+                        list.y = win_h - list.h;
+                        if (list.y < margin) list.y = margin;
+                    }
                     draw_rect(ren, list, (SDL_Color){ 26, 26, 34, (Uint8)(220 * overlay_alpha) });
-                    
-                    // Draw "Off" option if scrolled to top
                     if (subtitle_scroll == 0) {
-                        SDL_Rect off_item = { list.x, list.y, list.w - ((count + 1) > max_items ? 12 : 0), item_h };
+                        SDL_Rect off_item = { list.x, list.y, list.w - ((count + 1) > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
                         if (vr->current_subtitle < 0) draw_rect(ren, off_item, (SDL_Color){ 40, 80, 120, (Uint8)(180 * overlay_alpha) });
-                        draw_text_shadow(ren, off_item.x + 8, off_item.y + 2, "Subtitles: Off", text);
-                        
+                        draw_text_shadow(ren, off_item.x + MENU_DROPDOWN_TEXT_PADDING_X, off_item.y + MENU_DROPDOWN_TEXT_PADDING_Y, "Subtitles: Off", text);
                         for (int i = 1; i < display_count; i++) {
                             int idx = (subtitle_scroll + i) - 1;
                             if (idx >= 0 && idx < count) {
-                                SDL_Rect item = { list.x, list.y + i * item_h, list.w - ((count + 1) > max_items ? 12 : 0), item_h };
+                                SDL_Rect item = { list.x, list.y + i * item_h, list.w - ((count + 1) > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
                                 if (vr->current_subtitle == idx) draw_rect(ren, item, (SDL_Color){ 40, 80, 120, (Uint8)(180 * overlay_alpha) });
-                                draw_text_shadow(ren, item.x + 8, item.y + 2, vr_get_subtitle_track_name(vr, idx), text);
+                                draw_text_shadow(ren, item.x + MENU_DROPDOWN_TEXT_PADDING_X, item.y + MENU_DROPDOWN_TEXT_PADDING_Y, vr_get_subtitle_track_name(vr, idx), text);
                             }
                         }
                     } else {
                         for (int i = 0; i < display_count; i++) {
                             int idx = (subtitle_scroll + i) - 1;
                             if (idx >= 0 && idx < count) {
-                                SDL_Rect item = { list.x, list.y + i * item_h, list.w - ((count + 1) > max_items ? 12 : 0), item_h };
+                                SDL_Rect item = { list.x, list.y + i * item_h, list.w - ((count + 1) > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
                                 if (vr->current_subtitle == idx) draw_rect(ren, item, (SDL_Color){ 40, 80, 120, (Uint8)(180 * overlay_alpha) });
-                                draw_text_shadow(ren, item.x + 8, item.y + 2, vr_get_subtitle_track_name(vr, idx), text);
+                                draw_text_shadow(ren, item.x + MENU_DROPDOWN_TEXT_PADDING_X, item.y + MENU_DROPDOWN_TEXT_PADDING_Y, vr_get_subtitle_track_name(vr, idx), text);
                             }
                         }
                     }
-                    
-                    // Draw scrollbar if needed
                     if ((count + 1) > max_items) {
-                        SDL_Rect scrollbar_bg = { list.x + list.w - 10, list.y, 10, list.h };
+                        SDL_Rect scrollbar_bg = { list.x + list.w - MENU_DROPDOWN_SCROLLBAR_WIDTH, list.y, MENU_DROPDOWN_SCROLLBAR_WIDTH, list.h };
                         draw_rect(ren, scrollbar_bg, (SDL_Color){ 35, 35, 45, (Uint8)(200 * overlay_alpha) });
                         int scroll_h = (max_items * list.h) / (count + 1);
                         int scroll_y = list.y + (subtitle_scroll * list.h) / (count + 1);
-                        SDL_Rect scrollbar = { list.x + list.w - 10, scroll_y, 10, scroll_h };
+                        SDL_Rect scrollbar = { list.x + list.w - MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_y, MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_h };
                         draw_rect(ren, scrollbar, (SDL_Color){ 80, 80, 100, (Uint8)(220 * overlay_alpha) });
                     }
                 }
 
                 if (font_menu_open) {
-                    int count = 4;  // Iosevka, Segoe UI, Consolas, Custom
-                    int item_h = 22;
-                    SDL_Rect list = { menu_panel.x - 230, font_box.y, 230, item_h * count };
+                    int count = default_font_count + 1;
+                    int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
+
+                    SDL_Rect list = {
+                        menu_panel.x - MENU_DROPDOWN_WIDTH,
+                        font_box.y,
+                        MENU_DROPDOWN_WIDTH,
+                        item_h * count
+                    };
+
                     if (list.x < margin) list.x = margin;
-                    draw_rect(ren, list, (SDL_Color){ 26, 26, 34, (Uint8)(220 * overlay_alpha) });
-                    draw_text_shadow(ren, list.x + 8, list.y + 2, "Iosevka (bundled)", text);
-                    draw_text_shadow(ren, list.x + 8, list.y + 2 + item_h, "Segoe UI", text);
-                    draw_text_shadow(ren, list.x + 8, list.y + 2 + item_h * 2, "Consolas", text);
-                    draw_text_shadow(ren, list.x + 8, list.y + 2 + item_h * 3, "Custom...", text);
+
+                    draw_rect(ren, list, (SDL_Color){26,26,34,(Uint8)(220*overlay_alpha)});
+
+                    for (int i = 0; i < default_font_count; ++i) {
+                        draw_text_shadow(
+                            ren,
+                            list.x + MENU_DROPDOWN_TEXT_PADDING_X,
+                            list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * i,
+                            default_fonts[i].name,
+                            text
+                        );
+                    }
+
+                    draw_text_shadow(
+                        ren,
+                        list.x + MENU_DROPDOWN_TEXT_PADDING_X,
+                        list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * default_font_count,
+                        "Custom...",
+                        text
+                    );
                 }
 
                 if (playback_menu_open) {
-                    int count = 6;  // 0.5x to 2.0x
-                    int item_h = 22;
-                    SDL_Rect list = { menu_panel.x - 230, playback_box.y, 230, item_h * count };
+                    int count = 8;
+                    int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
+                    SDL_Rect list = { menu_panel.x - MENU_DROPDOWN_WIDTH, playback_box.y, MENU_DROPDOWN_WIDTH, item_h * count };
                     if (list.x < margin) list.x = margin;
+                    if (list.y + list.h > h) {
+                        list.y = h - list.h;
+                        if (list.y < 0) list.y = 0;
+                    }
                     draw_rect(ren, list, (SDL_Color){ 26, 26, 34, (Uint8)(220 * overlay_alpha) });
-                    draw_text_shadow(ren, list.x + 8, list.y + 2, "0.5x", text);
-                    draw_text_shadow(ren, list.x + 8, list.y + 2 + item_h, "0.75x", text);
-                    draw_text_shadow(ren, list.x + 8, list.y + 2 + item_h * 2, "1.0x (Normal)", text);
-                    draw_text_shadow(ren, list.x + 8, list.y + 2 + item_h * 3, "1.25x", text);
-                    draw_text_shadow(ren, list.x + 8, list.y + 2 + item_h * 4, "1.5x", text);
-                    draw_text_shadow(ren, list.x + 8, list.y + 2 + item_h * 5, "2.0x", text);
+                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y, "0.5x", text);
+                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h, "0.75x", text);
+                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 2, "1.0x (Normal)", text);
+                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 3, "1.25x", text);
+                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 4, "1.5x", text);
+                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 5, "2.0x", text);
+                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 6, "3.0x", text);
+                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 7, "5.0x", text);
                 }
             }
         }
@@ -912,20 +1233,47 @@ int main(int argc, char** argv) {
             draw_text_shadow(ren, 20, 20, "PAUSED", pcol);
         }
 
-        if (flash_text[0] && SDL_GetTicks() < flash_until) {
-            SDL_Color fcol = { 240, 240, 245, 220 };
-            draw_text_shadow(ren, 20, 56, flash_text, fcol);
+        Uint32 now_ticks = SDL_GetTicks();
+        if (flash_text[0]) {
+            if (now_ticks < flash_until) {
+                flash_alpha = lerpf(flash_alpha, 1.0f, clampf(dt * 8.0f, 0.0f, 1.0f));
+            } else {
+                flash_alpha = lerpf(flash_alpha, 0.0f, clampf(dt * 6.0f, 0.0f, 1.0f));
+                if (flash_alpha < 0.01f) flash_text[0] = 0;
+            }
+            if (flash_alpha > 0.01f) {
+                SDL_Color fcol = { 240, 240, 245, (Uint8)(220 * flash_alpha) };
+                draw_text_shadow(ren, 20, 56, flash_text, fcol);
+            }
+        }
+
+        if (vr && playback_speed > 2.0f) {
+            SDL_Color acol = { 255, 180, 100, 200 };
+            draw_text_shadow(ren, 20, 92, "Audio disabled at high speed", acol);
         }
 
         SDL_RenderPresent(ren);
     }
 
-    if(vr) vr_free(vr);
-    if(ui_font) TTF_CloseFont(ui_font);
+    #if SAVE_FILE
+        fill_save_state_from_vr(vr, &save_state, video_file);
+    #endif
+    if (vr) vr_free(vr);
+    if (ui_font) TTF_CloseFont(ui_font);
     TTF_Quit();
-    for(int i=0;i<recent_count;i++) free(recent_files[i]);
+    for (int i = 0; i < recent_count; i++) free(recent_files[i]);
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     SDL_Quit();
+    #if SAVE_FILE
+        if (!write_save_state(SAVE_FILE_PATH, &save_state)) {
+            nob_log(NOB_ERROR, "Failed to write save state to %s", SAVE_FILE_PATH);
+        } else {
+            nob_log(NOB_INFO, "Save state written to %s", SAVE_FILE_PATH);
+        }
+        debug_save_state(&save_state);
+        free_save_state(&save_state);
+    #endif
+    nob_log(NOB_INFO, "Exited.");
     return 0;
 }

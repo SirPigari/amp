@@ -4,8 +4,10 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "source/config.h"
+
 int main(int argc, char** argv) {
-    NOB_GO_REBUILD_URSELF(argc, argv);
+    NOB_GO_REBUILD_URSELF_PLUS(argc, argv, "source/config.h");
 
     Nob_Cmd cmd = {0};
 
@@ -34,15 +36,17 @@ int main(int argc, char** argv) {
 #endif
     }
 
+
+
 #ifdef _WIN32
     nob_cmd_append(&cmd,
-                    "gcc",
+                    CC,
+                    CFLAGS,
                     "source/main.c",
                     "-DSDL_MAIN_HANDLED",
                     "-L", sdl_lib,
                     "-L", ffmpeg_lib,
                     "-L", ass_lib,
-                    "-lass",
                     "-lmingw32",
                     "-lSDL2main",
                     "-lSDL2",
@@ -63,12 +67,12 @@ int main(int argc, char** argv) {
                     "-o", "main.exe");
 #else
     nob_cmd_append(&cmd,
-                    "gcc",
+                    CC,
+                    CFLAGS,
                     "source/main.c",
                     "-L", sdl_lib,
                     "-L", ffmpeg_lib,
                     "-L", ass_lib,
-                    "-lass"
                     "-lSDL2",
                     "-lSDL2_ttf",
                     "-lavformat",
@@ -80,6 +84,7 @@ int main(int argc, char** argv) {
                     "-lfreetype",
                     "-lharfbuzz",
                     "-lfribidi",
+                    "-lm",
                     "-o", "main");
 #endif
 

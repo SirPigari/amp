@@ -2,3 +2,4 @@
 /nob*
 !/nob.c
 /test*
+*.dat
