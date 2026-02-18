@@ -14,10 +14,10 @@ static int ui_font_size = 18;
 static char ui_font_label[128] = "Iosevka";
 static char ui_font_path[260] = "";
 
-static int load_ui_font(const char* path, const char* label) {
-    if (!path || !path[0]) return 0;
+static bool load_ui_font(const char* path, const char* label) {
+    if (!path || !path[0]) return false;
     TTF_Font* font = TTF_OpenFont(path, ui_font_size);
-    if (!font) return 0;
+    if (!font) return false;
     if (ui_font) TTF_CloseFont(ui_font);
     ui_font = font;
     strncpy(ui_font_path, path, sizeof(ui_font_path) - 1);
@@ -26,7 +26,12 @@ static int load_ui_font(const char* path, const char* label) {
         strncpy(ui_font_label, label, sizeof(ui_font_label) - 1);
         ui_font_label[sizeof(ui_font_label) - 1] = '\0';
     }
-    return 1;
+    return true;
+}
+
+static const char* try_load_ui_font(const char* path, const char* label) {
+    if (load_ui_font(path, label)) return NULL;
+    return SDL_GetError();
 }
 
 static void draw_text(SDL_Renderer* ren, int x, int y, const char* text, SDL_Color color) {

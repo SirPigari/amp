@@ -25,7 +25,8 @@ typedef struct {
 } FileConfig;
 
 typedef struct {
-    uint64_t recent_files_sizes[MAX_RECENT];
+    char* recent_files[MAX_RECENT];
+    uint64_t recent_files_count;
 
     FileConfig* remembered_files;
     uint64_t remembered_count;
@@ -58,90 +59,144 @@ void hash_file(const char* path, uint8_t out[HASH_SIZE]) {
 
 static int write_save_state(const char* path, SaveState* state) {
     if (!path || !state) return 0;
-    FILE* f = fopen(path, "wb");
-    if (!f) return 0;
 
-    uint64_t magic = SAVE_FILE_MAGIC;
-    uint64_t version = AMP_VERSION;
-    fwrite(&magic, sizeof(uint64_t), 1, f);
-    fwrite(&version, sizeof(uint64_t), 1, f);
+    size_t total = sizeof(uint64_t) * 2;
+    total += sizeof(FontSettings) - sizeof(char*);
+    uint64_t font_len = state->font_settings.font_path ? strlen(state->font_settings.font_path) : 0;
+    total += sizeof(font_len) + font_len;
 
-    fwrite(&state->font_settings, sizeof(FontSettings), 1, f);
+    total += sizeof(state->recent_files_count);
+    for (uint64_t i = 0; i < state->recent_files_count; i++)
+        total += sizeof(uint64_t) + (state->recent_files[i] ? strlen(state->recent_files[i]) : 0);
 
-    fwrite(&state->remembered_count, sizeof(uint64_t), 1, f);
-
+    total += sizeof(state->remembered_count);
     for (uint64_t i = 0; i < state->remembered_count; i++) {
-        FileConfig* cfg = &state->remembered_files[i];
-
-        fwrite(&cfg->last_position, sizeof(double), 1, f);
-        fwrite(&cfg->volume_percent, sizeof(uint32_t), 1, f);
-        fwrite(&cfg->playback_speed, sizeof(float), 1, f);
-        fwrite(&cfg->audio_track, sizeof(int32_t), 1, f);
-        fwrite(&cfg->subtitle_track, sizeof(int32_t), 1, f);
-        fwrite(&cfg->audio_track_index, sizeof(int), 1, f);
-        fwrite(&cfg->subtitle_track_index, sizeof(int), 1, f);
-        fwrite(&cfg->file_hash, sizeof(cfg->file_hash), 1, f);
-
-        if (cfg->video_path) {
-            uint64_t len = strlen(cfg->video_path);
-            fwrite(&len, sizeof(uint64_t), 1, f);
-            fwrite(cfg->video_path, 1, len, f);
-        } else {
-            uint64_t len = 0;
-            fwrite(&len, sizeof(uint64_t), 1, f);
-        }
+        FileConfig* c = &state->remembered_files[i];
+        total += sizeof(c->last_position) + sizeof(c->volume_percent) + sizeof(c->playback_speed)
+               + sizeof(c->audio_track) + sizeof(c->subtitle_track)
+               + sizeof(c->audio_track_index) + sizeof(c->subtitle_track_index)
+               + HASH_SIZE;
+        total += sizeof(uint64_t) + (c->video_path ? strlen(c->video_path) : 0);
     }
 
+    uint8_t* buf = malloc(total);
+    if (!buf) return 0;
+
+    uint8_t* ptr = buf;
+
+    uint64_t magic = SAVE_FILE_MAGIC, version = AMP_VERSION;
+    memcpy(ptr, &magic, sizeof(magic)); ptr += sizeof(magic);
+    memcpy(ptr, &version, sizeof(version)); ptr += sizeof(version);
+
+    memcpy(ptr, &state->font_settings, sizeof(FontSettings) - sizeof(char*)); 
+    ptr += sizeof(FontSettings) - sizeof(char*);
+    memcpy(ptr, &font_len, sizeof(font_len)); ptr += sizeof(font_len);
+    if (font_len) { memcpy(ptr, state->font_settings.font_path, font_len); ptr += font_len; }
+
+    memcpy(ptr, &state->recent_files_count, sizeof(state->recent_files_count)); ptr += sizeof(state->recent_files_count);
+    for (uint64_t i = 0; i < state->recent_files_count; i++) {
+        uint64_t len = state->recent_files[i] ? strlen(state->recent_files[i]) : 0;
+        memcpy(ptr, &len, sizeof(len)); ptr += sizeof(len);
+        if (len) { memcpy(ptr, state->recent_files[i], len); ptr += len; }
+    }
+
+    memcpy(ptr, &state->remembered_count, sizeof(state->remembered_count)); ptr += sizeof(state->remembered_count);
+    for (uint64_t i = 0; i < state->remembered_count; i++) {
+        FileConfig* c = &state->remembered_files[i];
+        memcpy(ptr, &c->last_position, sizeof(c->last_position)); ptr += sizeof(c->last_position);
+        memcpy(ptr, &c->volume_percent, sizeof(c->volume_percent)); ptr += sizeof(c->volume_percent);
+        memcpy(ptr, &c->playback_speed, sizeof(c->playback_speed)); ptr += sizeof(c->playback_speed);
+        memcpy(ptr, &c->audio_track, sizeof(c->audio_track)); ptr += sizeof(c->audio_track);
+        memcpy(ptr, &c->subtitle_track, sizeof(c->subtitle_track)); ptr += sizeof(c->subtitle_track);
+        memcpy(ptr, &c->audio_track_index, sizeof(c->audio_track_index)); ptr += sizeof(c->audio_track_index);
+        memcpy(ptr, &c->subtitle_track_index, sizeof(c->subtitle_track_index)); ptr += sizeof(c->subtitle_track_index);
+        memcpy(ptr, c->file_hash, HASH_SIZE); ptr += HASH_SIZE;
+
+        uint64_t len = c->video_path ? strlen(c->video_path) : 0;
+        memcpy(ptr, &len, sizeof(len)); ptr += sizeof(len);
+        if (len) { memcpy(ptr, c->video_path, len); ptr += len; }
+    }
+
+    FILE* f = fopen(path, "wb");
+    if (!f) { free(buf); return 0; }
+    size_t written = fwrite(buf, 1, total, f);
     fclose(f);
-    return 1;
+    free(buf);
+    return written == total;
 }
 
-static int load_save_state(const char* path, SaveState* out_state) {
-    if (!path || !out_state) return 0;
+static int load_save_state(const char* path, SaveState* s) {
+    if (!path || !s) return 0;
+
     FILE* f = fopen(path, "rb");
     if (!f) return 0;
 
-    uint64_t magic = 0, version = 0;
-    fread(&magic, sizeof(uint64_t), 1, f);
-    fread(&version, sizeof(uint64_t), 1, f);
+    fseek(f, 0, SEEK_END);
+    size_t size = ftell(f);
+    fseek(f, 0, SEEK_SET);
 
-    if (magic != SAVE_FILE_MAGIC) { fclose(f); return 0; }
+    uint8_t* buf = malloc(size);
+    if (!buf) { fclose(f); return 0; }
+    fread(buf, 1, size, f);
+    fclose(f);
 
-    fread(&out_state->font_settings, sizeof(FontSettings), 1, f);
+    uint8_t* ptr = buf;
 
-    fread(&out_state->remembered_count, sizeof(uint64_t), 1, f);
+    uint64_t magic, version;
+    memcpy(&magic, ptr, sizeof(magic)); ptr += sizeof(magic);
+    memcpy(&version, ptr, sizeof(version)); ptr += sizeof(version);
+    if (magic != SAVE_FILE_MAGIC) { free(buf); return 0; }
 
-    out_state->remembered_files = malloc(out_state->remembered_count * sizeof(FileConfig));
-    if (!out_state->remembered_files) { fclose(f); return 0; }
+    memcpy(&s->font_settings, ptr, sizeof(FontSettings) - sizeof(char*)); 
+    ptr += sizeof(FontSettings) - sizeof(char*);
+    uint64_t font_len;
+    memcpy(&font_len, ptr, sizeof(font_len)); ptr += sizeof(font_len);
+    if (font_len) {
+        s->font_settings.font_path = malloc(font_len + 1);
+        memcpy(s->font_settings.font_path, ptr, font_len);
+        s->font_settings.font_path[font_len] = 0;
+        ptr += font_len;
+    } else s->font_settings.font_path = NULL;
 
-    for (uint64_t i = 0; i < out_state->remembered_count; i++) {
-        FileConfig* cfg = &out_state->remembered_files[i];
-        memset(cfg, 0, sizeof(FileConfig));
-
-        fread(&cfg->last_position, sizeof(double), 1, f);
-        fread(&cfg->volume_percent, sizeof(uint32_t), 1, f);
-        fread(&cfg->playback_speed, sizeof(float), 1, f);
-        fread(&cfg->audio_track, sizeof(int32_t), 1, f);
-        fread(&cfg->subtitle_track, sizeof(int32_t), 1, f);
-        fread(&cfg->audio_track_index, sizeof(int), 1, f);
-        fread(&cfg->subtitle_track_index, sizeof(int), 1, f);
-        fread(&cfg->file_hash, sizeof(cfg->file_hash), 1, f);
-
-        uint64_t len = 0;
-        fread(&len, sizeof(uint64_t), 1, f);
-        if (len > 0) {
-            cfg->video_path = malloc(len + 1);
-            fread(cfg->video_path, 1, len, f);
-            cfg->video_path[len] = '\0';
-        } else {
-            cfg->video_path = NULL;
-        }
+    memcpy(&s->recent_files_count, ptr, sizeof(s->recent_files_count)); ptr += sizeof(s->recent_files_count);
+    for (uint64_t i = 0; i < s->recent_files_count; i++) {
+        uint64_t len;
+        memcpy(&len, ptr, sizeof(len)); ptr += sizeof(len);
+        if (len) {
+            s->recent_files[i] = malloc(len + 1);
+            memcpy(s->recent_files[i], ptr, len);
+            s->recent_files[i][len] = 0;
+            ptr += len;
+        } else s->recent_files[i] = NULL;
     }
 
-    fclose(f);
+    memcpy(&s->remembered_count, ptr, sizeof(s->remembered_count)); ptr += sizeof(s->remembered_count);
+    s->remembered_files = malloc(sizeof(FileConfig) * s->remembered_count);
+    for (uint64_t i = 0; i < s->remembered_count; i++) {
+        FileConfig* c = &s->remembered_files[i];
+        memset(c, 0, sizeof(*c));
+        memcpy(&c->last_position, ptr, sizeof(c->last_position)); ptr += sizeof(c->last_position);
+        memcpy(&c->volume_percent, ptr, sizeof(c->volume_percent)); ptr += sizeof(c->volume_percent);
+        memcpy(&c->playback_speed, ptr, sizeof(c->playback_speed)); ptr += sizeof(c->playback_speed);
+        memcpy(&c->audio_track, ptr, sizeof(c->audio_track)); ptr += sizeof(c->audio_track);
+        memcpy(&c->subtitle_track, ptr, sizeof(c->subtitle_track)); ptr += sizeof(c->subtitle_track);
+        memcpy(&c->audio_track_index, ptr, sizeof(c->audio_track_index)); ptr += sizeof(c->audio_track_index);
+        memcpy(&c->subtitle_track_index, ptr, sizeof(c->subtitle_track_index)); ptr += sizeof(c->subtitle_track_index);
+        memcpy(c->file_hash, ptr, HASH_SIZE); ptr += HASH_SIZE;
+
+        uint64_t len;
+        memcpy(&len, ptr, sizeof(len)); ptr += sizeof(len);
+        if (len) {
+            c->video_path = malloc(len + 1);
+            memcpy(c->video_path, ptr, len);
+            c->video_path[len] = 0;
+            ptr += len;
+        } else c->video_path = NULL;
+    }
+
+    free(buf);
     return 1;
 }
-
 static int64_t get_remembered_file_index(SaveState* state, const char* video_path, uint8_t video_hash[HASH_SIZE]) {
     if (!state || (!video_path && !video_hash)) return -1;
     uint8_t hash[HASH_SIZE];
@@ -241,6 +296,10 @@ static void free_save_state(SaveState* state) {
 
 static void debug_save_state(const SaveState* state) {
     if (!state) return;
+    printf("Recent Files (%zu):\n", state->recent_files_count);
+    for (uint64_t i = 0; i < state->recent_files_count; i++) {
+        printf("  - %s\n", state->recent_files[i] ? state->recent_files[i] : "NULL");
+    }
     printf("SaveState:\n");
     printf("  Remembered Files (%zu):\n", state->remembered_count);
     for (uint64_t i = 0; i < state->remembered_count; i++) {

@@ -36,12 +36,26 @@ int main(int argc, char** argv) {
 #endif
     }
 
-
+    bool run = false;
+    char** run_flags = NULL;
+    unsigned int run_flags_count = 0;
+    bool opt = false;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "run") == 0) {
+            run = true;
+            for (int i = 2; i < argc; i++) {
+                run_flags = realloc(run_flags, sizeof(char*) * (run_flags_count + 1));
+                run_flags[run_flags_count++] = argv[i];
+            }
+        } else if (strcmp(argv[i], "release") == 0) {
+            opt = true;
+        }
+    }
 
 #ifdef _WIN32
     nob_cmd_append(&cmd,
                     CC,
-                    CFLAGS,
+                    opt ? RELEASE_CFLAGS : CFLAGS,
                     "source/main.c",
                     "-DSDL_MAIN_HANDLED",
                     "-L", sdl_lib,
@@ -64,11 +78,11 @@ int main(int argc, char** argv) {
                     "-lharfbuzz",
                     "-lfribidi",
                     "-mconsole",
-                    "-o", "main.exe");
+                    "-o", OUT_EXE_NAME".exe");
 #else
     nob_cmd_append(&cmd,
                     CC,
-                    CFLAGS,
+                    opt ? RELEASE_CFLAGS : CFLAGS,
                     "source/main.c",
                     "-L", sdl_lib,
                     "-L", ffmpeg_lib,
@@ -85,7 +99,7 @@ int main(int argc, char** argv) {
                     "-lharfbuzz",
                     "-lfribidi",
                     "-lm",
-                    "-o", "main");
+                    "-o", OUT_EXE_NAME);
 #endif
 
     if (!nob_cmd_run(&cmd)) {
@@ -93,11 +107,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (argc > 1 && strcmp(argv[1], "run") == 0) {
+    if (run) {
         cmd.count = 0;
-        nob_cmd_append(&cmd, "./main");
-        for (int i = 2; i < argc; i++) {
-            nob_cmd_append(&cmd, argv[i]);
+        nob_cmd_append(&cmd, "./"OUT_EXE_NAME);
+        for (int i = 0; i < run_flags_count; i++) {
+            nob_cmd_append(&cmd, run_flags[i]);
         }
         if (!nob_cmd_run(&cmd)) {
             fprintf(stderr, "Execution failed!\n");

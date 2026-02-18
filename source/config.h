@@ -4,8 +4,10 @@
 /* Build config */
 #define AMP_VERSION 0x010000 /* 1.0.0 */
 #define CC "gcc"
-#define CFLAGS "-std=c99", "-Wno-cast-function-type", "-Wall", "-Wextra"
+#define CFLAGS         "-Wno-cast-function-type", "-Wall", "-Wextra"
+#define RELEASE_CFLAGS "-Wno-cast-function-type", "-Wall", "-Wextra", "-O3"
 #define SAVE_FILE_MAGIC 0x41504D56 /* 'APMV' */
+#define OUT_EXE_NAME "main"
 
 #define AMP_FLASH_DEBUG_DEFAULT 0
 #define AMP_FLASH_DEBUG_LEVEL_DEFAULT NOB_INFO

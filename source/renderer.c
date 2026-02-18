@@ -93,6 +93,10 @@ typedef struct {
     PacketQueue audio_pktq;
     AVPacket pending_pkt;
     int pending_valid;
+
+    double frame_history[32];
+    int frame_history_size;
+    int frame_history_pos;
 } VideoRenderer;
 
 static void pkt_queue_init(PacketQueue* q, int capacity) {
@@ -462,6 +466,9 @@ VideoRenderer* vr_create(SDL_Window* window, SDL_Renderer* renderer) {
     pkt_queue_init(&vr->video_pktq, VIDEO_PKT_QUEUE_CAP);
     pkt_queue_init(&vr->audio_pktq, AUDIO_PKT_QUEUE_CAP);
     vr->pending_valid = 0;
+    vr->frame_history_size = 0;
+    vr->frame_history_pos = 0;
+    memset(vr->frame_history, 0, sizeof(vr->frame_history));
     return vr;
 }
 
@@ -709,6 +716,14 @@ int vr_render_frame(VideoRenderer* vr) {
                     vr->start_time_set = 1;
                 }
                 vr->current_time = vts_sec - vr->start_time;
+
+                if (vr->frame_history_size < 32) {
+                    vr->frame_history[vr->frame_history_size++] = vr->current_time;
+                } else {
+                    for (int i = 1; i < 32; i++) vr->frame_history[i-1] = vr->frame_history[i];
+                    vr->frame_history[31] = vr->current_time;
+                }
+                vr->frame_history_pos = vr->frame_history_size - 1;
             }
             vr->playback_speed = vr->playback_speed > 0 ? vr->playback_speed : 1.0f;
             return 1;
@@ -863,6 +878,68 @@ void vr_seek(VideoRenderer* vr, double seconds) {
     pkt_queue_clear(&vr->audio_pktq);
 }
 
+double vr_get_time(VideoRenderer* vr) {
+    if (!vr) return 0.0;
+
+    if (vr->audio_dev && vr->audio_clock_valid) {
+        double audio_time = vr_get_audio_clock(vr);
+        if (audio_time < vr->last_time) return vr->last_time;
+        vr->last_time = audio_time;
+        return audio_time;
+    }
+
+    if (vr->current_time < vr->last_time) return vr->last_time;
+    vr->last_time = vr->current_time;
+    return vr->current_time;
+}
+
+void vr_next_frame(VideoRenderer* vr, int count) {
+    if (!vr || count == 0) return;
+    int step = (count > 0) ? 1 : -1;
+    int n = abs(count);
+    double frame_duration = 0.04;
+
+    if (vr && vr->video_ctx && vr->video_time_base.num > 0 && vr->video_time_base.den > 0) {
+        AVRational tb = vr->video_time_base;
+        double fps = 0.0;
+        if (vr->fmt_ctx && vr->video_stream_index >= 0) {
+            AVStream* stream = vr->fmt_ctx->streams[vr->video_stream_index];
+            if (stream->avg_frame_rate.num > 0 && stream->avg_frame_rate.den > 0) {
+                fps = av_q2d(stream->avg_frame_rate);
+            }
+        }
+        if (fps > 0.0) {
+            frame_duration = 1.0 / fps;
+        } else {
+            frame_duration = av_q2d(tb);
+        }
+    }
+
+    for (int i = 0; i < n; i++) {
+        if (step > 0) {
+            vr_demux_packets(vr);
+            vr_decode_audio(vr);
+            vr_render_frame(vr);
+        } else {
+            int prev_pos = vr->frame_history_pos - 1;
+            if (prev_pos < 0) prev_pos = 0;
+            double t = vr->frame_history_size > 0 ? vr->frame_history[prev_pos] : (vr_get_time(vr) - frame_duration);
+            if (t < 0.0) t = 0.0;
+            vr_seek(vr, t);
+
+            int rendered = 0;
+            int tries = 0;
+            while (!rendered && tries < 32) {
+                vr_demux_packets(vr);
+                vr_decode_audio(vr);
+                rendered = vr_render_frame(vr);
+                tries++;
+            }
+            vr->frame_history_pos = prev_pos;
+        }
+    }
+}
+
 void vr_set_speed(VideoRenderer* vr, double speed) {
     if (!vr) return;
     if (speed <= 0.0) speed = 1.0;
@@ -891,21 +968,6 @@ float vr_get_volume(VideoRenderer* vr) {
 double vr_get_duration(VideoRenderer* vr) {
     if (!vr || !vr->fmt_ctx || vr->fmt_ctx->duration == AV_NOPTS_VALUE) return 0.0;
     return (double)vr->fmt_ctx->duration / AV_TIME_BASE;
-}
-
-double vr_get_time(VideoRenderer* vr) {
-    if (!vr) return 0.0;
-
-    if (vr->audio_dev && vr->audio_clock_valid) {
-        double audio_time = vr_get_audio_clock(vr);
-        if (audio_time < vr->last_time) return vr->last_time;
-        vr->last_time = audio_time;
-        return audio_time;
-    }
-
-    if (vr->current_time < vr->last_time) return vr->last_time;
-    vr->last_time = vr->current_time;
-    return vr->current_time;
 }
 
 int vr_get_audio_track_count(VideoRenderer* vr) {

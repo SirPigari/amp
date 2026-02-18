@@ -196,9 +196,28 @@ void usage(FILE* out, const char* prog_name) {
 }
 
 void add_recent_file(const char* file) {
-    for(int i = MAX_RECENT-1; i>0; i--) recent_files[i] = recent_files[i-1];
-    recent_files[0] = strdup(file);
-    if(recent_count < MAX_RECENT) recent_count++;
+    nob_log(NOB_INFO, "Adding to recent files: %s", file);
+    char* new_file = strdup(file);
+
+    if (recent_count == MAX_RECENT) {
+        free(recent_files[MAX_RECENT - 1]);
+        recent_count--;
+    }
+    for (int i = recent_count; i > 0; i--) {
+        recent_files[i] = recent_files[i-1];
+    }
+    recent_files[0] = new_file;
+    recent_count++;
+
+    for (int i = 1; i < recent_count; i++) {
+        if (strcmp(recent_files[i], file) == 0) {
+            free(recent_files[i]);
+            for (int j = i; j < recent_count - 1; j++) recent_files[j] = recent_files[j+1];
+            recent_files[recent_count - 1] = NULL;
+            recent_count--;
+            break;
+        }
+    }
 }
 
 char* get_absolute_path(const char* path) {
@@ -219,7 +238,7 @@ char* get_absolute_path(const char* path) {
     return strdup(path);
 }
 
-char* open_file_dialog(const char* filters[], int filter_count, const char* filter_desc, bool allow_multiple, const char* title, const char* default_path) {
+char* open_file_dialog(const char* filters[], int filter_count, const char* filter_desc, bool allow_multiple, const char* title, const char* default_path, bool (*validator)(const char* path)) {
     char const* filename = tinyfd_openFileDialog(
         title ? title : "Select File",
         default_path ? default_path : "",
@@ -229,7 +248,7 @@ char* open_file_dialog(const char* filters[], int filter_count, const char* filt
         allow_multiple ? 1 : 0
     );
     if (!filename) return NULL;
-    if (!is_supported_video_file(filename)) return NULL;
+    if (validator && !validator(filename)) return NULL;
     char* abs_path = get_absolute_path(filename);
     return abs_path;
 }
@@ -240,6 +259,11 @@ enum {
     MENU_EXIT,
     MENU_FULLSCREEN,
     MENU_MINIMIZE,
+    MENU_PLAY_PAUSE,
+    MENU_NEXT_FRAME,
+    MENU_PREV_FRAME,
+    MENU_NEXT_MEDIA,
+    MENU_PREV_MEDIA,
     MENU_RECENT_BASE = 100
 };
 
@@ -258,6 +282,7 @@ HMENU create_windows_menu(SDL_Window* window) {
     HMENU hMenu = CreateMenu();
     HMENU hFileMenu = CreatePopupMenu();
     HMENU hViewMenu = CreatePopupMenu();
+    HMENU hPlaybackMenu = CreatePopupMenu();
 
     AppendMenu(hFileMenu, MF_STRING, MENU_OPEN, "Open File\tCtrl+O");
 
@@ -275,6 +300,13 @@ HMENU create_windows_menu(SDL_Window* window) {
     AppendMenu(hViewMenu, MF_STRING, MENU_FULLSCREEN, "Fullscreen\tF11");
     AppendMenu(hViewMenu, MF_STRING, MENU_MINIMIZE, "Minimize\tAlt+M");
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hViewMenu, "View");
+
+    AppendMenu(hPlaybackMenu, MF_STRING, MENU_PLAY_PAUSE, "Play/Pause\tSpace");
+    AppendMenu(hPlaybackMenu, MF_STRING, MENU_NEXT_FRAME, "Next Frame\tAlt+Right");
+    AppendMenu(hPlaybackMenu, MF_STRING, MENU_PREV_FRAME, "Previous Frame\tAlt+Left");
+    AppendMenu(hPlaybackMenu, MF_STRING, MENU_NEXT_MEDIA, "Next Media\tShift+Right");
+    AppendMenu(hPlaybackMenu, MF_STRING, MENU_PREV_MEDIA, "Previous Media\tShift+Left");
+    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hPlaybackMenu, "Playback");
 
     SetMenu(hwnd, hMenu);
     DrawMenuBar(hwnd);
@@ -421,7 +453,7 @@ int main(int argc, char** argv) {
         nob_log(NOB_INFO, "No video file specified. Opening file dialog...");
         video_file = open_file_dialog(
             (const char*[]){"*.mkv", "*.mp4"}, 2, "Video Files (*.mkv, *.mp4)", false,
-            "Select Video File", NULL
+            "Select Video File", NULL, &is_supported_video_file
         );
         if (!video_file || !is_supported_video_file(video_file)) {
             nob_log(NOB_ERROR, "No file selected or unsupported file type. Exiting.");
@@ -443,16 +475,10 @@ int main(int argc, char** argv) {
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if(!ren) { SDL_DestroyWindow(win); nob_log(NOB_ERROR, "SDL_CreateRenderer failed: %s", SDL_GetError()); return 1; }
 
-#ifdef _WIN32
-    HMENU win_menu = create_windows_menu(win);
-    HWND win_hwnd = get_hwnd(win);
-#endif
-
     if(video_file) {
         vr = vr_create(win, ren);
         if(vr_load(vr, video_file)) {
             vr_set_volume(vr, volume_percent_to_gain(volume_percent));
-            add_recent_file(video_file);
             SDL_SetWindowTitle(win, video_file);
             nob_log(NOB_INFO, "Loaded %s", video_file);
         }
@@ -465,8 +491,19 @@ int main(int argc, char** argv) {
         } else {
             nob_log(NOB_INFO, "Save file loaded successfully");
             apply_save_state_to_vr(vr, &save_state, video_file);
+            memcpy(recent_files, save_state.recent_files, sizeof(char*) * MAX_RECENT);
+            recent_count = save_state.recent_files_count;
         }
     #endif
+
+    if (video_file) {
+        add_recent_file(video_file);
+    }
+
+#ifdef _WIN32
+    HMENU win_menu = create_windows_menu(win);
+    HWND win_hwnd = get_hwnd(win);
+#endif
 
     SDL_Rect timeline_rect, timeline_hitbox, volume_rect, hamburger, menu_panel, audio_box, subtitle_box, font_box, playback_box, overlay_rect;
     int overlay_h = 100;
@@ -510,12 +547,13 @@ int main(int argc, char** argv) {
                         if(id == MENU_OPEN) {
                             char* f = open_file_dialog(
                                 (const char*[]){"*.mkv", "*.mp4"}, 2, "Video Files (*.mkv, *.mp4)", false,
-                                "Select Video File", NULL
+                                "Select Video File", NULL, &is_supported_video_file
                             );
                             if(f) {
                                 video_file = f;
                                 if(!vr) vr = vr_create(win, ren);
                                 if(vr_load(vr, f)) {
+                                    fill_save_state_from_vr(vr, &save_state, video_file);
                                     vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                                     add_recent_file(f);
                                     SDL_SetWindowTitle(win, f);
@@ -530,13 +568,17 @@ int main(int argc, char** argv) {
                         } else if(id >= MENU_RECENT_BASE && id < MENU_RECENT_BASE+MAX_RECENT) {
                             int idx = id - MENU_RECENT_BASE;
                             if(idx < recent_count) {
+                                strcpy(video_file, recent_files[idx]);
                                 if(!vr) vr = vr_create(win, ren);
-                                if(vr_load(vr, recent_files[idx])) {
+                                if(vr_load(vr, video_file)) {
+                                    fill_save_state_from_vr(vr, &save_state, video_file);
                                     vr_set_volume(vr, volume_percent_to_gain(volume_percent));
-                                    SDL_SetWindowTitle(win, recent_files[idx]);
-                                    nob_log(NOB_INFO, "Loaded %s", recent_files[idx]);
-                                } else
-                                    nob_log(NOB_ERROR, "Failed to load %s", recent_files[idx]);
+                                    add_recent_file(video_file);
+                                    SDL_SetWindowTitle(win, video_file);
+                                    nob_log(NOB_INFO, "Loaded %s", video_file);
+                                } else {
+                                    nob_log(NOB_ERROR, "Failed to load %s", video_file);
+                                }
                             }
                         } else if(id == MENU_EXIT) running = false;
                         else if(id == MENU_FULLSCREEN) {
@@ -565,6 +607,19 @@ int main(int argc, char** argv) {
                             }
 #endif
                         } else if(id == MENU_MINIMIZE) SDL_MinimizeWindow(win);
+                        else if(id == MENU_PLAY_PAUSE) {
+                            paused = !paused;
+                            if (vr) vr_set_paused(vr, paused);
+                            overlay_target = 1.0f;
+                        } else if(id == MENU_NEXT_FRAME && vr) {
+                            vr_next_frame(vr, 1);
+                        } else if(id == MENU_PREV_FRAME && vr) {
+                            vr_next_frame(vr, -1);
+                        } else if(id == MENU_NEXT_MEDIA || id == MENU_PREV_MEDIA) {
+                            nob_log(NOB_WARNING, "Playlist functionality not implemented yet");
+                            sprintf(flash_text, "%s not implemented", id == MENU_NEXT_MEDIA ? "Next Media" : "Previous Media");
+                            flash_until = SDL_GetTicks() + 900;
+                        }
                     }
                 }
             }
@@ -575,12 +630,13 @@ int main(int argc, char** argv) {
                 if((key==SDLK_o)&&(e.key.keysym.mod & KMOD_CTRL)) {
                     char* f = open_file_dialog(
                         (const char*[]){"*.mkv", "*.mp4"}, 2, "Video Files (*.mkv, *.mp4)", false,
-                        "Select Video File", NULL
+                        "Select Video File", NULL, &is_supported_video_file
                     );
                     if(f) {
                         video_file = f;
                         if(!vr) vr = vr_create(win, ren);
                         if(vr_load(vr, f)) {
+                            fill_save_state_from_vr(vr, &save_state, video_file);
                             vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                             add_recent_file(f);
                             SDL_SetWindowTitle(win, f);
@@ -630,6 +686,24 @@ int main(int argc, char** argv) {
                 if (key==SDLK_m && (e.key.keysym.mod & KMOD_ALT)) {
                     SDL_MinimizeWindow(win);
                 }
+                if (key == SDLK_LEFT && (e.key.keysym.mod & KMOD_ALT) && vr) {
+                    sprintf(flash_text, "Previous Frame");
+                    flash_until = SDL_GetTicks() + 900;
+                    vr_next_frame(vr, -1);
+                }
+                if (key == SDLK_RIGHT && (e.key.keysym.mod & KMOD_ALT) && vr) {
+                    sprintf(flash_text, "Next Frame");
+                    flash_until = SDL_GetTicks() + 900;
+                    vr_next_frame(vr, 1);
+                }
+                if (key == SDLK_RIGHT && (e.key.keysym.mod & KMOD_SHIFT) && vr) {
+                    sprintf(flash_text, "Next Media not implemented yet");
+                    flash_until = SDL_GetTicks() + 900;
+                }
+                if (key == SDLK_LEFT && (e.key.keysym.mod & KMOD_SHIFT) && vr) {
+                    sprintf(flash_text, "Previous Media not implemented yet");
+                    flash_until = SDL_GetTicks() + 900;
+                }
                 if (key == SDLK_ESCAPE) {
                     if (menu_open) {
                         menu_open = false;
@@ -659,14 +733,14 @@ int main(int argc, char** argv) {
                     if (vr) vr_set_paused(vr, paused);
                     overlay_target = 1.0f;
                 }
-                if (key == SDLK_LEFT && vr) {
+                if (key == SDLK_LEFT && vr && !(e.key.keysym.mod & KMOD_ALT) && !(e.key.keysym.mod & KMOD_SHIFT)) {
                     double t = vr_get_time(vr) - 5.0;
                     if (t < 0.0) t = 0.0;
                     vr_seek(vr, t);
                     snprintf(flash_text, sizeof(flash_text), "-5s");
                     flash_until = SDL_GetTicks() + 900;
                 }
-                if (key == SDLK_RIGHT && vr) {
+                if (key == SDLK_RIGHT && vr && !(e.key.keysym.mod & KMOD_ALT) && !(e.key.keysym.mod & KMOD_SHIFT)) {
                     double t = vr_get_time(vr) + 5.0;
                     double dur = vr_get_duration(vr);
                     if (dur > 0.0 && t > dur) t = dur;
@@ -850,10 +924,18 @@ int main(int argc, char** argv) {
 
                                 const char* font_file = open_file_dialog(
                                     (const char*[]){"*.ttf", "*.ttc", "*.otf"}, 3, "Font Files (*.ttf, *.ttc, *.otf)", false,
-                                    "Select Font File", NULL
+                                    "Select Font File", NULL, NULL
                                 );
 
-                                if (font_file) load_ui_font(font_file,"Custom");
+                                const char* result = "No font selected";
+                                if (font_file) result = try_load_ui_font(font_file, "Custom");
+                                if (result) {
+                                    nob_log(NOB_ERROR, "Failed to load font: %s", result);
+                                    snprintf(flash_text, sizeof(flash_text), "Failed to load font: %s", result);
+                                    flash_until = SDL_GetTicks() + 1800;
+                                } else {
+                                    nob_log(NOB_INFO, "Loaded custom font: %s", font_file);
+                                }
                             }
 
                             font_menu_open = false;
@@ -1257,6 +1339,8 @@ int main(int argc, char** argv) {
 
     #if SAVE_FILE
         fill_save_state_from_vr(vr, &save_state, video_file);
+        save_state.recent_files_count = recent_count;
+        memcpy(save_state.recent_files, recent_files, sizeof(char*) * recent_count);
     #endif
     if (vr) vr_free(vr);
     if (ui_font) TTF_CloseFont(ui_font);
