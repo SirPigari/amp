@@ -52,6 +52,28 @@ static void draw_text_shadow(SDL_Renderer* ren, int x, int y, const char* text, 
     draw_text(ren, x, y, text, color);
 }
 
+bool is_valid_utf8(const char* s) {
+    const unsigned char *p = (const unsigned char*)s;
+    while(*p) {
+        if(*p <= 0x7F) { p++; continue; }
+        else if((*p & 0xE0) == 0xC0) {
+            if((p[1] & 0xC0) != 0x80) return false;
+            p += 2;
+        }
+        else if((*p & 0xF0) == 0xE0) {
+            if((p[1] & 0xC0) != 0x80 || (p[2] & 0xC0) != 0x80) return false;
+            p += 3;
+        }
+        else if((*p & 0xF8) == 0xF0) {
+            if((p[1] & 0xC0) != 0x80 || (p[2] & 0xC0) != 0x80 || (p[3] & 0xC0) != 0x80)
+                return false;
+            p += 4;
+        }
+        else return false;
+    }
+    return true;
+}
+
 const char* subtitle_normalize_to_utf8(
     const char* text,
     char* outbuf,
@@ -81,52 +103,82 @@ const char* subtitle_normalize_to_utf8(
         if (detected_encoding) *detected_encoding = "ASCII";
         return text;
     } else {
-        if (detected_encoding) *detected_encoding = "UTF-8 or other";
-        return text;
+        if (is_valid_utf8(text)) {
+            if (detected_encoding) *detected_encoding = "UTF-8";
+            return text;
+        }
+        if (detected_encoding) *detected_encoding = "unknown/legacy";
     }
 
 #ifdef _WIN32
 
-    const uint8_t* data = (const uint8_t*)text;
-    size_t size = strlen(text);
+    if (is_utf16le || is_utf16be) {
+        const uint8_t* data = (const uint8_t*)text;
+        size_t size = strlen(text);
+        size_t wchar_count = size / 2;
+        wchar_t tmp[1024];
+        if (wchar_count >= 1023) wchar_count = 1023;
 
-    size_t wchar_count = size/2;
-    wchar_t tmp[1024];
-    if (wchar_count >= 1023) wchar_count = 1023;
+        for (size_t i = 0; i < wchar_count; i++) {
+            uint16_t v = is_utf16be
+                ? ((uint16_t)data[i*2] << 8) | data[i*2 + 1]
+                : ((uint16_t)data[i*2 + 1] << 8) | data[i*2];
+            tmp[i] = (wchar_t)v;
+        }
+        tmp[wchar_count] = 0;
 
-    for(size_t i = 0; i < wchar_count; i++){
-        uint16_t v = is_utf16be
-            ? ((uint16_t)data[i*2] << 8) | data[i*2+1]
-            : ((uint16_t)data[i*2+1] << 8) | data[i*2];
-        tmp[i] = (wchar_t)v;
+        wchar_t* start = tmp;
+        if (start[0] == 0xFEFF) start++;
+
+        int needed = WideCharToMultiByte(CP_UTF8, 0, start, -1, outbuf, (int)outbuf_size, NULL, NULL);
+        if (needed > 0) return outbuf;
+        return text;
     }
-    tmp[wchar_count] = 0;
 
-    wchar_t* start = tmp;
-    if(start[0] == 0xFEFF) start++;
+    UINT encodings[] = { 1250, 28592, 850 };
+    wchar_t tmpw[1024];
 
-    int needed = WideCharToMultiByte(CP_UTF8, 0, start, -1, outbuf, (int)outbuf_size, NULL, NULL);
-    if(needed > 0) return outbuf;
+    for (int i = 0; i < 3; i++) {
+        int needed = MultiByteToWideChar(encodings[i], 0, text, -1, tmpw, 1024);
+        if (needed > 0) {
+            if (detected_encoding) {
+                if (i == 0) *detected_encoding = "Windows-1250";
+                else if (i == 1) *detected_encoding = "ISO-8859-2";
+                else *detected_encoding = "CP850";
+            }
+
+            int utf8_needed = WideCharToMultiByte(CP_UTF8, 0, tmpw, -1, outbuf, (int)outbuf_size, NULL, NULL);
+            if (utf8_needed > 0) return outbuf;
+        }
+    }
 
     return text;
 
 #else
 
-    iconv_t cd = iconv_open("UTF-8", is_utf16le ? "UTF-16LE" : "UTF-16BE");
-    if(cd == (iconv_t)(-1)) return text;
+    const char* encodings[] = {
+        "UTF-16LE", "UTF-16BE", "WINDOWS-1250", "ISO-8859-2", "CP850"
+    };
 
-    char* inbuf = (char*)text;
-    size_t inbytes = strlen(text);
-    char* out = outbuf;
-    size_t outbytes = outbuf_size - 1;
+    for(int i=0;i<5;i++){
+        iconv_t cd = iconv_open("UTF-8", encodings[i]);
+        if(cd == (iconv_t)(-1)) continue;
 
-    if(iconv(cd, &inbuf, &inbytes, &out, &outbytes) != (size_t)(-1)) {
-        *out = 0;
+        char* inbuf = (char*)text;
+        size_t inbytes = strlen(text);
+        char* out = outbuf;
+        size_t outbytes = outbuf_size - 1;
+
+        if(iconv(cd, &inbuf, &inbytes, &out, &outbytes) != (size_t)(-1)) {
+            *out = 0;
+            if(detected_encoding) *detected_encoding = encodings[i];
+            iconv_close(cd);
+            return outbuf;
+        }
+
         iconv_close(cd);
-        return outbuf;
     }
 
-    iconv_close(cd);
     return text;
 
 #endif

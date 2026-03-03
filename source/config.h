@@ -49,8 +49,8 @@
 #else
 
 #define PLATFORM_FONTS \
-    { "DejaVu Sans", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" }, \
-    { "DejaVu Mono", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf" }
+    { "DejaVu Sans", "/usr/share/fonts/TTF/DejaVuSans.ttf" }, \
+    { "DejaVu Mono", "/usr/share/fonts/TTF/DejaVuSansMono.ttf" }
 
 #endif
 

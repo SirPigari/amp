@@ -97,6 +97,11 @@ typedef struct {
     double frame_history[32];
     int frame_history_size;
     int frame_history_pos;
+
+    char subtitle_override_font[128];
+    uint32_t subtitle_override_color_rgb;
+    int subtitle_override_size;
+    int subtitle_override_margin_bottom;
 } VideoRenderer;
 
 static void pkt_queue_init(PacketQueue* q, int capacity) {
@@ -331,6 +336,78 @@ static void vr_add_track(VideoRenderer* vr, int is_audio, int stream_index, cons
     }
 }
 
+static int vr_subtitle_style_mode(VideoRenderer* vr) {
+    if (!vr || vr->current_subtitle < 0 || vr->subtitle_stream_index < 0 || !vr->fmt_ctx) return 0;
+    enum AVCodecID codec_id = vr->fmt_ctx->streams[vr->subtitle_stream_index]->codecpar->codec_id;
+    if (codec_id == AV_CODEC_ID_ASS || codec_id == AV_CODEC_ID_SSA) return 2;
+    return 1;
+}
+
+static void subtitle_build_override_tags(VideoRenderer* vr, char* out, size_t out_size, int include_position) {
+    if (!vr || !out || out_size == 0) return;
+    int y = vr->height - vr->subtitle_override_margin_bottom;
+    if (y < 0) y = 0;
+    unsigned r = (vr->subtitle_override_color_rgb >> 16) & 0xFF;
+    unsigned g = (vr->subtitle_override_color_rgb >> 8) & 0xFF;
+    unsigned b = vr->subtitle_override_color_rgb & 0xFF;
+
+    if (include_position) {
+        snprintf(out, out_size,
+                 "{\\fn%s\\fs%d\\1c&H%02X%02X%02X&\\an2\\pos(%d,%d)}",
+                 vr->subtitle_override_font,
+                 vr->subtitle_override_size,
+                 b, g, r,
+                 vr->width / 2,
+                 y);
+    } else {
+        snprintf(out, out_size,
+                 "{\\fn%s\\fs%d\\1c&H%02X%02X%02X&}",
+                 vr->subtitle_override_font,
+                 vr->subtitle_override_size,
+                 b, g, r);
+    }
+}
+
+static void subtitle_inject_tags_into_dialogue(const char* ass_line, const char* tags, char* out, size_t out_size) {
+    if (!ass_line || !tags || !out || out_size == 0) return;
+
+    const char* dialogue = strstr(ass_line, "Dialogue:");
+    if (!dialogue) {
+        snprintf(out, out_size, "%s", ass_line);
+        return;
+    }
+
+    const char* colon = strchr(dialogue, ':');
+    if (!colon) {
+        snprintf(out, out_size, "%s", ass_line);
+        return;
+    }
+
+    const char* text_start = colon + 1;
+    int commas = 0;
+    while (*text_start && commas < 9) {
+        if (*text_start == ',') commas++;
+        text_start++;
+    }
+
+    if (commas < 9) {
+        snprintf(out, out_size, "%s", ass_line);
+        return;
+    }
+
+    const char* text_insert = text_start;
+    while (*text_insert == ' ' || *text_insert == '\t') text_insert++;
+    while (*text_insert == '{') {
+        const char* close = strchr(text_insert, '}');
+        if (!close) break;
+        text_insert = close + 1;
+        while (*text_insert == ' ' || *text_insert == '\t') text_insert++;
+    }
+
+    int head_len = (int)(text_insert - ass_line);
+    snprintf(out, out_size, "%.*s%s%s", head_len, ass_line, tags, text_insert);
+}
+
 static void vr_queue_audio(VideoRenderer* vr, AVFrame* frame) {
     if (!vr || !vr->audio_dev || !vr->swr_ctx) return;
     int out_samples = (int)av_rescale_rnd(
@@ -398,27 +475,45 @@ static void vr_process_subtitle(VideoRenderer* vr, const AVPacket* pkt) {
     int ret = avcodec_decode_subtitle2(vr->subtitle_ctx, &sub, &got, (AVPacket*)pkt);
     if (ret < 0 || !got) return;
 
-    int64_t start_ms;
+    int64_t pts_ms = AV_NOPTS_VALUE;
     if (sub.pts != AV_NOPTS_VALUE) {
-        start_ms = av_rescale_q(sub.pts, AV_TIME_BASE_Q, (AVRational){1, 1000});
-        start_ms += (int64_t)sub.start_display_time;
+        pts_ms = av_rescale_q(sub.pts, AV_TIME_BASE_Q, (AVRational){1, 1000});
     } else if (pkt->pts != AV_NOPTS_VALUE) {
         AVRational tb = vr->fmt_ctx->streams[pkt->stream_index]->time_base;
-        start_ms = av_rescale_q(pkt->pts, tb, (AVRational){1, 1000});
-        start_ms += (int64_t)sub.start_display_time;
-    } else {
+        pts_ms = av_rescale_q(pkt->pts, tb, (AVRational){1, 1000});
+    }
+
+    if (pts_ms == AV_NOPTS_VALUE) {
         avsubtitle_free(&sub);
         return;
     }
 
+    int64_t start_ms = pts_ms + (int64_t)sub.start_display_time;
+    if (start_ms < 0) start_ms = 0;
+
     int64_t duration_ms = (int64_t)sub.end_display_time - (int64_t)sub.start_display_time;
-    if (duration_ms <= 0) duration_ms = 5000;
+    if (duration_ms <= 0 && pkt->duration > 0) {
+        AVRational tb = vr->fmt_ctx->streams[pkt->stream_index]->time_base;
+        duration_ms = av_rescale_q(pkt->duration, tb, (AVRational){1, 1000});
+    }
+    if (duration_ms <= 0) duration_ms = 2000;
+
+    int subtitle_mode = vr_subtitle_style_mode(vr);
 
     for (unsigned i = 0; i < sub.num_rects; i++) {
         AVSubtitleRect* r = sub.rects[i];
         if (r->ass && r->ass[0]) {
-            ass_process_chunk(vr->ass_track, r->ass, (int)strlen(r->ass),
-                              start_ms, duration_ms);
+            if (subtitle_mode == 2) {
+                ass_process_chunk(vr->ass_track, r->ass, (int)strlen(r->ass),
+                                  start_ms, duration_ms);
+            } else {
+                char tags[320];
+                subtitle_build_override_tags(vr, tags, sizeof(tags), 1);
+                char overridden[8192];
+                subtitle_inject_tags_into_dialogue(r->ass, tags, overridden, sizeof(overridden));
+                ass_process_chunk(vr->ass_track, overridden, (int)strlen(overridden),
+                                  start_ms, duration_ms);
+            }
         } else if (r->text && r->text[0]) {
             char utf8_buf[2048];
             const char* encoding = "unknown";
@@ -432,9 +527,13 @@ static void vr_process_subtitle(VideoRenderer* vr, const AVPacket* pkt) {
                 src++;
             }
             *dst = '\0';
-            char buf[4500]; /* warning: '%s' directive output may be truncated writing up to 4095 bytes into a region of size 4046 */
+
+            char tags[320];
+            subtitle_build_override_tags(vr, tags, sizeof(tags), 1);
+
+            char buf[8192];
             snprintf(buf, sizeof(buf),
-                "Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,%s", escaped);
+                "0,0,Default,,0,0,0,,%s%s", tags, escaped);
             ass_process_chunk(vr->ass_track, buf, (int)strlen(buf),
                               start_ms, duration_ms);
         }
@@ -469,6 +568,10 @@ VideoRenderer* vr_create(SDL_Window* window, SDL_Renderer* renderer) {
     vr->frame_history_size = 0;
     vr->frame_history_pos = 0;
     memset(vr->frame_history, 0, sizeof(vr->frame_history));
+    snprintf(vr->subtitle_override_font, sizeof(vr->subtitle_override_font), "%s", "Arial");
+    vr->subtitle_override_color_rgb = 0xFFFFFF;
+    vr->subtitle_override_size = 30;
+    vr->subtitle_override_margin_bottom = 64;
     return vr;
 }
 
@@ -917,9 +1020,13 @@ void vr_next_frame(VideoRenderer* vr, int count) {
 
     for (int i = 0; i < n; i++) {
         if (step > 0) {
-            vr_demux_packets(vr);
-            vr_decode_audio(vr);
-            vr_render_frame(vr);
+            int rendered = 0;
+            int tries = 0;
+            while (!rendered && tries < 32) {
+                vr_demux_packets(vr);
+                rendered = vr_render_frame(vr);
+                tries++;
+            }
         } else {
             int prev_pos = vr->frame_history_pos - 1;
             if (prev_pos < 0) prev_pos = 0;
@@ -931,12 +1038,20 @@ void vr_next_frame(VideoRenderer* vr, int count) {
             int tries = 0;
             while (!rendered && tries < 32) {
                 vr_demux_packets(vr);
-                vr_decode_audio(vr);
                 rendered = vr_render_frame(vr);
                 tries++;
             }
             vr->frame_history_pos = prev_pos;
         }
+
+        vr->last_time = vr->current_time;
+        vr->clock_start_time = vr->current_time;
+        vr->clock_start_ticks = SDL_GetTicks();
+        vr->clock_pause_accum = 0;
+        if (vr->clock_paused) {
+            vr->clock_pause_ticks = vr->clock_start_ticks;
+        }
+        vr_resync_audio(vr, vr->current_time);
     }
 }
 
@@ -959,6 +1074,21 @@ void vr_set_volume(VideoRenderer* vr, float volume) {
     if (volume > 2.0f) volume = 2.0f;
     vr->audio_volume = volume;
     if (vr->audio_dev) SDL_ClearQueuedAudio(vr->audio_dev);
+}
+
+void vr_set_subtitle_style_override(VideoRenderer* vr, uint32_t color_rgb, int size, int margin_bottom) {
+    if (!vr) return;
+    vr->subtitle_override_color_rgb = color_rgb & 0xFFFFFF;
+    if (size < 8) size = 8;
+    if (size > 96) size = 96;
+    if (margin_bottom < 0) margin_bottom = 0;
+    if (margin_bottom > 1000) margin_bottom = 1000;
+    vr->subtitle_override_size = size;
+    vr->subtitle_override_margin_bottom = margin_bottom;
+}
+
+int vr_get_subtitle_style_mode(VideoRenderer* vr) {
+    return vr_subtitle_style_mode(vr);
 }
 
 float vr_get_volume(VideoRenderer* vr) {
