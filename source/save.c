@@ -65,8 +65,11 @@ static int write_save_state(const char* path, SaveState* state) {
     uint64_t font_len = state->font_settings.font_path ? strlen(state->font_settings.font_path) : 0;
     total += sizeof(font_len) + font_len;
 
-    total += sizeof(state->recent_files_count);
-    for (uint64_t i = 0; i < state->recent_files_count; i++)
+    uint64_t recent_count = state->recent_files_count;
+    if (recent_count > MAX_RECENT) recent_count = MAX_RECENT;
+
+    total += sizeof(recent_count);
+    for (uint64_t i = 0; i < recent_count; i++)
         total += sizeof(uint64_t) + (state->recent_files[i] ? strlen(state->recent_files[i]) : 0);
 
     total += sizeof(state->remembered_count);
@@ -93,8 +96,8 @@ static int write_save_state(const char* path, SaveState* state) {
     memcpy(ptr, &font_len, sizeof(font_len)); ptr += sizeof(font_len);
     if (font_len) { memcpy(ptr, state->font_settings.font_path, font_len); ptr += font_len; }
 
-    memcpy(ptr, &state->recent_files_count, sizeof(state->recent_files_count)); ptr += sizeof(state->recent_files_count);
-    for (uint64_t i = 0; i < state->recent_files_count; i++) {
+    memcpy(ptr, &recent_count, sizeof(recent_count)); ptr += sizeof(recent_count);
+    for (uint64_t i = 0; i < recent_count; i++) {
         uint64_t len = state->recent_files[i] ? strlen(state->recent_files[i]) : 0;
         memcpy(ptr, &len, sizeof(len)); ptr += sizeof(len);
         if (len) { memcpy(ptr, state->recent_files[i], len); ptr += len; }
@@ -158,16 +161,22 @@ static int load_save_state(const char* path, SaveState* s) {
         ptr += font_len;
     } else s->font_settings.font_path = NULL;
 
-    memcpy(&s->recent_files_count, ptr, sizeof(s->recent_files_count)); ptr += sizeof(s->recent_files_count);
-    for (uint64_t i = 0; i < s->recent_files_count; i++) {
+    uint64_t loaded_recent_count = 0;
+    memcpy(&loaded_recent_count, ptr, sizeof(loaded_recent_count)); ptr += sizeof(loaded_recent_count);
+    s->recent_files_count = loaded_recent_count > MAX_RECENT ? MAX_RECENT : loaded_recent_count;
+    for (uint64_t i = 0; i < loaded_recent_count; i++) {
         uint64_t len;
         memcpy(&len, ptr, sizeof(len)); ptr += sizeof(len);
         if (len) {
-            s->recent_files[i] = malloc(len + 1);
-            memcpy(s->recent_files[i], ptr, len);
-            s->recent_files[i][len] = 0;
+            if (i < MAX_RECENT) {
+                s->recent_files[i] = malloc(len + 1);
+                memcpy(s->recent_files[i], ptr, len);
+                s->recent_files[i][len] = 0;
+            }
             ptr += len;
-        } else s->recent_files[i] = NULL;
+        } else if (i < MAX_RECENT) {
+            s->recent_files[i] = NULL;
+        }
     }
 
     memcpy(&s->remembered_count, ptr, sizeof(s->remembered_count)); ptr += sizeof(s->remembered_count);
@@ -284,12 +293,22 @@ static void apply_save_state_to_vr(VideoRenderer* vr, SaveState* state, const ch
 
 static void free_save_state(SaveState* state) {
     if (!state) return;
+    for (uint64_t i = 0; i < state->recent_files_count && i < MAX_RECENT; i++) {
+        if (state->recent_files[i]) free(state->recent_files[i]);
+        state->recent_files[i] = NULL;
+    }
+    state->recent_files_count = 0;
+
     for (uint64_t i = 0; i < state->remembered_count; i++) {
         if (state->remembered_files[i].video_path) free(state->remembered_files[i].video_path);
     }
     if (state->remembered_files) free(state->remembered_files);
     state->remembered_files = NULL;
     state->remembered_count = 0;
+    if (state->font_settings.font_path) {
+        free(state->font_settings.font_path);
+        state->font_settings.font_path = NULL;
+    }
     return;
 }
 

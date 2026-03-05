@@ -32,6 +32,9 @@
 /* Timeline dimensions */
 #define TIMELINE_HEIGHT 6
 #define TIMELINE_HITBOX_PADDING 12
+#define TIMELINE_THUMB_SIZE 12
+#define TIMELINE_CHAPTER_MARKER_WIDTH 4
+#define TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH 6
 
 /* Platform-specific fonts */
 #ifdef _WIN32

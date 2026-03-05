@@ -19,6 +19,11 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 #ifndef _WIN32
 #include <strings.h>
 #include <dirent.h>
@@ -122,6 +127,90 @@ static void format_time(double seconds, char* out, size_t out_size) {
     int sec = s % 60;
     if (h > 0) snprintf(out, out_size, "%d:%02d:%02d", h, m, sec);
     else snprintf(out, out_size, "%d:%02d", m, sec);
+}
+
+static void sanitize_recent_files(void);
+
+static const char* get_media_title(VideoRenderer* vr) {
+    if (!vr || !vr->fmt_ctx) return NULL;
+    AVDictionaryEntry* entry = av_dict_get(vr->fmt_ctx->metadata, "title", NULL, 0);
+    if (!entry || !entry->value || !entry->value[0]) return NULL;
+    return entry->value;
+}
+
+static int get_media_chapter_count(VideoRenderer* vr) {
+    if (!vr || !vr->fmt_ctx || vr->fmt_ctx->nb_chapters <= 0) return 0;
+    return (int)vr->fmt_ctx->nb_chapters;
+}
+
+static double get_media_chapter_time(VideoRenderer* vr, int chapter_index) {
+    if (!vr || !vr->fmt_ctx) return -1.0;
+    if (chapter_index < 0 || chapter_index >= (int)vr->fmt_ctx->nb_chapters) return -1.0;
+    AVChapter* ch = vr->fmt_ctx->chapters[chapter_index];
+    if (!ch) return -1.0;
+    return (double)ch->start * av_q2d(ch->time_base);
+}
+
+static void get_media_chapter_label(VideoRenderer* vr, int chapter_index, char* out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!vr || !vr->fmt_ctx || chapter_index < 0 || chapter_index >= (int)vr->fmt_ctx->nb_chapters) {
+        snprintf(out, out_size, "Chapter %d", chapter_index + 1);
+        return;
+    }
+    AVChapter* ch = vr->fmt_ctx->chapters[chapter_index];
+    AVDictionaryEntry* entry = ch ? av_dict_get(ch->metadata, "title", NULL, 0) : NULL;
+    if (entry && entry->value && entry->value[0]) {
+        snprintf(out, out_size, "%s", entry->value);
+    } else {
+        snprintf(out, out_size, "Chapter %d", chapter_index + 1);
+    }
+}
+
+static int find_nearest_chapter(
+    VideoRenderer* vr,
+    double duration,
+    SDL_Rect timeline,
+    int mouse_x,
+    int threshold_px,
+    int* out_index,
+    double* out_time
+) {
+    if (!vr || duration <= 0.0 || timeline.w <= 0) return 0;
+    int chapter_count = get_media_chapter_count(vr);
+    if (chapter_count <= 0) return 0;
+
+    int best_idx = -1;
+    int best_dist = threshold_px + 1;
+    double best_time = 0.0;
+    for (int i = 0; i < chapter_count; i++) {
+        double t = get_media_chapter_time(vr, i);
+        if (t < 0.0 || t > duration) continue;
+        int cx = timeline.x + (int)((t / duration) * timeline.w);
+        int dist = abs(mouse_x - cx);
+        if (dist <= threshold_px && dist < best_dist) {
+            best_dist = dist;
+            best_idx = i;
+            best_time = t;
+        }
+    }
+
+    if (best_idx < 0) return 0;
+    if (out_index) *out_index = best_idx;
+    if (out_time) *out_time = best_time;
+    return 1;
+}
+
+static void set_window_title_for_media(SDL_Window* win, VideoRenderer* vr, const char* path) {
+    if (!win || !path) return;
+    const char* title = get_media_title(vr);
+    if (title && title[0]) {
+        char buf[4096];
+        snprintf(buf, sizeof(buf), "%s - %s", title, path);
+        SDL_SetWindowTitle(win, buf);
+    } else {
+        SDL_SetWindowTitle(win, path);
+    }
 }
 
 static int parse_resolution_arg(const char* arg, int* out_w, int* out_h) {
@@ -280,13 +369,19 @@ void amp_log_handler(Nob_Log_Level level, const char* fmt, va_list args) {
         case NOB_NO_LOGS: return;
     }
 
+    va_list args_print;
+    va_copy(args_print, args);
     fprintf(stderr, "[%s] [%s] ", timebuf, level_str);
-    vfprintf(stderr, fmt, args);
+    vfprintf(stderr, fmt, args_print);
+    va_end(args_print);
     fprintf(stderr, "\n");
 
     if (flash_debug_enabled && level == (Nob_Log_Level)flash_debug_level) {
         char flash_buf[256];
-        vsnprintf(flash_buf, sizeof(flash_buf), fmt, args);
+        va_list args_flash;
+        va_copy(args_flash, args);
+        vsnprintf(flash_buf, sizeof(flash_buf), fmt, args_flash);
+        va_end(args_flash);
         snprintf(flash_text, sizeof(flash_text), "%s", flash_buf);
         flash_until = SDL_GetTicks() + 1200;
         flash_alpha = 1.0f;
@@ -333,6 +428,8 @@ void add_recent_file(const char* file) {
             break;
         }
     }
+
+    sanitize_recent_files();
 }
 
 char* get_absolute_path(const char* path) {
@@ -375,6 +472,45 @@ static int path_equals(const char* a, const char* b) {
 #else
     return strcmp(a, b) == 0;
 #endif
+}
+
+static int recent_path_exists(const char* path) {
+    if (!path || !path[0]) return 0;
+#ifdef _WIN32
+    return _access(path, 0) == 0;
+#else
+    return access(path, F_OK) == 0;
+#endif
+}
+
+static void sanitize_recent_files(void) {
+    int write_idx = 0;
+    for (int i = 0; i < recent_count && i < MAX_RECENT; i++) {
+        char* path = recent_files[i];
+        if (!path || !path[0] || !is_supported_video_file(path) || !recent_path_exists(path)) {
+            if (path) free(path);
+            recent_files[i] = NULL;
+            continue;
+        }
+
+        int duplicate = 0;
+        for (int j = 0; j < write_idx; j++) {
+            if (path_equals(recent_files[j], path)) {
+                duplicate = 1;
+                break;
+            }
+        }
+        if (duplicate) {
+            free(path);
+            recent_files[i] = NULL;
+            continue;
+        }
+
+        recent_files[write_idx++] = path;
+    }
+
+    for (int i = write_idx; i < MAX_RECENT; i++) recent_files[i] = NULL;
+    recent_count = write_idx;
 }
 
 static int path_name_cmp(const void* lhs, const void* rhs) {
@@ -528,7 +664,7 @@ static int load_media_file(
     vr_set_volume(*vr, volume_percent_to_gain(volume_percent));
     apply_subtitle_override(*vr, subtitle_color, subtitle_size, subtitle_margin);
     apply_window_size_for_video(win, vr_get_texture(*vr), requested_window_w, requested_window_h);
-    SDL_SetWindowTitle(win, abs_path);
+    set_window_title_for_media(win, *vr, abs_path);
     add_recent_file(abs_path);
 
     if (*video_file) free(*video_file);
@@ -1114,7 +1250,7 @@ int main(int argc, char** argv) {
                 subtitle_override_margins[subtitle_move_idx]
             );
             apply_window_size_for_video(win, vr_get_texture(vr), requested_window_w, requested_window_h);
-            SDL_SetWindowTitle(win, video_file);
+            set_window_title_for_media(win, vr, video_file);
             nob_log(NOB_INFO, "Loaded %s", video_file);
         }
     }
@@ -1126,8 +1262,10 @@ int main(int argc, char** argv) {
         } else {
             nob_log(NOB_INFO, "Save file loaded successfully");
             apply_save_state_to_vr(vr, &save_state, video_file);
-            memcpy(recent_files, save_state.recent_files, sizeof(char*) * MAX_RECENT);
-            recent_count = save_state.recent_files_count;
+            recent_count = (int)(save_state.recent_files_count > MAX_RECENT ? MAX_RECENT : save_state.recent_files_count);
+            for (int i = 0; i < recent_count; i++) {
+                recent_files[i] = save_state.recent_files[i] ? strdup(save_state.recent_files[i]) : NULL;
+            }
         }
     #endif
 
@@ -1227,7 +1365,7 @@ int main(int argc, char** argv) {
                                     );
                                     apply_window_size_for_video(win, vr_get_texture(vr), requested_window_w, requested_window_h);
                                     add_recent_file(f);
-                                    SDL_SetWindowTitle(win, f);
+                                    set_window_title_for_media(win, vr, f);
                                     nob_log(NOB_INFO, "Loaded %s", f);
                                     history_push(playback_history, &history_count, &history_pos, f, vr_get_time(vr));
                                 } else {
@@ -1240,7 +1378,13 @@ int main(int argc, char** argv) {
                         } else if(id >= MENU_RECENT_BASE && id < MENU_RECENT_BASE+MAX_RECENT) {
                             int idx = id - MENU_RECENT_BASE;
                             if(idx < recent_count) {
-                                strcpy(video_file, recent_files[idx]);
+                                char* selected_recent = get_absolute_path(recent_files[idx]);
+                                if (!selected_recent) {
+                                    nob_log(NOB_ERROR, "Failed to resolve recent file path: %s", recent_files[idx]);
+                                    continue;
+                                }
+                                if (video_file) free(video_file);
+                                video_file = selected_recent;
                                 if(!vr) vr = vr_create(win, ren);
                                 if(vr_load(vr, video_file)) {
                                     fill_save_state_from_vr(vr, &save_state, video_file);
@@ -1253,7 +1397,7 @@ int main(int argc, char** argv) {
                                     );
                                     apply_window_size_for_video(win, vr_get_texture(vr), requested_window_w, requested_window_h);
                                     add_recent_file(video_file);
-                                    SDL_SetWindowTitle(win, video_file);
+                                    set_window_title_for_media(win, vr, video_file);
                                     nob_log(NOB_INFO, "Loaded %s", video_file);
                                     history_push(playback_history, &history_count, &history_pos, video_file, vr_get_time(vr));
                                 } else {
@@ -1485,7 +1629,7 @@ int main(int argc, char** argv) {
                             );
                             apply_window_size_for_video(win, vr_get_texture(vr), requested_window_w, requested_window_h);
                             add_recent_file(f);
-                            SDL_SetWindowTitle(win, f);
+                            set_window_title_for_media(win, vr, f);
                             nob_log(NOB_INFO, "Loaded %s", f);
                             history_push(playback_history, &history_count, &history_pos, f, vr_get_time(vr));
                         } else {
@@ -2044,10 +2188,26 @@ int main(int argc, char** argv) {
                     if (point_in_rect(mx, my, timeline_hitbox)) {
                         double dur = vr ? vr_get_duration(vr) : 0.0;
                         if (dur > 0.0 && vr) {
+                            int chapter_idx = -1;
+                            double chapter_time = 0.0;
+                            if (find_nearest_chapter(vr, dur, timeline_rect, mx, 6, &chapter_idx, &chapter_time)) {
+                                seek_and_preview_if_paused(vr, chapter_time, paused);
+                                if (video_file) {
+                                    history_push(playback_history, &history_count, &history_pos, video_file, chapter_time);
+                                }
+                                char chapter_name[160];
+                                char chapter_ts[32];
+                                get_media_chapter_label(vr, chapter_idx, chapter_name, sizeof(chapter_name));
+                                format_time(chapter_time, chapter_ts, sizeof(chapter_ts));
+                                snprintf(flash_text, sizeof(flash_text), "%s (%s)", chapter_name, chapter_ts);
+                                flash_until = SDL_GetTicks() + 900;
+                                click_processed = true;
+                            } else {
                             double t = (double)(mx - timeline_rect.x) / (double)timeline_rect.w;
                             t = clampf((float)t, 0.0f, 1.0f);
                             drag_time = t * dur;
                             dragging_timeline = true;
+                            }
                         }
                         click_processed = true;
                     } else if (point_in_rect(mx, my, volume_rect)) {
@@ -2148,10 +2308,57 @@ int main(int argc, char** argv) {
             SDL_Rect base = timeline_rect;
             base.h = 6;
             draw_rect(ren, base, (SDL_Color){ 70, 70, 80, (Uint8)(180 * overlay_alpha) });
+            if (vr && dur > 0.0) {
+                int chapter_count = get_media_chapter_count(vr);
+                for (int i = 0; i < chapter_count; i++) {
+                    double chapter_time = get_media_chapter_time(vr, i);
+                    if (chapter_time < 0.0 || chapter_time > dur) continue;
+                    int chapter_x = base.x + (int)((chapter_time / dur) * base.w);
+                    SDL_Rect chapter_line = { chapter_x, base.y, TIMELINE_CHAPTER_MARKER_WIDTH, base.h };
+                    draw_rect(ren, chapter_line, (SDL_Color){ 200, 200, 210, (Uint8)(190 * overlay_alpha) });
+                }
+            }
             SDL_Rect fill = { base.x, base.y, (int)(base.w * t), base.h };
             draw_rect(ren, fill, accent);
-            SDL_Rect handle = { base.x + (int)(base.w * t) - 6, base.y - 4, 12, 12 };
+            SDL_Rect handle = { base.x + (int)(base.w * t) - TIMELINE_THUMB_SIZE / 2, base.y - TIMELINE_THUMB_SIZE / 2, TIMELINE_THUMB_SIZE, TIMELINE_THUMB_SIZE };
             draw_rect(ren, handle, (SDL_Color){ 220, 220, 230, (Uint8)(220 * overlay_alpha) });
+
+            if (vr) {
+                const char* media_title = get_media_title(vr);
+                if (!media_title) media_title = "";
+                draw_text_shadow(ren, margin, base.y - 45, media_title, (SDL_Color){ 220, 220, 230, (Uint8)(220 * overlay_alpha) });
+            }
+
+            if (vr && dur > 0.0) {
+                int mouse_x = 0;
+                int mouse_y = 0;
+                SDL_GetMouseState(&mouse_x, &mouse_y);
+                if (point_in_rect(mouse_x, mouse_y, timeline_hitbox)) {
+                    int chapter_idx = -1;
+                    double chapter_time = 0.0;
+                    if (find_nearest_chapter(vr, dur, timeline_rect, mouse_x, TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH, &chapter_idx, &chapter_time)) {
+                        char chapter_name[160];
+                        char chapter_ts[32];
+                        char hover_text[224];
+                        get_media_chapter_label(vr, chapter_idx, chapter_name, sizeof(chapter_name));
+                        format_time(chapter_time, chapter_ts, sizeof(chapter_ts));
+                        snprintf(hover_text, sizeof(hover_text), "%s (%s)", chapter_name, chapter_ts);
+
+                        int hover_w = 0;
+                        int hover_h = 0;
+                        TTF_SizeUTF8(ui_font, hover_text, &hover_w, &hover_h);
+                        int hover_x = mouse_x + 10;
+                        int hover_y = base.y - hover_h - 14;
+                        if (hover_x + hover_w + 8 > w) hover_x = w - hover_w - 8;
+                        if (hover_x < margin) hover_x = margin;
+                        if (hover_y < margin) hover_y = margin;
+
+                        SDL_Rect hover_bg = { hover_x - 4, hover_y - 2, hover_w + 8, hover_h + 4 };
+                        draw_rect(ren, hover_bg, (SDL_Color){ 22, 22, 28, (Uint8)(220 * overlay_alpha) });
+                        draw_text_shadow(ren, hover_x, hover_y, hover_text, text);
+                    }
+                }
+            }
 
             char left_time[32];
             char right_time[32];
@@ -2420,8 +2627,16 @@ int main(int argc, char** argv) {
 
     #if SAVE_FILE
         fill_save_state_from_vr(vr, &save_state, video_file);
+        for (uint64_t i = 0; i < save_state.recent_files_count && i < MAX_RECENT; i++) {
+            if (save_state.recent_files[i]) {
+                free(save_state.recent_files[i]);
+                save_state.recent_files[i] = NULL;
+            }
+        }
         save_state.recent_files_count = recent_count;
-        memcpy(save_state.recent_files, recent_files, sizeof(char*) * recent_count);
+        for (int i = 0; i < recent_count && i < MAX_RECENT; i++) {
+            save_state.recent_files[i] = recent_files[i] ? strdup(recent_files[i]) : NULL;
+        }
     #endif
     if (vr) vr_free(vr);
     history_clear_from(playback_history, &history_count, 0);
