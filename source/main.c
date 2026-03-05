@@ -702,6 +702,112 @@ static int navigate_media(
 }
 
 #ifdef _WIN32
+static WNDPROC g_prev_menu_wndproc = NULL;
+static VideoRenderer** g_menu_vr_ptr = NULL;
+static SDL_Window* g_menu_win = NULL;
+static SDL_Renderer* g_menu_ren = NULL;
+static bool* g_menu_paused_ptr = NULL;
+static float* g_menu_playback_speed_ptr = NULL;
+
+static void run_playback_tick(VideoRenderer* vr, float playback_speed);
+
+static void menu_pump_playback_tick(void) {
+    if (!g_menu_vr_ptr || !*g_menu_vr_ptr || !g_menu_win || !g_menu_ren || !g_menu_paused_ptr || !g_menu_playback_speed_ptr) return;
+
+    VideoRenderer* vr = *g_menu_vr_ptr;
+    if (*g_menu_paused_ptr) return;
+
+    run_playback_tick(vr, *g_menu_playback_speed_ptr);
+
+    SDL_SetRenderDrawColor(g_menu_ren, 0, 0, 0, 255);
+    SDL_RenderClear(g_menu_ren);
+
+    SDL_Texture* tex = vr_get_texture(vr);
+    int window_w = 0;
+    int window_h = 0;
+    SDL_GetWindowSize(g_menu_win, &window_w, &window_h);
+    SDL_Rect video_dst = {0, 0, window_w, window_h};
+    if (tex) {
+        int src_w = 0;
+        int src_h = 0;
+        SDL_QueryTexture(tex, NULL, NULL, &src_w, &src_h);
+        video_dst = compute_video_dst_rect(window_w, window_h, src_w, src_h);
+        SDL_RenderCopy(g_menu_ren, tex, NULL, &video_dst);
+    }
+
+    if (vr_render_subtitles(vr, vr_get_time(vr))) {
+        SDL_Texture* sub = vr_get_subtitle_texture(vr);
+        if (sub) SDL_RenderCopy(g_menu_ren, sub, NULL, &video_dst);
+    }
+
+    SDL_RenderPresent(g_menu_ren);
+}
+
+static void run_playback_tick(VideoRenderer* vr, float playback_speed) {
+    if (!vr) return;
+
+    vr_demux_packets(vr);
+    if (playback_speed <= 2.0f) {
+        vr_decode_audio(vr);
+    }
+    vr_render_frame(vr);
+
+    if (vr->audio_dev && playback_speed <= 2.0f) {
+        double video_time = vr_get_video_time(vr);
+        double audio_time = vr_get_audio_time(vr);
+        double diff = video_time - audio_time;
+
+        if (diff < -0.05) {
+            int catchup = 0;
+            while (diff < -0.02 && catchup < 8) {
+                if (!vr_render_frame(vr)) break;
+                video_time = vr_get_video_time(vr);
+                audio_time = vr_get_audio_time(vr);
+                diff = video_time - audio_time;
+                catchup++;
+            }
+        } else if (diff > 0.01) {
+            int delay_ms = (int)(diff * 1000.0);
+            if (delay_ms > 120) delay_ms = 120;
+            SDL_Delay(delay_ms);
+        }
+    } else {
+        double master_time = vr_get_master_time(vr);
+        double video_time = vr_get_video_time(vr);
+        int catchup = 0;
+        while (video_time < master_time - 0.001 && catchup < 30) {
+            vr_demux_packets(vr);
+            if (!vr_render_frame(vr)) break;
+            video_time = vr_get_video_time(vr);
+            catchup++;
+        }
+        SDL_Delay(1);
+    }
+}
+
+static LRESULT CALLBACK amp_menu_wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_ENTERMENULOOP:
+            SetTimer(hwnd, 1, 15, NULL);
+            break;
+        case WM_EXITMENULOOP:
+            KillTimer(hwnd, 1);
+            break;
+        case WM_TIMER:
+            if (wParam == 1) {
+                menu_pump_playback_tick();
+                return 0;
+            }
+            break;
+        default:
+            break;
+    }
+    if (g_prev_menu_wndproc) {
+        return CallWindowProc(g_prev_menu_wndproc, hwnd, msg, wParam, lParam);
+    }
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
 enum {
     MENU_OPEN = 1,
     MENU_EXIT,
@@ -1036,6 +1142,14 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
     HMENU win_menu = create_windows_menu(win);
     HWND win_hwnd = get_hwnd(win);
+    if (win_hwnd) {
+        g_menu_vr_ptr = &vr;
+        g_menu_win = win;
+        g_menu_ren = ren;
+        g_menu_paused_ptr = &paused;
+        g_menu_playback_speed_ptr = &playback_speed;
+        g_prev_menu_wndproc = (WNDPROC)SetWindowLongPtr(win_hwnd, GWLP_WNDPROC, (LONG_PTR)amp_menu_wndproc);
+    }
 #endif
 
     SDL_Rect timeline_rect, timeline_hitbox, volume_rect, hamburger, menu_panel, audio_box, subtitle_box, font_box, playback_box, subtitle_settings_box, overlay_rect;
@@ -1994,42 +2108,7 @@ int main(int argc, char** argv) {
 
         if(vr) {
             if (!paused) {
-                vr_demux_packets(vr);
-                if (playback_speed <= 2.0f) {
-                    vr_decode_audio(vr);
-                }
-                vr_render_frame(vr);
-                if (vr->audio_dev && playback_speed <= 2.0f) {
-                    double video_time = vr_get_video_time(vr);
-                    double audio_time = vr_get_audio_time(vr);
-                    double diff = video_time - audio_time;
-
-                    if (diff < -0.05) {
-                        int catchup = 0;
-                        while (diff < -0.02 && catchup < 8) {
-                            if (!vr_render_frame(vr)) break;
-                            video_time = vr_get_video_time(vr);
-                            audio_time = vr_get_audio_time(vr);
-                            diff = video_time - audio_time;
-                            catchup++;
-                        }
-                    } else if (diff > 0.01) {
-                        int delay_ms = (int)(diff * 1000.0);
-                        if (delay_ms > 120) delay_ms = 120;
-                        SDL_Delay(delay_ms);
-                    }
-                } else {
-                    double master_time = vr_get_master_time(vr);
-                    double video_time = vr_get_video_time(vr);
-                    int catchup = 0;
-                    while (video_time < master_time - 0.001 && catchup < 30) {
-                        vr_demux_packets(vr);
-                        if (!vr_render_frame(vr)) break;
-                        video_time = vr_get_video_time(vr);
-                        catchup++;
-                    }
-                    SDL_Delay(1);
-                }
+                run_playback_tick(vr, playback_speed);
             }
             SDL_Texture* tex = vr_get_texture(vr);
             int window_w = 0;
@@ -2349,6 +2428,17 @@ int main(int argc, char** argv) {
     if (ui_font) TTF_CloseFont(ui_font);
     TTF_Quit();
     for (int i = 0; i < recent_count; i++) free(recent_files[i]);
+#ifdef _WIN32
+    if (win_hwnd && g_prev_menu_wndproc) {
+        SetWindowLongPtr(win_hwnd, GWLP_WNDPROC, (LONG_PTR)g_prev_menu_wndproc);
+    }
+    g_prev_menu_wndproc = NULL;
+    g_menu_vr_ptr = NULL;
+    g_menu_win = NULL;
+    g_menu_ren = NULL;
+    g_menu_paused_ptr = NULL;
+    g_menu_playback_speed_ptr = NULL;
+#endif
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     SDL_Quit();
