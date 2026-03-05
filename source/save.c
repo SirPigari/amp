@@ -44,13 +44,50 @@ void hash_file(const char* path, uint8_t out[HASH_SIZE]) {
     FILE* f = fopen(path, "rb");
     if (!f) { perror("fopen"); return; }
 
-    for (int i = 0; i < HASH_SIZE; i++) out[i] = (uint8_t)i;
+    for (int i = 0; i < HASH_SIZE; i++) out[i] = (uint8_t)(i * 131u + 17u);
+
+#ifdef _WIN32
+    _fseeki64(f, 0, SEEK_END);
+    int64_t file_size = _ftelli64(f);
+#else
+    fseeko(f, 0, SEEK_END);
+    int64_t file_size = (int64_t)ftello(f);
+#endif
+
+    if (file_size < 0) file_size = 0;
+
+    for (int i = 0; i < 8; i++) {
+        out[i] ^= (uint8_t)((uint64_t)file_size >> (i * 8));
+    }
+
+    const int64_t chunk_size = 64 * 1024;
+    int64_t offsets[3] = {
+        0,
+        file_size > 0 ? file_size / 2 : 0,
+        file_size > chunk_size ? (file_size - chunk_size) : 0
+    };
 
     uint8_t buf[4096];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
-        for (size_t i = 0; i < n; i++) {
-            out[i % HASH_SIZE] = ((out[i % HASH_SIZE] << 5) | (out[i % HASH_SIZE] >> 3)) ^ buf[i];
+    for (int s = 0; s < 3; s++) {
+        int64_t off = offsets[s];
+        if (off < 0) off = 0;
+#ifdef _WIN32
+        _fseeki64(f, off, SEEK_SET);
+#else
+        fseeko(f, off, SEEK_SET);
+#endif
+
+        int64_t remaining = chunk_size;
+        while (remaining > 0) {
+            size_t to_read = remaining > (int64_t)sizeof(buf) ? sizeof(buf) : (size_t)remaining;
+            size_t n = fread(buf, 1, to_read, f);
+            if (n == 0) break;
+            for (size_t i = 0; i < n; i++) {
+                uint8_t mix = (uint8_t)(buf[i] ^ (uint8_t)(off + (int64_t)i + s * 29));
+                out[(i + (size_t)(s * 37)) % HASH_SIZE] = (uint8_t)((out[(i + (size_t)(s * 37)) % HASH_SIZE] << 5) | (out[(i + (size_t)(s * 37)) % HASH_SIZE] >> 3));
+                out[(i + (size_t)(s * 37)) % HASH_SIZE] ^= mix;
+            }
+            remaining -= (int64_t)n;
         }
     }
 

@@ -130,6 +130,9 @@ static void format_time(double seconds, char* out, size_t out_size) {
 }
 
 static void sanitize_recent_files(void);
+#ifdef _WIN32
+static void refresh_windows_recent_menu(void);
+#endif
 
 static const char* get_media_title(VideoRenderer* vr) {
     if (!vr || !vr->fmt_ctx) return NULL;
@@ -281,13 +284,8 @@ static void apply_window_size_for_video(SDL_Window* win, SDL_Texture* texture, i
 
 static float volume_percent_to_gain(float percent) {
     float db;
-    if (percent <= 100.0f) {
-        float t = percent / 100.0f;
-        db = -50.0f * (1.0f - t);
-    } else {
-        float t = (percent - 100.0f) / 100.0f;
-        db = 12.0f * t;
-    }
+    float t = percent / 100.0f;
+    db = -50.0f * (1.0f - t);
     return powf(10.0f, db / 20.0f);
 }
 
@@ -295,13 +293,8 @@ static float volume_percent_to_gain(float percent) {
 static float gain_to_volume_percent(float gain) {
     if (gain <= 0.0f) return 0.0f;
     float db = 20.0f * log10f(gain);
-    if (db <= 0.0f) {
-        float t = (db + 50.0f) / 50.0f;
-        return clampf(t * 100.0f, 0.0f, 100.0f);
-    } else {
-        float t = db / 12.0f;
-        return clampf(100.0f + t * 100.0f, 100.0f, 200.0f);
-    }
+    float t = (db + 50.0f) / 50.0f;
+    return clampf(t * 100.0f, 0.0f, 200.0f);
 }
 */
 
@@ -430,6 +423,10 @@ void add_recent_file(const char* file) {
     }
 
     sanitize_recent_files();
+
+#ifdef _WIN32
+    refresh_windows_recent_menu();
+#endif
 }
 
 char* get_absolute_path(const char* path) {
@@ -844,6 +841,7 @@ static SDL_Window* g_menu_win = NULL;
 static SDL_Renderer* g_menu_ren = NULL;
 static bool* g_menu_paused_ptr = NULL;
 static float* g_menu_playback_speed_ptr = NULL;
+static HMENU g_current_win_menu = NULL;
 
 static void run_playback_tick(VideoRenderer* vr, float playback_speed);
 
@@ -1035,6 +1033,27 @@ HMENU create_windows_menu(SDL_Window* window) {
     SetMenu(hwnd, hMenu);
     DrawMenuBar(hwnd);
     return hMenu;
+}
+
+static void refresh_windows_recent_menu(void) {
+    if (!g_menu_win) return;
+
+    HWND hwnd = get_hwnd(g_menu_win);
+    if (!hwnd) return;
+
+    HMENU old_menu = g_current_win_menu;
+    HMENU new_menu = create_windows_menu(g_menu_win);
+    if (!new_menu) return;
+
+    if ((SDL_GetWindowFlags(g_menu_win) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0) {
+        SetMenu(hwnd, NULL);
+        DrawMenuBar(hwnd);
+    }
+
+    g_current_win_menu = new_menu;
+    if (old_menu && old_menu != new_menu) {
+        DestroyMenu(old_menu);
+    }
 }
 #endif
 
@@ -1281,6 +1300,7 @@ int main(int argc, char** argv) {
     HMENU win_menu = create_windows_menu(win);
     HWND win_hwnd = get_hwnd(win);
     if (win_hwnd) {
+        g_current_win_menu = win_menu;
         g_menu_vr_ptr = &vr;
         g_menu_win = win;
         g_menu_ren = ren;
@@ -1426,7 +1446,7 @@ int main(int argc, char** argv) {
                             }
 #ifdef _WIN32
                             if (win_hwnd) {
-                                SetMenu(win_hwnd, fullscreen ? NULL : win_menu);
+                                SetMenu(win_hwnd, fullscreen ? NULL : g_current_win_menu);
                                 DrawMenuBar(win_hwnd);
                             }
 #endif
@@ -1447,7 +1467,7 @@ int main(int argc, char** argv) {
                                 fullscreen = false;
                                 SDL_SetWindowFullscreen(win, 0);
                                 if (win_hwnd) {
-                                    SetMenu(win_hwnd, win_menu);
+                                    SetMenu(win_hwnd, g_current_win_menu);
                                     DrawMenuBar(win_hwnd);
                                 }
                             }
@@ -1653,7 +1673,7 @@ int main(int argc, char** argv) {
                     SDL_SetWindowFullscreen(win, fullscreen?SDL_WINDOW_FULLSCREEN_DESKTOP:0);
 #ifdef _WIN32
                     if (win_hwnd) {
-                        SetMenu(win_hwnd, fullscreen ? NULL : win_menu);
+                        SetMenu(win_hwnd, fullscreen ? NULL : g_current_win_menu);
                         DrawMenuBar(win_hwnd);
                     }
 #endif
@@ -1799,7 +1819,7 @@ int main(int argc, char** argv) {
                         SDL_SetWindowFullscreen(win, 0);
 #ifdef _WIN32
                         if (win_hwnd) {
-                            SetMenu(win_hwnd, win_menu);
+                            SetMenu(win_hwnd, g_current_win_menu);
                             DrawMenuBar(win_hwnd);
                         }
 #endif

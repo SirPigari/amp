@@ -581,10 +581,16 @@ int vr_load(VideoRenderer* vr, const char* filename) {
 
     av_log_set_level(AV_LOG_ERROR);
 
-    if (avformat_open_input(&vr->fmt_ctx, filename, NULL, NULL) != 0) {
+    AVDictionary* open_opts = NULL;
+    av_dict_set(&open_opts, "probesize", AMP_FF_PROBE_SIZE, 0);
+    av_dict_set(&open_opts, "analyzeduration", AMP_FF_ANALYZE_DURATION_US, 0);
+
+    if (avformat_open_input(&vr->fmt_ctx, filename, NULL, &open_opts) != 0) {
+        av_dict_free(&open_opts);
         nob_log(NOB_ERROR, "Failed to open video: %s", filename);
         return 0;
     }
+    av_dict_free(&open_opts);
 
     if (avformat_find_stream_info(vr->fmt_ctx, NULL) < 0) {
         nob_log(NOB_ERROR, "Failed to find stream info");
@@ -719,10 +725,26 @@ int vr_load(VideoRenderer* vr, const char* filename) {
 
 static void vr_demux_packets(VideoRenderer* vr) {
     if (!vr || !vr->fmt_ctx) return;
-    int reads = 0;
-    const int max_reads = 32;
 
-    while (reads < max_reads) {
+    if (pkt_queue_is_full(&vr->video_pktq)
+        && (!vr->audio_ctx || pkt_queue_is_full(&vr->audio_pktq))
+        && !vr->pending_valid) {
+        return;
+    }
+
+    int reads = 0;
+    const Uint64 perf_freq = SDL_GetPerformanceFrequency();
+    const Uint64 start_counter = SDL_GetPerformanceCounter();
+
+    while (reads < DEMUX_MAX_READS_PER_TICK) {
+        Uint64 now_counter = SDL_GetPerformanceCounter();
+        double elapsed_ms = perf_freq > 0
+            ? ((double)(now_counter - start_counter) * 1000.0 / (double)perf_freq)
+            : 0.0;
+        if (reads >= DEMUX_MIN_READS_PER_TICK && elapsed_ms >= DEMUX_TIME_BUDGET_MS) {
+            break;
+        }
+
         if (vr->pending_valid) {
             int stream_index = vr->pending_pkt.stream_index;
             if (stream_index == vr->video_stream_index) {
@@ -738,6 +760,7 @@ static void vr_demux_packets(VideoRenderer* vr) {
             }
             av_packet_unref(&vr->pending_pkt);
             vr->pending_valid = 0;
+            reads++;
             continue;
         }
 

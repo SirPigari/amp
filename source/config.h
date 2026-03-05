@@ -36,6 +36,13 @@
 #define TIMELINE_CHAPTER_MARKER_WIDTH 4
 #define TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH 6
 
+/* Demuxer settings */
+#define DEMUX_MAX_READS_PER_TICK 64
+#define DEMUX_MIN_READS_PER_TICK 4
+#define DEMUX_TIME_BUDGET_MS 2.0
+#define AMP_FF_PROBE_SIZE "4M"
+#define AMP_FF_ANALYZE_DURATION_US "1500000"
+
 /* Platform-specific fonts */
 #ifdef _WIN32
 
