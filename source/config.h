@@ -43,6 +43,30 @@
 #define AMP_FF_PROBE_SIZE "4M"
 #define AMP_FF_ANALYZE_DURATION_US "1500000"
 
+/* Colors */
+/*      Format is                 R,   G,   B */
+#define PANEL_COLOR               20,  20,  24
+#define TEXT_COLOR                230, 230, 235
+#define ACCENT_COLOR              68,  160, 255
+#define MUTED_COLOR               120, 120, 130
+#define OVERLAY_COLOR             70,  70,  80
+#define CHAPTER_MARKER_COLOR      200, 200, 210
+#define TIMELINE_THUMB_COLOR      220, 220, 230
+#define MEDIA_TITLE_COLOR         220, 220, 230
+#define CHAPTER_HOVER_BG_COLOR    22,  22,  28
+#define HAMBURGER_BG_COLOR        35,  35,  45
+#define MENU_PANEL_BG_COLOR       28,  28,  36
+#define MENU_PANEL_ITEM_BG_COLOR  35,  35,  45
+#define LIST_BG_COLOR             26,  26,  34
+#define LIST_ITEM_BG_COLOR        40,  80,  120
+#define SCROLLBAR_BG_COLOR        35,  35,  45
+#define SCROLLBAR_THUMB_COLOR     80,  80,  100
+#define SUBTITLE_VLIST_BG_COLOR   22,  22,  30
+#define PAUSED_TEXT_COLOR         240, 240, 245
+#define FLASH_TEXT_COLOR          240, 240, 245
+#define ACOL_TEXT_COLOR           255, 180, 100
+#define ACOL_TEXT_ALPHA           200
+
 /* Platform-specific fonts */
 #ifdef _WIN32
 
@@ -58,6 +82,7 @@
 
 #else
 
+// for arch linux
 #define PLATFORM_FONTS \
     { "DejaVu Sans", "/usr/share/fonts/TTF/DejaVuSans.ttf" }, \
     { "DejaVu Mono", "/usr/share/fonts/TTF/DejaVuSansMono.ttf" }

@@ -2313,10 +2313,10 @@ int main(int argc, char** argv) {
             int w, h;
             SDL_GetWindowSize(win, &w, &h);
 
-            SDL_Color panel = { 20, 20, 24, (Uint8)(200 * overlay_alpha) };
-            SDL_Color text = { 230, 230, 235, (Uint8)(255 * overlay_alpha) };
-            SDL_Color accent = { 68, 160, 255, (Uint8)(230 * overlay_alpha) };
-            SDL_Color muted = { 120, 120, 130, (Uint8)(200 * overlay_alpha) };
+            SDL_Color panel =  { PANEL_COLOR,  (Uint8)(200 * overlay_alpha) };
+            SDL_Color text =   { TEXT_COLOR,   (Uint8)(255 * overlay_alpha) };
+            SDL_Color accent = { ACCENT_COLOR, (Uint8)(230 * overlay_alpha) };
+            SDL_Color muted =  { MUTED_COLOR,  (Uint8)(200 * overlay_alpha) };
 
             draw_rect(ren, overlay_rect, panel);
 
@@ -2327,7 +2327,7 @@ int main(int argc, char** argv) {
 
             SDL_Rect base = timeline_rect;
             base.h = 6;
-            draw_rect(ren, base, (SDL_Color){ 70, 70, 80, (Uint8)(180 * overlay_alpha) });
+            draw_rect(ren, base, (SDL_Color){ OVERLAY_COLOR, (Uint8)(180 * overlay_alpha) });
             if (vr && dur > 0.0) {
                 int chapter_count = get_media_chapter_count(vr);
                 for (int i = 0; i < chapter_count; i++) {
@@ -2335,18 +2335,18 @@ int main(int argc, char** argv) {
                     if (chapter_time < 0.0 || chapter_time > dur) continue;
                     int chapter_x = base.x + (int)((chapter_time / dur) * base.w);
                     SDL_Rect chapter_line = { chapter_x, base.y, TIMELINE_CHAPTER_MARKER_WIDTH, base.h };
-                    draw_rect(ren, chapter_line, (SDL_Color){ 200, 200, 210, (Uint8)(190 * overlay_alpha) });
+                    draw_rect(ren, chapter_line, (SDL_Color){ CHAPTER_MARKER_COLOR, (Uint8)(190 * overlay_alpha) });
                 }
             }
             SDL_Rect fill = { base.x, base.y, (int)(base.w * t), base.h };
             draw_rect(ren, fill, accent);
-            SDL_Rect handle = { base.x + (int)(base.w * t) - TIMELINE_THUMB_SIZE / 2, base.y - TIMELINE_THUMB_SIZE / 2, TIMELINE_THUMB_SIZE, TIMELINE_THUMB_SIZE };
-            draw_rect(ren, handle, (SDL_Color){ 220, 220, 230, (Uint8)(220 * overlay_alpha) });
+            SDL_Rect handle = { base.x + (int)(base.w * t) - TIMELINE_THUMB_SIZE / 2, base.y - TIMELINE_THUMB_SIZE / 3, TIMELINE_THUMB_SIZE, TIMELINE_THUMB_SIZE };
+            draw_rect(ren, handle, (SDL_Color){ TIMELINE_THUMB_COLOR, (Uint8)(220 * overlay_alpha) });
 
             if (vr) {
                 const char* media_title = get_media_title(vr);
                 if (!media_title) media_title = "";
-                draw_text_shadow(ren, margin, base.y - 45, media_title, (SDL_Color){ 220, 220, 230, (Uint8)(220 * overlay_alpha) });
+                draw_text_shadow(ren, margin, base.y - 45, media_title, (SDL_Color){ MEDIA_TITLE_COLOR, (Uint8)(220 * overlay_alpha) });
             }
 
             if (vr && dur > 0.0) {
@@ -2374,7 +2374,7 @@ int main(int argc, char** argv) {
                         if (hover_y < margin) hover_y = margin;
 
                         SDL_Rect hover_bg = { hover_x - 4, hover_y - 2, hover_w + 8, hover_h + 4 };
-                        draw_rect(ren, hover_bg, (SDL_Color){ 22, 22, 28, (Uint8)(220 * overlay_alpha) });
+                        draw_rect(ren, hover_bg, (SDL_Color){ CHAPTER_HOVER_BG_COLOR, (Uint8)(220 * overlay_alpha) });
                         draw_text_shadow(ren, hover_x, hover_y, hover_text, text);
                     }
                 }
@@ -2389,7 +2389,7 @@ int main(int argc, char** argv) {
             TTF_SizeUTF8(ui_font, right_time, &right_w, &right_h);
             draw_text_shadow(ren, w - margin - right_w - 40, h - overlay_h + 24, right_time, text);
 
-            draw_rect(ren, volume_rect, (SDL_Color){ 70, 70, 80, (Uint8)(180 * overlay_alpha) });
+            draw_rect(ren, volume_rect, (SDL_Color){ OVERLAY_COLOR, (Uint8)(180 * overlay_alpha) });
             float vol_t = clampf(volume_percent / 200.0f, 0.0f, 1.0f);
             SDL_Rect vol_fill = { volume_rect.x, volume_rect.y + (int)(volume_rect.h * (1.0f - vol_t)), volume_rect.w, (int)(volume_rect.h * vol_t) };
             draw_rect(ren, vol_fill, accent);
@@ -2397,17 +2397,17 @@ int main(int argc, char** argv) {
             snprintf(vol_text, sizeof(vol_text), "%d%%", (int)volume_percent);
             draw_text_shadow(ren, volume_rect.x - 28, volume_rect.y + volume_rect.h + 6, vol_text, muted);
 
-            draw_rect(ren, hamburger, (SDL_Color){ 35, 35, 45, (Uint8)(200 * overlay_alpha) });
+            draw_rect(ren, hamburger, (SDL_Color){ HAMBURGER_BG_COLOR, (Uint8)(200 * overlay_alpha) });
             draw_text_shadow(ren, hamburger.x + 6, hamburger.y + 2, "≡", text);
 
             if (menu_open) {
-                draw_rect(ren, menu_panel, (SDL_Color){ 28, 28, 36, (Uint8)(220 * overlay_alpha) });
-                draw_rect(ren, audio_box, (SDL_Color){ 35, 35, 45, (Uint8)(200 * overlay_alpha) });
-                draw_rect(ren, subtitle_box, (SDL_Color){ 35, 35, 45, (Uint8)(200 * overlay_alpha) });
-                draw_rect(ren, font_box, (SDL_Color){ 35, 35, 45, (Uint8)(200 * overlay_alpha) });
-                draw_rect(ren, playback_box, (SDL_Color){ 35, 35, 45, (Uint8)(200 * overlay_alpha) });
+                draw_rect(ren, menu_panel, (SDL_Color){ MENU_PANEL_BG_COLOR, (Uint8)(220 * overlay_alpha) });
+                draw_rect(ren, audio_box, (SDL_Color){ MENU_PANEL_ITEM_BG_COLOR, (Uint8)(200 * overlay_alpha) });
+                draw_rect(ren, subtitle_box, (SDL_Color){ MENU_PANEL_ITEM_BG_COLOR, (Uint8)(200 * overlay_alpha) });
+                draw_rect(ren, font_box, (SDL_Color){ MENU_PANEL_ITEM_BG_COLOR, (Uint8)(200 * overlay_alpha) });
+                draw_rect(ren, playback_box, (SDL_Color){ MENU_PANEL_ITEM_BG_COLOR, (Uint8)(200 * overlay_alpha) });
                 if (subtitle_settings_applicable) {
-                    draw_rect(ren, subtitle_settings_box, (SDL_Color){ 35, 35, 45, (Uint8)(200 * overlay_alpha) });
+                    draw_rect(ren, subtitle_settings_box, (SDL_Color){ MENU_PANEL_ITEM_BG_COLOR, (Uint8)(200 * overlay_alpha) });
                 }
 
                 char audio_label[160];
@@ -2448,21 +2448,21 @@ int main(int argc, char** argv) {
                     if (audio_scroll > max_scroll) audio_scroll = max_scroll;
                     if (audio_scroll < 0) audio_scroll = 0;
                     
-                    draw_rect(ren, list, (SDL_Color){ 26, 26, 34, (Uint8)(220 * overlay_alpha) });
+                    draw_rect(ren, list, (SDL_Color){ LIST_BG_COLOR, (Uint8)(220 * overlay_alpha) });
                     for (int i = 0; i < display_count; i++) {
                         int idx = audio_scroll + i;
                         SDL_Rect item = { list.x, list.y + i * item_h, list.w - (count > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
-                        if (vr->current_audio == idx) draw_rect(ren, item, (SDL_Color){ 40, 80, 120, (Uint8)(180 * overlay_alpha) });
+                        if (vr->current_audio == idx) draw_rect(ren, item, (SDL_Color){ LIST_ITEM_BG_COLOR, (Uint8)(180 * overlay_alpha) });
                         draw_text_shadow(ren, item.x + MENU_DROPDOWN_TEXT_PADDING_X, item.y + MENU_DROPDOWN_TEXT_PADDING_Y, vr_get_audio_track_name(vr, idx), text);
                     }
                     
                     if (count > max_items) {
                         SDL_Rect scrollbar_bg = { list.x + list.w - MENU_DROPDOWN_SCROLLBAR_WIDTH, list.y, MENU_DROPDOWN_SCROLLBAR_WIDTH, list.h };
-                        draw_rect(ren, scrollbar_bg, (SDL_Color){ 35, 35, 45, (Uint8)(200 * overlay_alpha) });
+                        draw_rect(ren, scrollbar_bg, (SDL_Color){ SCROLLBAR_BG_COLOR, (Uint8)(200 * overlay_alpha) });
                         int scroll_h = (max_items * list.h) / count;
                         int scroll_y = list.y + (audio_scroll * list.h) / count;
                         SDL_Rect scrollbar = { list.x + list.w - MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_y, MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_h };
-                        draw_rect(ren, scrollbar, (SDL_Color){ 80, 80, 100, (Uint8)(220 * overlay_alpha) });
+                        draw_rect(ren, scrollbar, (SDL_Color){ SCROLLBAR_THUMB_COLOR, (Uint8)(220 * overlay_alpha) });
                     }
                 }
 
@@ -2482,16 +2482,16 @@ int main(int argc, char** argv) {
                         list.y = win_h - list.h;
                         if (list.y < margin) list.y = margin;
                     }
-                    draw_rect(ren, list, (SDL_Color){ 26, 26, 34, (Uint8)(220 * overlay_alpha) });
+                    draw_rect(ren, list, (SDL_Color){ LIST_BG_COLOR, (Uint8)(220 * overlay_alpha) });
                     if (subtitle_scroll == 0) {
                         SDL_Rect off_item = { list.x, list.y, list.w - ((count + 1) > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
-                        if (vr->current_subtitle < 0) draw_rect(ren, off_item, (SDL_Color){ 40, 80, 120, (Uint8)(180 * overlay_alpha) });
+                        if (vr->current_subtitle < 0) draw_rect(ren, off_item, (SDL_Color){ LIST_ITEM_BG_COLOR, (Uint8)(180 * overlay_alpha) });
                         draw_text_shadow(ren, off_item.x + MENU_DROPDOWN_TEXT_PADDING_X, off_item.y + MENU_DROPDOWN_TEXT_PADDING_Y, "Subtitles: Off", text);
                         for (int i = 1; i < display_count; i++) {
                             int idx = (subtitle_scroll + i) - 1;
                             if (idx >= 0 && idx < count) {
                                 SDL_Rect item = { list.x, list.y + i * item_h, list.w - ((count + 1) > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
-                                if (vr->current_subtitle == idx) draw_rect(ren, item, (SDL_Color){ 40, 80, 120, (Uint8)(180 * overlay_alpha) });
+                                if (vr->current_subtitle == idx) draw_rect(ren, item, (SDL_Color){ LIST_ITEM_BG_COLOR, (Uint8)(180 * overlay_alpha) });
                                 draw_text_shadow(ren, item.x + MENU_DROPDOWN_TEXT_PADDING_X, item.y + MENU_DROPDOWN_TEXT_PADDING_Y, vr_get_subtitle_track_name(vr, idx), text);
                             }
                         }
@@ -2500,18 +2500,18 @@ int main(int argc, char** argv) {
                             int idx = (subtitle_scroll + i) - 1;
                             if (idx >= 0 && idx < count) {
                                 SDL_Rect item = { list.x, list.y + i * item_h, list.w - ((count + 1) > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
-                                if (vr->current_subtitle == idx) draw_rect(ren, item, (SDL_Color){ 40, 80, 120, (Uint8)(180 * overlay_alpha) });
+                                if (vr->current_subtitle == idx) draw_rect(ren, item, (SDL_Color){ LIST_ITEM_BG_COLOR, (Uint8)(180 * overlay_alpha) });
                                 draw_text_shadow(ren, item.x + MENU_DROPDOWN_TEXT_PADDING_X, item.y + MENU_DROPDOWN_TEXT_PADDING_Y, vr_get_subtitle_track_name(vr, idx), text);
                             }
                         }
                     }
                     if ((count + 1) > max_items) {
                         SDL_Rect scrollbar_bg = { list.x + list.w - MENU_DROPDOWN_SCROLLBAR_WIDTH, list.y, MENU_DROPDOWN_SCROLLBAR_WIDTH, list.h };
-                        draw_rect(ren, scrollbar_bg, (SDL_Color){ 35, 35, 45, (Uint8)(200 * overlay_alpha) });
+                        draw_rect(ren, scrollbar_bg, (SDL_Color){ SCROLLBAR_BG_COLOR, (Uint8)(200 * overlay_alpha) });
                         int scroll_h = (max_items * list.h) / (count + 1);
                         int scroll_y = list.y + (subtitle_scroll * list.h) / (count + 1);
                         SDL_Rect scrollbar = { list.x + list.w - MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_y, MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_h };
-                        draw_rect(ren, scrollbar, (SDL_Color){ 80, 80, 100, (Uint8)(220 * overlay_alpha) });
+                        draw_rect(ren, scrollbar, (SDL_Color){ SCROLLBAR_THUMB_COLOR, (Uint8)(220 * overlay_alpha) });
                     }
                 }
 
@@ -2528,7 +2528,7 @@ int main(int argc, char** argv) {
 
                     if (list.x < margin) list.x = margin;
 
-                    draw_rect(ren, list, (SDL_Color){26,26,34,(Uint8)(220*overlay_alpha)});
+                    draw_rect(ren, list, (SDL_Color){ LIST_BG_COLOR, (Uint8)(220 * overlay_alpha) });
 
                     for (int i = 0; i < default_font_count; ++i) {
                         draw_text_shadow(
@@ -2558,7 +2558,7 @@ int main(int argc, char** argv) {
                         list.y = h - list.h;
                         if (list.y < 0) list.y = 0;
                     }
-                    draw_rect(ren, list, (SDL_Color){ 26, 26, 34, (Uint8)(220 * overlay_alpha) });
+                    draw_rect(ren, list, (SDL_Color){ LIST_BG_COLOR, (Uint8)(220 * overlay_alpha) });
                     draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y, "0.5x", text);
                     draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h, "0.75x", text);
                     draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 2, "1.0x (Normal)", text);
@@ -2577,7 +2577,7 @@ int main(int argc, char** argv) {
                         list.y = h - list.h;
                         if (list.y < 0) list.y = 0;
                     }
-                    draw_rect(ren, list, (SDL_Color){ 26, 26, 34, (Uint8)(220 * overlay_alpha) });
+                    draw_rect(ren, list, (SDL_Color){ LIST_BG_COLOR, (Uint8)(220 * overlay_alpha) });
 
                     char row0[128];
                     char row1[128];
@@ -2602,7 +2602,7 @@ int main(int argc, char** argv) {
                                 vlist.y = h - vlist.h;
                                 if (vlist.y < 0) vlist.y = 0;
                             }
-                            draw_rect(ren, vlist, (SDL_Color){ 22, 22, 30, (Uint8)(220 * overlay_alpha) });
+                            draw_rect(ren, vlist, (SDL_Color){ SUBTITLE_VLIST_BG_COLOR, (Uint8)(220 * overlay_alpha) });
 
                             for (int i = 0; i < value_count; i++) {
                                 const char* label = "";
@@ -2619,7 +2619,7 @@ int main(int argc, char** argv) {
 
         pause_alpha = lerpf(pause_alpha, paused ? 1.0f : 0.0f, clampf(dt * 6.0f, 0.0f, 1.0f));
         if (pause_alpha > 0.01f) {
-            SDL_Color pcol = { 240, 240, 245, (Uint8)(255 * pause_alpha) };
+            SDL_Color pcol = { PAUSED_TEXT_COLOR, (Uint8)(255 * pause_alpha) };
             draw_text_shadow(ren, 20, 20, "PAUSED", pcol);
         }
 
@@ -2632,13 +2632,13 @@ int main(int argc, char** argv) {
                 if (flash_alpha < 0.01f) flash_text[0] = 0;
             }
             if (flash_alpha > 0.01f) {
-                SDL_Color fcol = { 240, 240, 245, (Uint8)(220 * flash_alpha) };
+                SDL_Color fcol = { FLASH_TEXT_COLOR, (Uint8)(220 * flash_alpha) };
                 draw_text_shadow(ren, 20, 56, flash_text, fcol);
             }
         }
 
         if (vr && playback_speed > 2.0f) {
-            SDL_Color acol = { 255, 180, 100, 200 };
+            SDL_Color acol = { ACOL_TEXT_COLOR, ACOL_TEXT_ALPHA };
             draw_text_shadow(ren, 20, 92, "Audio disabled at high speed", acol);
         }
 
