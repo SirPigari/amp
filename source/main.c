@@ -208,6 +208,17 @@ static void format_time(double seconds, char* out, size_t out_size) {
     else snprintf(out, out_size, "%d:%02d", m, sec);
 }
 
+static char* format_time_temp(double seconds) {
+    static char buf[64];
+    int s = (int)seconds;
+    int h = s / 3600;
+    int m = (s % 3600) / 60;
+    int sec = s % 60;
+    if (h > 0) snprintf(buf, sizeof(buf), "%d:%02d:%02d", h, m, sec);
+    else snprintf(buf, sizeof(buf), "%d:%02d", m, sec);
+    return buf;
+}
+
 static void sanitize_recent_files(void);
 #ifdef _WIN32
 static void refresh_windows_recent_menu(void);
@@ -1962,8 +1973,8 @@ int main(int argc, char** argv) {
                                 subtitle_override_margins[subtitle_move_idx],
                                 requested_window_w,
                                 requested_window_h)) {
-                            snprintf(flash_text, sizeof(flash_text), "Undo: %s %.2fs", strrchr(entry->media_path, '\\') ? strrchr(entry->media_path, '\\') + 1 : entry->media_path, entry->time_sec);
-                            nob_log(NOB_INFO, "Undo to %s %.2fs", entry->media_path, entry->time_sec);
+                            snprintf(flash_text, sizeof(flash_text), "Undo: %s %s", strrchr(entry->media_path, '\\') ? strrchr(entry->media_path, '\\') + 1 : entry->media_path, format_time_temp(entry->time_sec));
+                            nob_log(NOB_INFO, "Undo to %s %s", entry->media_path, format_time_temp(entry->time_sec));
                         } else {
                             snprintf(flash_text, sizeof(flash_text), "Undo failed");
                         }
@@ -1987,8 +1998,8 @@ int main(int argc, char** argv) {
                                 subtitle_override_margins[subtitle_move_idx],
                                 requested_window_w,
                                 requested_window_h)) {
-                            snprintf(flash_text, sizeof(flash_text), "Redo: %s %.2fs", strrchr(entry->media_path, '\\') ? strrchr(entry->media_path, '\\') + 1 : entry->media_path, entry->time_sec);
-                            nob_log(NOB_INFO, "Redo to %s %.2fs", entry->media_path, entry->time_sec);
+                            snprintf(flash_text, sizeof(flash_text), "Redo: %s %s", strrchr(entry->media_path, '\\') ? strrchr(entry->media_path, '\\') + 1 : entry->media_path, format_time_temp(entry->time_sec));
+                            nob_log(NOB_INFO, "Redo to %s %s", entry->media_path, format_time_temp(entry->time_sec));
                         } else {
                             snprintf(flash_text, sizeof(flash_text), "Redo failed");
                         }
