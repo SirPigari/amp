@@ -47,8 +47,8 @@ float flash_alpha = 0.0f;
 static char hw_option[32] = "auto";
 
 typedef struct {
-    const char *name;
-    const char *path;
+    const char* name;
+    const char* path;
 } FontEntry;
 
 typedef struct {
@@ -122,12 +122,12 @@ static bool abspath(const char* path, char* out, size_t out_size) {
     if (_fullpath(out, path, out_size) == NULL)
         return false;
 
-    for (char *p = out; *p; ++p) {
+    for (char* p = out; *p; ++p) {
         if (*p == '\\') *p = '/';
     }
 
 #else
-    char *tmp = realpath(path, NULL);
+    char* tmp = realpath(path, NULL);
     if (!tmp) return false;
 
     size_t len = strlen(tmp) + 1;
@@ -444,7 +444,7 @@ void amp_log_handler(Nob_Log_Level level, const char* fmt, va_list args) {
     char timebuf[20];
     strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", &tm_now);
 
-    const char *level_str = "";
+    const char* level_str = "";
     switch (level) {
         case NOB_INFO:    level_str = "INFO   "; break;
         case NOB_WARNING: level_str = "WARNING"; break;
@@ -459,7 +459,6 @@ void amp_log_handler(Nob_Log_Level level, const char* fmt, va_list args) {
     va_end(args_print);
     fprintf(stderr, "\n");
 
-    /* ensure logs are flushed immediately (help when running from some shells) */
     fflush(stderr);
 
     if (flash_debug_enabled && level == (Nob_Log_Level)flash_debug_level) {
@@ -932,7 +931,7 @@ static void menu_pump_playback_tick(void) {
 
     run_playback_tick(vr, *g_menu_playback_speed_ptr);
 
-    SDL_SetRenderDrawColor(g_menu_ren, 0, 0, 0, 255);
+    SDL_SetRenderDrawColor(g_menu_ren, LETTERBOX_COLOR, 255);
     SDL_RenderClear(g_menu_ren);
 
     SDL_Texture* tex = vr_get_texture(vr);
@@ -1337,6 +1336,21 @@ int main(int argc, char** argv) {
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if(!ren) { SDL_DestroyWindow(win); nob_log(NOB_ERROR, "SDL_CreateRenderer failed: %s", SDL_GetError()); return 1; }
 
+    SDL_RaiseWindow(win);
+#ifdef _WIN32
+    {
+        SDL_SysWMinfo wm_info;
+        SDL_VERSION(&wm_info.version);
+        if (SDL_GetWindowWMInfo(win, &wm_info) && wm_info.subsystem == SDL_SYSWM_WINDOWS) {
+            HWND hwnd = wm_info.info.win.window;
+            if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+            SetForegroundWindow(hwnd);
+            BringWindowToTop(hwnd);
+            SetActiveWindow(hwnd);
+        }
+    }
+#endif
+
     if (requested_window_w > 0 && requested_window_h > 0) {
         int startup_w = requested_window_w;
         int startup_h = requested_window_h;
@@ -1344,9 +1358,11 @@ int main(int argc, char** argv) {
         SDL_SetWindowSize(win, startup_w, startup_h);
         SDL_SetWindowPosition(win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     }
-    // if (maximized && !fullscreen) {
-    //     SDL_MaximizeWindow(win);
-    // }
+    /*
+    if (maximized && !fullscreen) {
+        SDL_MaximizeWindow(win);
+    }
+    */
 
     if(video_file) {
         vr = vr_create(win, ren);
@@ -2373,7 +2389,7 @@ int main(int argc, char** argv) {
         
         overlay_alpha = lerpf(overlay_alpha, overlay_target, clampf(dt * 6.0f, 0.0f, 1.0f));
 
-        SDL_SetRenderDrawColor(ren,0,0,0,255);
+        SDL_SetRenderDrawColor(ren, LETTERBOX_COLOR, 255);
         SDL_RenderClear(ren);
 
         if(vr) {
@@ -2488,7 +2504,30 @@ int main(int argc, char** argv) {
             draw_text_shadow(ren, volume_rect.x - 28, volume_rect.y + volume_rect.h + 6, vol_text, muted);
 
             draw_rect(ren, hamburger, (SDL_Color){ HAMBURGER_BG_COLOR, (Uint8)(200 * overlay_alpha) });
-            draw_text_shadow(ren, hamburger.x + 6, hamburger.y + 2, "≡", text);
+
+            int line_width  = hamburger.w - HAMBURGER_LINE_MARGIN * 2;
+
+            float first_center_y  = hamburger.y + hamburger.h / 4.0f;
+            float second_center_y = hamburger.y + hamburger.h / 2.0f;
+            float third_center_y  = hamburger.y + 3 * hamburger.h / 4.0f;
+
+            SDL_Color shadow_color = { SHADOW_COLOR, (Uint8)(100 * overlay_alpha)};
+
+            float centers[3] = { first_center_y, second_center_y, third_center_y };
+            for (int i = 0; i < 3; i++) {
+                SDL_Rect line = {
+                    hamburger.x + HAMBURGER_LINE_MARGIN,
+                    (int)(centers[i] - HAMBURGER_LINE_HEIGHT / 2.0f),
+                    line_width,
+                    HAMBURGER_LINE_HEIGHT
+                };
+                SDL_Rect shadow = line;
+                shadow.x += SHADOW_OFFSET;
+                shadow.y += SHADOW_OFFSET;
+                draw_rect(ren, shadow, shadow_color);
+
+                draw_rect(ren, line, text);
+            }
 
             if (menu_open) {
                 draw_rect(ren, menu_panel, (SDL_Color){ MENU_PANEL_BG_COLOR, (Uint8)(220 * overlay_alpha) });
@@ -2513,8 +2552,8 @@ int main(int argc, char** argv) {
                 char subtitle_settings_label[200];
                 char tmp[64];
                 snprintf(tmp, sizeof(tmp), "%.6f", playback_speed);
-                char *dot = strchr(tmp, '.');
-                char *end = tmp + strlen(tmp) - 1;
+                char* dot = strchr(tmp, '.');
+                char* end = tmp + strlen(tmp) - 1;
                 while (end > dot + 1 && *end == '0') *end-- = '\0';
                 snprintf(playback_label, sizeof(playback_label), "Speed: %sx", tmp);
                 snprintf(subtitle_settings_label, sizeof(subtitle_settings_label), "Subtitle Style...");

@@ -25,6 +25,13 @@ typedef struct {
 } FileConfig;
 
 typedef struct {
+    int32_t count;
+    char entries[HW_CACHE_SIZE][256];
+} HWCache;
+
+static HWCache hw_cache = {0};
+
+typedef struct {
     char* recent_files[MAX_RECENT];
     uint64_t recent_files_count;
 
@@ -32,6 +39,7 @@ typedef struct {
     uint64_t remembered_count;
 
     FontSettings font_settings;
+    HWCache hw_cache;
 } SaveState;
 
 typedef struct {
@@ -119,6 +127,11 @@ static int write_save_state(const char* path, SaveState* state) {
         total += sizeof(uint64_t) + (c->video_path ? strlen(c->video_path) : 0);
     }
 
+    total += sizeof(uint64_t);
+    for (int i = 0; i < state->hw_cache.count; i++) {
+        total += sizeof(uint64_t) + strlen(state->hw_cache.entries[i]);
+    }
+
     uint8_t* buf = malloc(total);
     if (!buf) return 0;
 
@@ -155,6 +168,14 @@ static int write_save_state(const char* path, SaveState* state) {
         uint64_t len = c->video_path ? strlen(c->video_path) : 0;
         memcpy(ptr, &len, sizeof(len)); ptr += sizeof(len);
         if (len) { memcpy(ptr, c->video_path, len); ptr += len; }
+    }
+
+    uint64_t hw_count = (uint64_t)(state->hw_cache.count > 0 ? state->hw_cache.count : 0);
+    memcpy(ptr, &hw_count, sizeof(hw_count)); ptr += sizeof(hw_count);
+    for (uint64_t i = 0; i < hw_count; i++) {
+        uint64_t elen = state->hw_cache.entries[i][0] ? strlen(state->hw_cache.entries[i]) : 0;
+        memcpy(ptr, &elen, sizeof(elen)); ptr += sizeof(elen);
+        if (elen) { memcpy(ptr, state->hw_cache.entries[i], elen); ptr += elen; }
     }
 
     FILE* f = fopen(path, "wb");
@@ -240,9 +261,51 @@ static int load_save_state(const char* path, SaveState* s) {
         } else c->video_path = NULL;
     }
 
+    if ((size_t)(ptr - buf) + sizeof(uint64_t) <= size) {
+        uint64_t hw_count = 0;
+        memcpy(&hw_count, ptr, sizeof(hw_count)); ptr += sizeof(hw_count);
+        if (hw_count > HW_CACHE_SIZE) hw_count = HW_CACHE_SIZE;
+        s->hw_cache.count = (int32_t)hw_count;
+        for (uint64_t i = 0; i < hw_count; i++) {
+            if ((size_t)(ptr - buf) + sizeof(uint64_t) > size) break;
+            uint64_t elen = 0;
+            memcpy(&elen, ptr, sizeof(elen)); ptr += sizeof(elen);
+            if (elen > 0 && (size_t)(ptr - buf) + elen <= size) {
+                if (elen >= sizeof(s->hw_cache.entries[i])) elen = sizeof(s->hw_cache.entries[i]) - 1;
+                memcpy(s->hw_cache.entries[i], ptr, elen);
+                s->hw_cache.entries[i][elen] = '\0';
+                ptr += elen;
+            } else {
+                s->hw_cache.entries[i][0] = '\0';
+            }
+        }
+    } else {
+        s->hw_cache.count = 0;
+    }
+
+    hw_cache = s->hw_cache;
+
     free(buf);
     return 1;
 }
+
+int hw_cache_has(const char* name) {
+    if (!name || !name[0]) return 0;
+    for (int i = 0; i < hw_cache.count; i++) {
+        if (strcmp(hw_cache.entries[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
+void hw_cache_mark_success(const char* name) {
+    if (!name || !name[0]) return;
+    if (hw_cache_has(name)) return;
+    if (hw_cache.count < HW_CACHE_SIZE) {
+        snprintf(hw_cache.entries[hw_cache.count], sizeof(hw_cache.entries[hw_cache.count]), "%s", name);
+        hw_cache.count++;
+    }
+}
+
 static int64_t get_remembered_file_index(SaveState* state, const char* video_path, uint8_t video_hash[HASH_SIZE]) {
     if (!state || (!video_path && !video_hash)) return -1;
     uint8_t hash[HASH_SIZE];
@@ -376,4 +439,8 @@ static void debug_save_state(const SaveState* state) {
     printf("  Color: 0x%08X\n", state->font_settings.color);
     printf("  Outline Color: 0x%08X\n", state->font_settings.outline_color);
     printf("  Font Path: %s\n", state->font_settings.font_path ? state->font_settings.font_path : "NULL");
+    printf("HW Cache (%d):\n", state->hw_cache.count);
+    for (int i = 0; i < state->hw_cache.count; i++) {
+        printf("  - %s\n", state->hw_cache.entries[i]);
+    }
 }

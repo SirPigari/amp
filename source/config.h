@@ -24,7 +24,21 @@
 #define INITIAL_WINDOW_HEIGHT 540
 #define SAVE_FILE 1
 #define SAVE_FILE_PATH "./amp_save.dat"
+#define HW_CACHE_SIZE 16
 #define HASH_SIZE 256
+
+/* Demuxer settings */
+#define DEMUX_MAX_READS_PER_TICK 64
+#define DEMUX_MIN_READS_PER_TICK 4
+#define DEMUX_TIME_BUDGET_MS 2.0
+#define AMP_FF_PROBE_SIZE "4M"
+#define AMP_FF_ANALYZE_DURATION_US "1500000"
+
+/* Theme, this is a template and the default theme
+   each theme MUST define all of these, even if they are the same as the default */
+#if defined(DEFAULT_THEME) || !USE_THEMES
+#define THEME_NAME "AMP"
+#define THEME_FILE "config.h"
 
 /* Menu dimensions */
 #define MENU_DROPDOWN_ITEM_HEIGHT 28
@@ -41,17 +55,11 @@
 #define TIMELINE_CHAPTER_MARKER_WIDTH 4
 #define TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH 6
 
-/* Demuxer settings */
-#define DEMUX_MAX_READS_PER_TICK 64
-#define DEMUX_MIN_READS_PER_TICK 4
-#define DEMUX_TIME_BUDGET_MS 2.0
-#define AMP_FF_PROBE_SIZE "4M"
-#define AMP_FF_ANALYZE_DURATION_US "1500000"
+/* Hamburger dimensions */
+#define HAMBURGER_LINE_HEIGHT 2
+#define HAMBURGER_LINE_MARGIN 6
 
-/* Theme, this is a template and the default theme */
-#if defined(DEFAULT_THEME) || !USE_THEMES
-#define THEME_NAME "AMP"
-#define THEME_FILE "config.h"
+#define SHADOW_OFFSET 2
 
 /* Colors */
 /*      Format is                 R,   G,   B */
@@ -59,6 +67,8 @@
 #define TEXT_COLOR                230, 230, 235
 #define ACCENT_COLOR              68,  160, 255
 #define MUTED_COLOR               120, 120, 130
+#define SHADOW_COLOR              0,   0,   0
+#define LETTERBOX_COLOR           0,   0,   0
 #define OVERLAY_COLOR             70,  70,  80
 #define CHAPTER_MARKER_COLOR      200, 200, 210
 #define TIMELINE_THUMB_COLOR      220, 220, 230

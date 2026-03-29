@@ -2,15 +2,44 @@
 #ifndef FEMBOY_THEME_DEFINED
 #define FEMBOY_THEME_DEFINED
 
+/*
+Femboy theme for amp
+One of defaulty shipped themes with amp, 
+colors were chosen by markofwitch.
+*/
+
 /* Theme metadata */
 #define THEME_NAME "Femboy~"
 #define THEME_FILE "femboy.h"
+
+/* Menu dimensions (same as default) */
+#define MENU_DROPDOWN_ITEM_HEIGHT 28
+#define MENU_DROPDOWN_WIDTH 230
+#define MENU_DROPDOWN_SCROLLBAR_WIDTH 12
+#define MENU_DROPDOWN_TEXT_PADDING_X 8
+#define MENU_DROPDOWN_TEXT_PADDING_Y 2
+#define MENU_MAX_VISIBLE_ITEMS 10
+
+/* Timeline dimensions (same as default) */
+#define TIMELINE_HEIGHT 6
+#define TIMELINE_HITBOX_PADDING 12
+#define TIMELINE_THUMB_SIZE 12
+#define TIMELINE_CHAPTER_MARKER_WIDTH 4
+#define TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH 6
+
+/* Hamburger dimensions (same as default) */
+#define HAMBURGER_LINE_HEIGHT 2
+#define HAMBURGER_LINE_MARGIN 6
+
+#define SHADOW_OFFSET 2
 
 /* Cute Pink (Femboy) Theme */
 #define PANEL_COLOR               24,  20,  26
 #define TEXT_COLOR                245, 235, 240
 #define ACCENT_COLOR              255, 170, 210
 #define MUTED_COLOR               150, 130, 145
+#define SHADOW_COLOR              20,  20,  20
+#define LETTERBOX_COLOR           20,  20,  20
 #define OVERLAY_COLOR             80,  65,  78
 #define CHAPTER_MARKER_COLOR      255, 200, 225
 #define TIMELINE_THUMB_COLOR      255, 210, 230
@@ -29,7 +58,7 @@
 #define ACOL_TEXT_COLOR           255, 185, 215
 #define ACOL_TEXT_ALPHA           200
 
-/* Platform-specific fonts */
+/* Platform-specific fonts (same as default) */
 #ifdef _WIN32
 
 #define PLATFORM_FONTS \

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
+#include <errno.h>
 #include "../thirdparty/nob.h"
 #include "../thirdparty/SDL2/SDL.h"
 #include "../thirdparty/libavformat/avformat.h"
@@ -113,6 +114,7 @@ typedef struct {
     char current_filename[512];
     int hw_bad_frame_count;
     int hw_disabled;
+    int hw_backend_marked;
 } VideoRenderer;
 
 static void pkt_queue_init(PacketQueue* q, int capacity) {
@@ -140,6 +142,9 @@ static void pkt_queue_free(PacketQueue* q) {
     q->pkts = NULL;
     q->capacity = 0;
 }
+
+extern int hw_cache_has(const char* name);
+extern void hw_cache_mark_success(const char* name);
 
 static int pkt_queue_is_full(PacketQueue* q) {
     return q && q->size >= q->capacity;
@@ -624,14 +629,31 @@ static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVC
     for (char* p = req; *p; ++p) *p = (char)tolower(*p);
 #endif
 
-    const char* try_list[4];
+#define MAX_TRY 8
+    const char* try_list[MAX_TRY];
     int try_count = 0;
     if (strcmp(req, "none") == 0) return -1;
     if (strcmp(req, "auto") == 0 || strcmp(req, "accel") == 0) {
 #ifdef _WIN32
-        try_list[0] = "d3d11va"; try_list[1] = "dxva2"; try_list[2] = "vaapi"; try_count = 3;
+        const char* defaults[] = {"d3d11va", "dxva2", "vaapi"};
+        for (int i = 0; i < (int)(sizeof(defaults)/sizeof(defaults[0])) && try_count < MAX_TRY; i++) {
+            if (hw_cache_has(defaults[i])) try_list[try_count++] = defaults[i];
+        }
+        for (int i = 0; i < (int)(sizeof(defaults)/sizeof(defaults[0])) && try_count < MAX_TRY; i++) {
+            int dup = 0; for (int j = 0; j < try_count; j++) if (strcmp(try_list[j], defaults[i]) == 0) { dup = 1; break; }
+            if (!dup) try_list[try_count++] = defaults[i];
+        }
+        try_count = try_count > 0 ? try_count : 3;
 #else
-        try_list[0] = "vaapi"; try_list[1] = "d3d11va"; try_list[2] = "dxva2"; try_count = 3;
+        const char* defaults[] = {"vaapi", "d3d11va", "dxva2"};
+        for (int i = 0; i < (int)(sizeof(defaults)/sizeof(defaults[0])) && try_count < MAX_TRY; i++) {
+            if (hw_cache_has(defaults[i])) try_list[try_count++] = defaults[i];
+        }
+        for (int i = 0; i < (int)(sizeof(defaults)/sizeof(defaults[0])) && try_count < MAX_TRY; i++) {
+            int dup = 0; for (int j = 0; j < try_count; j++) if (strcmp(try_list[j], defaults[i]) == 0) { dup = 1; break; }
+            if (!dup) try_list[try_count++] = defaults[i];
+        }
+        try_count = try_count > 0 ? try_count : 3;
 #endif
     } else {
         try_list[0] = req; try_count = 1;
@@ -654,9 +676,13 @@ static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVC
         if (pix == AV_PIX_FMT_NONE) continue;
 
         AVBufferRef* dev_ctx = NULL;
-        int err = av_hwdevice_ctx_create(&dev_ctx, type, NULL, NULL, 0);
+        int err = -1;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            err = av_hwdevice_ctx_create(&dev_ctx, type, NULL, NULL, 0);
+            if (err == 0 && dev_ctx) break;
+            if (dev_ctx) { av_buffer_unref(&dev_ctx); dev_ctx = NULL; }
+        }
         if (err < 0 || !dev_ctx) {
-            if (dev_ctx) av_buffer_unref(&dev_ctx);
             continue;
         }
 
@@ -669,6 +695,10 @@ static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVC
         ctx->opaque = vr;
         ctx->get_format = get_hw_format;
         nob_log(NOB_INFO, "HW decode enabled: %s (pixfmt %d)", name, pix);
+        if (!vr->hw_backend_marked) {
+            hw_cache_mark_success(name);
+            vr->hw_backend_marked = 1;
+        }
         return 0;
     }
 
@@ -934,20 +964,34 @@ int vr_render_frame(VideoRenderer* vr) {
                 tmp_sw = av_frame_alloc();
                 if (tmp_sw) {
                     int transfer_err = av_hwframe_transfer_data(tmp_sw, vr->frame, 0);
-                        if (transfer_err == 0) {
-                            use_frame = tmp_sw;
-                        } else {
-                            nob_log(NOB_WARNING, "HW->SW transfer failed (err=%d)", transfer_err);
+                    if (transfer_err == 0) {
+                        int expected_ls0 = av_image_get_linesize(tmp_sw->format, tmp_sw->width, 0);
+                        int expected_ls1 = av_image_get_linesize(tmp_sw->format, tmp_sw->width, 1);
+                        int bad = 0;
+                        if (expected_ls0 <= 0 || tmp_sw->linesize[0] <= 0 || tmp_sw->data[0] == NULL) bad = 1;
+                        if (expected_ls1 > 0) {
+                            if (tmp_sw->linesize[1] <= 0 || tmp_sw->data[1] == NULL) bad = 1;
+                        }
+                        if (bad) {
+                            nob_log(NOB_WARNING, "HW->SW transfer produced invalid software frame (format=%d w=%d h=%d ls0=%d ls1=%d)",
+                                tmp_sw->format, tmp_sw->width, tmp_sw->height, tmp_sw->linesize[0], tmp_sw->linesize[1]);
                             av_frame_free(&tmp_sw);
                             tmp_sw = NULL;
+                        } else {
+                            use_frame = tmp_sw;
                         }
+                    } else {
+                        nob_log(NOB_WARNING, "HW->SW transfer failed (err=%d)", transfer_err);
+                        av_frame_free(&tmp_sw);
+                        tmp_sw = NULL;
+                    }
                 } else {
                     nob_log(NOB_WARNING, "Failed to allocate tmp_sw for HW transfer");
                 }
             }
 
             if (!use_frame->data[0] || use_frame->linesize[0] <= 0 || use_frame->width <= 0 || use_frame->height <= 0) {
-                nob_log(NOB_WARNING, "Skipping frame: invalid source pointers/linesize (format=%d, w=%d, h=%d, ls0=%d)", use_frame->format, use_frame->width, use_frame->height, use_frame->linesize[0]);
+                nob_log(NOB_WARNING, "Dropped frame: invalid source pointers/linesize (format=%d, w=%d, h=%d, ls0=%d)", use_frame->format, use_frame->width, use_frame->height, use_frame->linesize[0]);
                 if (tmp_sw) av_frame_free(&tmp_sw);
                 av_frame_unref(vr->frame);
                 if (vr->hw_device_ctx && !vr->hw_disabled) {
@@ -996,6 +1040,7 @@ int vr_render_frame(VideoRenderer* vr) {
                 vr->yuv_frame->data[1], vr->yuv_frame->linesize[1],
                 vr->yuv_frame->data[2], vr->yuv_frame->linesize[2]);
 
+            vr->hw_bad_frame_count = 0;
             vr->video_ready = 1;
 
             int64_t vts = vr->frame->best_effort_timestamp;
@@ -1154,6 +1199,8 @@ void vr_seek(VideoRenderer* vr, double seconds) {
     vr->audio_clock_valid = 1;
     vr->current_time = seconds;
     vr->last_time = seconds;
+    vr->start_time = seconds;
+    vr->start_time_set = 0;
     vr->clock_start_ticks = SDL_GetTicks();
     vr->clock_pause_ticks = 0;
     vr->clock_pause_accum = 0;

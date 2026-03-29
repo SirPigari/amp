@@ -47,13 +47,13 @@ static void draw_text(SDL_Renderer* ren, int x, int y, const char* text, SDL_Col
 }
 
 static void draw_text_shadow(SDL_Renderer* ren, int x, int y, const char* text, SDL_Color color) {
-    SDL_Color shadow = { 0, 0, 0, (Uint8)(color.a * 0.8f) };
-    draw_text(ren, x + 2, y + 2, text, shadow);
+    SDL_Color shadow = { SHADOW_COLOR, (Uint8)(color.a * 0.8f) };
+    draw_text(ren, x + SHADOW_OFFSET, y + SHADOW_OFFSET, text, shadow);
     draw_text(ren, x, y, text, color);
 }
 
 bool is_valid_utf8(const char* s) {
-    const unsigned char *p = (const unsigned char*)s;
+    const unsigned char* p = (const unsigned char*)s;
     while(*p) {
         if(*p <= 0x7F) { p++; continue; }
         else if((*p & 0xE0) == 0xC0) {
