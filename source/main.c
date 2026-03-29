@@ -44,6 +44,7 @@ int recent_count = 0;
 char flash_text[256] = {0};
 Uint32 flash_until = 0;
 float flash_alpha = 0.0f;
+static char hw_option[32] = "auto";
 
 typedef struct {
     const char *name;
@@ -112,6 +113,84 @@ static float clampf(float v, float lo, float hi) {
 
 static float lerpf(float a, float b, float t) {
     return a + (b - a) * t;
+}
+
+static bool abspath(const char* path, char* out, size_t out_size) {
+    if (!path || !out || out_size == 0) return false;
+
+#ifdef _WIN32
+    if (_fullpath(out, path, out_size) == NULL)
+        return false;
+
+    for (char *p = out; *p; ++p) {
+        if (*p == '\\') *p = '/';
+    }
+
+#else
+    char *tmp = realpath(path, NULL);
+    if (!tmp) return false;
+
+    size_t len = strlen(tmp) + 1;
+    if (len > out_size) {
+        free(tmp);
+        return false;
+    }
+
+    memcpy(out, tmp, len);
+    free(tmp);
+#endif
+
+    return true;
+}
+
+static char* abspath_temp(const char* path) {
+    static char buf[4096];
+    if (!path) return NULL;
+    if (!abspath(path, buf, 4096)) {
+        return NULL;
+    }
+    return buf;
+}
+
+static char** _abspath_list = NULL;
+static size_t _abspath_count = 0;
+static size_t _abspath_cap = 0;
+
+static char* abspath_temp_safe(const char* path) {
+    if (!path) return NULL;
+
+    char* buf = malloc(4096);
+    if (!buf) return NULL;
+
+    if (!abspath(path, buf, 4096) || !buf[0]) {
+        free(buf);
+        return NULL;
+    }
+
+    if (_abspath_count == _abspath_cap) {
+        size_t new_cap = _abspath_cap ? _abspath_cap * 2 : 8;
+        char** n = realloc(_abspath_list, new_cap * sizeof(char*));
+        if (!n) {
+            free(buf);
+            return NULL;
+        }
+        _abspath_list = n;
+        _abspath_cap = new_cap;
+    }
+
+    _abspath_list[_abspath_count++] = buf;
+    return buf;
+}
+
+static void abspath_temp_free(void) {
+    for (size_t i = 0; i < _abspath_count; ++i) {
+        free(_abspath_list[i]);
+    }
+
+    free(_abspath_list);
+    _abspath_list = NULL;
+    _abspath_count = 0;
+    _abspath_cap = 0;
 }
 
 static void draw_rect(SDL_Renderer* ren, SDL_Rect r, SDL_Color c) {
@@ -369,6 +448,9 @@ void amp_log_handler(Nob_Log_Level level, const char* fmt, va_list args) {
     va_end(args_print);
     fprintf(stderr, "\n");
 
+    /* ensure logs are flushed immediately (help when running from some shells) */
+    fflush(stderr);
+
     if (flash_debug_enabled && level == (Nob_Log_Level)flash_debug_level) {
         char flash_buf[256];
         va_list args_flash;
@@ -396,6 +478,7 @@ void usage(FILE* out, const char* prog_name) {
     fprintf(out, "  --flash-debug                Show log messages as on-screen flash\n");
     fprintf(out, "  --no-flash-debug             Disable on-screen flash for log messages\n");
     fprintf(out, "  --flash-debug-level [LEVEL]  Show log messages as on-screen flash (LEVEL: 0 - NO LOGS, 1 - INFO, 2 - WARNING, 3 - ERROR)\n");
+    fprintf(out, "  --hw [auto|accel|vaapi|dxva2|d3d11va|none]  Hardware decode backend (auto tries available)\n");
 }
 
 void add_recent_file(const char* file) {
@@ -429,24 +512,6 @@ void add_recent_file(const char* file) {
 #endif
 }
 
-char* get_absolute_path(const char* path) {
-    if (!path) return NULL;
-
-#ifdef _WIN32
-    char buf[4096];
-    if (_fullpath(buf, path, sizeof(buf))) {
-        return strdup(buf);
-    }
-#else
-    char buf[4096];
-    if (realpath(path, buf)) {
-        return strdup(buf);
-    }
-#endif
-
-    return strdup(path);
-}
-
 char* open_file_dialog(const char* filters[], int filter_count, const char* filter_desc, bool allow_multiple, const char* title, const char* default_path, bool (*validator)(const char* path)) {
     char const* filename = tinyfd_openFileDialog(
         title ? title : "Select File",
@@ -458,7 +523,7 @@ char* open_file_dialog(const char* filters[], int filter_count, const char* filt
     );
     if (!filename) return NULL;
     if (validator && !validator(filename)) return NULL;
-    char* abs_path = get_absolute_path(filename);
+    char* abs_path = abspath_temp_safe(filename);
     return abs_path;
 }
 
@@ -641,11 +706,12 @@ static int load_media_file(
     int subtitle_size,
     int subtitle_margin,
     int requested_window_w,
-    int requested_window_h
+    int requested_window_h,
+    const char* hw_option
 ) {
     if (!vr || !win || !ren || !video_file || !path) return 0;
 
-    char* abs_path = get_absolute_path(path);
+    char* abs_path = abspath_temp_safe(path);
     if (!abs_path) return 0;
     if (!is_supported_video_file(abs_path)) {
         free(abs_path);
@@ -653,7 +719,7 @@ static int load_media_file(
     }
 
     if (!*vr) *vr = vr_create(win, ren);
-    if (!*vr || !vr_load(*vr, abs_path)) {
+    if (!*vr || !vr_load(*vr, abs_path, hw_option)) {
         free(abs_path);
         return 0;
     }
@@ -746,13 +812,14 @@ static int history_apply_entry(
 
     if (!video_file || !*video_file || !path_equals(*video_file, entry->media_path)) {
         if (!load_media_file(
-                vr, win, ren, video_file, entry->media_path,
-                volume_percent,
-                subtitle_color,
-                subtitle_size,
-                subtitle_margin,
-                requested_window_w,
-                requested_window_h)) {
+                    vr, win, ren, video_file, entry->media_path,
+                    volume_percent,
+                    subtitle_color,
+                    subtitle_size,
+                    subtitle_margin,
+                    requested_window_w,
+                    requested_window_h,
+                    hw_option)) {
             return 0;
         }
     }
@@ -813,7 +880,8 @@ static int navigate_media(
         subtitle_size,
         subtitle_margin,
         requested_window_w,
-        requested_window_h);
+        requested_window_h,
+        hw_option);
     free(target_path);
 
     if (!ok) {
@@ -1158,6 +1226,15 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage(stdout, argv[0]);
             return 0;
+        } else if (strncmp(argv[i], "--hw=", 5) == 0) {
+            const char* val = argv[i] + 5;
+            strncpy(hw_option, val, sizeof(hw_option) - 1);
+            hw_option[sizeof(hw_option) - 1] = '\0';
+        } else if (strcmp(argv[i], "--hw") == 0 && i + 1 < argc) {
+            const char* val = argv[i + 1];
+            strncpy(hw_option, val, sizeof(hw_option) - 1);
+            hw_option[sizeof(hw_option) - 1] = '\0';
+            i++;
         } else if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
             fprintf(stdout, "amp version %d.%d.%d\n", (AMP_VERSION >> 16) & 0xFF, (AMP_VERSION >> 8) & 0xFF, AMP_VERSION & 0xFF);
             return 0;
@@ -1178,7 +1255,7 @@ int main(int argc, char** argv) {
             fprintf(stdout, "(c) 2026 Markofwitch. All rights reserved.\n");
             return 0;
         } else if (argv[i][0] != '-') {
-            video_file = get_absolute_path(argv[i]);
+            video_file = abspath_temp_safe(argv[i]);
         } else {
             nob_log(NOB_WARNING, "Unknown argument: %s", argv[i]);
         }
@@ -1193,6 +1270,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     nob_log(NOB_INFO, "SDL initialized successfully");
+    nob_log(NOB_INFO, "Using '"THEME_NAME"' theme");
+    nob_log(NOB_INFO, "HW option: %s", hw_option);
     
     bool font_loaded = false;
     for (int i = 0; i < default_font_count; i++) {
@@ -1260,7 +1339,7 @@ int main(int argc, char** argv) {
 
     if(video_file) {
         vr = vr_create(win, ren);
-        if(vr_load(vr, video_file)) {
+        if(vr_load(vr, video_file, hw_option)) {
             vr_set_volume(vr, volume_percent_to_gain(volume_percent));
             apply_subtitle_override(
                 vr,
@@ -1276,7 +1355,7 @@ int main(int argc, char** argv) {
 
     #if SAVE_FILE
         SaveState save_state = {0};
-        if (!load_save_state(SAVE_FILE_PATH, &save_state)) {
+        if (!load_save_state(abspath_temp(SAVE_FILE_PATH), &save_state)) {
             nob_log(NOB_INFO, "No save file found, starting with default settings");
         } else {
             nob_log(NOB_INFO, "Save file loaded successfully");
@@ -1374,7 +1453,7 @@ int main(int argc, char** argv) {
                             if(f) {
                                 video_file = f;
                                 if(!vr) vr = vr_create(win, ren);
-                                if(vr_load(vr, f)) {
+                                if(vr_load(vr, f, hw_option)) {
                                     fill_save_state_from_vr(vr, &save_state, video_file);
                                     vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                                     apply_subtitle_override(
@@ -1398,7 +1477,7 @@ int main(int argc, char** argv) {
                         } else if(id >= MENU_RECENT_BASE && id < MENU_RECENT_BASE+MAX_RECENT) {
                             int idx = id - MENU_RECENT_BASE;
                             if(idx < recent_count) {
-                                char* selected_recent = get_absolute_path(recent_files[idx]);
+                                char* selected_recent = abspath_temp_safe(recent_files[idx]);
                                 if (!selected_recent) {
                                     nob_log(NOB_ERROR, "Failed to resolve recent file path: %s", recent_files[idx]);
                                     continue;
@@ -1406,7 +1485,7 @@ int main(int argc, char** argv) {
                                 if (video_file) free(video_file);
                                 video_file = selected_recent;
                                 if(!vr) vr = vr_create(win, ren);
-                                if(vr_load(vr, video_file)) {
+                                if(vr_load(vr, video_file, hw_option)) {
                                     fill_save_state_from_vr(vr, &save_state, video_file);
                                     vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                                     apply_subtitle_override(
@@ -1638,7 +1717,7 @@ int main(int argc, char** argv) {
                     if(f) {
                         video_file = f;
                         if(!vr) vr = vr_create(win, ren);
-                        if(vr_load(vr, f)) {
+                        if(vr_load(vr, f, hw_option)) {
                             fill_save_state_from_vr(vr, &save_state, video_file);
                             vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                             apply_subtitle_override(
@@ -2663,6 +2742,7 @@ int main(int argc, char** argv) {
     if (ui_font) TTF_CloseFont(ui_font);
     TTF_Quit();
     for (int i = 0; i < recent_count; i++) free(recent_files[i]);
+    abspath_temp_free();
 #ifdef _WIN32
     if (win_hwnd && g_prev_menu_wndproc) {
         SetWindowLongPtr(win_hwnd, GWLP_WNDPROC, (LONG_PTR)g_prev_menu_wndproc);
@@ -2678,10 +2758,11 @@ int main(int argc, char** argv) {
     SDL_DestroyWindow(win);
     SDL_Quit();
     #if SAVE_FILE
-        if (!write_save_state(SAVE_FILE_PATH, &save_state)) {
-            nob_log(NOB_ERROR, "Failed to write save state to %s", SAVE_FILE_PATH);
+        char* save_path = abspath_temp(SAVE_FILE_PATH);
+        if (!write_save_state(save_path, &save_state)) {
+            nob_log(NOB_ERROR, "Failed to write save state to %s", save_path);
         } else {
-            nob_log(NOB_INFO, "Save state written to %s", SAVE_FILE_PATH);
+            nob_log(NOB_INFO, "Save state written to %s", save_path);
         }
         debug_save_state(&save_state);
         free_save_state(&save_state);

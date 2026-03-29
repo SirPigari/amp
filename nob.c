@@ -3,8 +3,51 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-
 #include "source/config.h"
+
+#if USE_THEMES
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dirent.h>
+#endif
+
+static void add_theme_includes(Nob_Cmd *cmd) {
+#ifdef _WIN32
+    char pattern[1024];
+    snprintf(pattern, sizeof(pattern), "%s\\*.h", THEMES_DIR);
+
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            char path[1024];
+            snprintf(path, sizeof(path), "%s/%s", THEMES_DIR, fd.cFileName);
+            nob_cmd_append(cmd, "-include", nob_temp_strdup(path));
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+
+#else
+    DIR *d = opendir(THEMES_DIR);
+    if (!d) return;
+
+    struct dirent *ent;
+    while ((ent = readdir(d))) {
+        const char *name = ent->d_name;
+
+        size_t len = strlen(name);
+        if (len > 2 && strcmp(name + len - 2, ".h") == 0) {
+            char path[1024];
+            snprintf(path, sizeof(path), "%s/%s", THEMES_DIR, name);
+            nob_cmd_append(cmd, "-include", nob_temp_strdup(path));
+        }
+    }
+
+    closedir(d);
+#endif
+}
+#endif
 
 int main(int argc, char** argv) {
     NOB_GO_REBUILD_URSELF_PLUS(argc, argv, "source/config.h");
@@ -101,6 +144,10 @@ int main(int argc, char** argv) {
                     "-lm",
                     "-o", OUT_EXE_NAME);
 #endif
+
+    #if USE_THEMES
+    add_theme_includes(&cmd);
+    #endif
 
     if (!nob_cmd_run(&cmd)) {
         fprintf(stderr, "Compilation failed!\n");

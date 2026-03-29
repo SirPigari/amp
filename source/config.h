@@ -3,9 +3,14 @@
 
 /* Build config */
 #define AMP_VERSION 0x010000 /* 1.0.0 */
+
+#define THEMES_DIR "assets/themes/"
+#define USE_THEMES 0
+#define THEME "DEFAULT_THEME"
+
 #define CC "gcc"
-#define CFLAGS         "-Wno-cast-function-type", "-Wall", "-Wextra"
-#define RELEASE_CFLAGS "-Wno-cast-function-type", "-Wall", "-Wextra", "-O3"
+#define CFLAGS         "-Wno-cast-function-type", "-Wall", "-Wextra", "-D"THEME
+#define RELEASE_CFLAGS "-Wno-cast-function-type", "-Wall", "-Wextra", "-D"THEME, "-O3"
 #define SAVE_FILE_MAGIC 0x41504D56 /* 'APMV' */
 #define OUT_EXE_NAME "main"
 
@@ -18,7 +23,7 @@
 #define INITIAL_WINDOW_WIDTH 960
 #define INITIAL_WINDOW_HEIGHT 540
 #define SAVE_FILE 1
-#define SAVE_FILE_PATH "amp_save.dat"
+#define SAVE_FILE_PATH "./amp_save.dat"
 #define HASH_SIZE 256
 
 /* Menu dimensions */
@@ -42,6 +47,11 @@
 #define DEMUX_TIME_BUDGET_MS 2.0
 #define AMP_FF_PROBE_SIZE "4M"
 #define AMP_FF_ANALYZE_DURATION_US "1500000"
+
+/* Theme, this is a template and the default theme */
+#if defined(DEFAULT_THEME) || !USE_THEMES
+#define THEME_NAME "AMP"
+#define THEME_FILE "config.h"
 
 /* Colors */
 /*      Format is                 R,   G,   B */
@@ -94,5 +104,7 @@
     { "Iosevka (bundled)", "assets/Iosevka-Regular.ttc" }, \
     PLATFORM_FONTS \
 }
+
+#endif /* DEFAULT_THEME */
 
 #endif /* CONFIG_H */

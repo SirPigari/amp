@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <math.h>
 #include "../thirdparty/nob.h"
 #include "../thirdparty/SDL2/SDL.h"
@@ -9,6 +10,7 @@
 #include "../thirdparty/libswscale/swscale.h"
 #include "../thirdparty/libavutil/imgutils.h"
 #include "../thirdparty/libavutil/frame.h"
+#include "../thirdparty/libavutil/hwcontext.h"
 #include "../thirdparty/libswresample/swresample.h"
 #include "../thirdparty/libavutil/opt.h"
 #include "../thirdparty/libavutil/channel_layout.h"
@@ -40,6 +42,7 @@ typedef struct {
     AVCodecContext* video_ctx;
     int video_stream_index;
     struct SwsContext* sws_ctx;
+    enum AVPixelFormat sws_src_pix_fmt;
     AVRational video_time_base;
 
     AVCodecContext* audio_ctx;
@@ -102,6 +105,14 @@ typedef struct {
     uint32_t subtitle_override_color_rgb;
     int subtitle_override_size;
     int subtitle_override_margin_bottom;
+
+    AVBufferRef* hw_device_ctx;
+    enum AVPixelFormat hw_pix_fmt;
+    enum AVHWDeviceType hw_device_type;
+    char hw_device_name[32];
+    char current_filename[512];
+    int hw_bad_frame_count;
+    int hw_disabled;
 } VideoRenderer;
 
 static void pkt_queue_init(PacketQueue* q, int capacity) {
@@ -223,6 +234,7 @@ static void vr_reset_stream(VideoRenderer* vr) {
     if (vr->sws_ctx) {
         sws_freeContext(vr->sws_ctx);
         vr->sws_ctx = NULL;
+        vr->sws_src_pix_fmt = AV_PIX_FMT_NONE;
     }
     if (vr->video_ctx) {
         avcodec_free_context(&vr->video_ctx);
@@ -273,6 +285,14 @@ static void vr_reset_stream(VideoRenderer* vr) {
     if (vr->ass_lib) {
         ass_library_done(vr->ass_lib);
         vr->ass_lib = NULL;
+    }
+
+    if (vr->hw_device_ctx) {
+        av_buffer_unref(&vr->hw_device_ctx);
+        vr->hw_device_ctx = NULL;
+        vr->hw_pix_fmt = AV_PIX_FMT_NONE;
+        vr->hw_device_type = AV_HWDEVICE_TYPE_NONE;
+        vr->hw_device_name[0] = '\0';
     }
 
     if (vr->pending_valid) {
@@ -572,12 +592,95 @@ VideoRenderer* vr_create(SDL_Window* window, SDL_Renderer* renderer) {
     vr->subtitle_override_color_rgb = 0xFFFFFF;
     vr->subtitle_override_size = 30;
     vr->subtitle_override_margin_bottom = 64;
+    vr->hw_device_ctx = NULL;
+    vr->hw_pix_fmt = AV_PIX_FMT_NONE;
+    vr->hw_device_type = AV_HWDEVICE_TYPE_NONE;
+    vr->hw_device_name[0] = '\0';
+    vr->current_filename[0] = '\0';
+    vr->hw_bad_frame_count = 0;
+    vr->hw_disabled = 0;
     return vr;
 }
 
-int vr_load(VideoRenderer* vr, const char* filename) {
+static enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts) {
+    if (!ctx || !pix_fmts) return AV_PIX_FMT_NONE;
+    VideoRenderer* vr = (VideoRenderer*)ctx->opaque;
+    if (!vr) return AV_PIX_FMT_NONE;
+    for (const enum AVPixelFormat *p = pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
+        if (*p == vr->hw_pix_fmt) return *p;
+    }
+    return AV_PIX_FMT_NONE;
+}
+
+static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVCodec* codec, const char* hw_requested) {
+    if (!vr || !ctx || !codec) return -1;
+    if (!hw_requested || !hw_requested[0]) return -1;
+
+    char req[32];
+    snprintf(req, sizeof(req), "%s", hw_requested);
+#ifdef _WIN32
+    for (char* p = req; *p; ++p) *p = (char)tolower(*p);
+#else
+    for (char* p = req; *p; ++p) *p = (char)tolower(*p);
+#endif
+
+    const char* try_list[4];
+    int try_count = 0;
+    if (strcmp(req, "none") == 0) return -1;
+    if (strcmp(req, "auto") == 0 || strcmp(req, "accel") == 0) {
+#ifdef _WIN32
+        try_list[0] = "d3d11va"; try_list[1] = "dxva2"; try_list[2] = "vaapi"; try_count = 3;
+#else
+        try_list[0] = "vaapi"; try_list[1] = "d3d11va"; try_list[2] = "dxva2"; try_count = 3;
+#endif
+    } else {
+        try_list[0] = req; try_count = 1;
+    }
+
+    for (int ti = 0; ti < try_count; ti++) {
+        const char* name = try_list[ti];
+        enum AVHWDeviceType type = av_hwdevice_find_type_by_name(name);
+        if (type == AV_HWDEVICE_TYPE_NONE) continue;
+
+        enum AVPixelFormat pix = AV_PIX_FMT_NONE;
+        for (int i = 0; ; i++) {
+            const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+            if (!config) break;
+            if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) && config->device_type == type) {
+                pix = config->pix_fmt;
+                break;
+            }
+        }
+        if (pix == AV_PIX_FMT_NONE) continue;
+
+        AVBufferRef* dev_ctx = NULL;
+        int err = av_hwdevice_ctx_create(&dev_ctx, type, NULL, NULL, 0);
+        if (err < 0 || !dev_ctx) {
+            if (dev_ctx) av_buffer_unref(&dev_ctx);
+            continue;
+        }
+
+        vr->hw_device_ctx = dev_ctx;
+        vr->hw_pix_fmt = pix;
+        vr->hw_device_type = type;
+        snprintf(vr->hw_device_name, sizeof(vr->hw_device_name), "%s", name);
+
+        ctx->hw_device_ctx = av_buffer_ref(vr->hw_device_ctx);
+        ctx->opaque = vr;
+        ctx->get_format = get_hw_format;
+        nob_log(NOB_INFO, "HW decode enabled: %s (pixfmt %d)", name, pix);
+        return 0;
+    }
+
+    return -1;
+}
+
+int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
     if (!vr || !filename) return 0;
     vr_reset_stream(vr);
+    snprintf(vr->current_filename, sizeof(vr->current_filename), "%s", filename);
+    vr->hw_bad_frame_count = 0;
+    vr->hw_disabled = 0;
 
     av_log_set_level(AV_LOG_ERROR);
 
@@ -612,6 +715,7 @@ int vr_load(VideoRenderer* vr, const char* filename) {
             if (!codec) { nob_log(NOB_ERROR, "Failed to find video decoder"); continue; }
             vr->video_ctx = avcodec_alloc_context3(codec);
             avcodec_parameters_to_context(vr->video_ctx, stream->codecpar);
+            try_init_hw_decoder(vr, vr->video_ctx, codec, hw_opt);
             if (avcodec_open2(vr->video_ctx, (AVCodec*)codec, NULL) < 0) {
                 nob_log(NOB_ERROR, "Failed to open video decoder");
                 avcodec_free_context(&vr->video_ctx);
@@ -630,6 +734,7 @@ int vr_load(VideoRenderer* vr, const char* filename) {
                 vr->width, vr->height, vr->video_ctx->pix_fmt,
                 vr->width, vr->height, AV_PIX_FMT_YUV420P,
                 SWS_BILINEAR, NULL, NULL, NULL);
+            vr->sws_src_pix_fmt = vr->video_ctx->pix_fmt;
 
             vr->frame = av_frame_alloc();
             vr->yuv_frame = av_frame_alloc();
@@ -822,10 +927,69 @@ int vr_render_frame(VideoRenderer* vr) {
         av_packet_unref(&pkt);
 
         if (avcodec_receive_frame(vr->video_ctx, vr->frame) == 0) {
+            AVFrame* use_frame = vr->frame;
+            AVFrame* tmp_sw = NULL;
+
+            if (vr->hw_device_ctx) {
+                tmp_sw = av_frame_alloc();
+                if (tmp_sw) {
+                    int transfer_err = av_hwframe_transfer_data(tmp_sw, vr->frame, 0);
+                        if (transfer_err == 0) {
+                            use_frame = tmp_sw;
+                        } else {
+                            nob_log(NOB_WARNING, "HW->SW transfer failed (err=%d)", transfer_err);
+                            av_frame_free(&tmp_sw);
+                            tmp_sw = NULL;
+                        }
+                } else {
+                    nob_log(NOB_WARNING, "Failed to allocate tmp_sw for HW transfer");
+                }
+            }
+
+            if (!use_frame->data[0] || use_frame->linesize[0] <= 0 || use_frame->width <= 0 || use_frame->height <= 0) {
+                nob_log(NOB_WARNING, "Skipping frame: invalid source pointers/linesize (format=%d, w=%d, h=%d, ls0=%d)", use_frame->format, use_frame->width, use_frame->height, use_frame->linesize[0]);
+                if (tmp_sw) av_frame_free(&tmp_sw);
+                av_frame_unref(vr->frame);
+                if (vr->hw_device_ctx && !vr->hw_disabled) {
+                    vr->hw_bad_frame_count++;
+                    if (vr->hw_bad_frame_count >= 5) {
+                        nob_log(NOB_ERROR, "Too many bad HW->SW frames, disabling HW and reloading as software decode");
+                        char fname[512];
+                        snprintf(fname, sizeof(fname), "%s", vr->current_filename[0] ? vr->current_filename : "");
+                        vr_reset_stream(vr);
+                        if (fname[0]) {
+                            if (!vr_load(vr, fname, "none")) {
+                                nob_log(NOB_ERROR, "Failed to reload file without HW: %s", fname);
+                            }
+                        }
+                        vr->hw_disabled = 1;
+                        return 0;
+                    }
+                }
+                continue;
+            }
+
+            if (use_frame->format != vr->sws_src_pix_fmt) {
+                if (vr->sws_ctx) sws_freeContext(vr->sws_ctx);
+                vr->sws_ctx = sws_getContext(
+                    use_frame->width, use_frame->height, use_frame->format,
+                    use_frame->width, use_frame->height, AV_PIX_FMT_YUV420P,
+                    SWS_BILINEAR, NULL, NULL, NULL);
+                vr->sws_src_pix_fmt = use_frame->format;
+                if (!vr->sws_ctx) {
+                    nob_log(NOB_ERROR, "Failed to create sws_ctx for format %d", use_frame->format);
+                    if (tmp_sw) av_frame_free(&tmp_sw);
+                    av_frame_unref(vr->frame);
+                    continue;
+                }
+            }
+
             sws_scale(vr->sws_ctx,
-                (const uint8_t* const*)vr->frame->data,
-                vr->frame->linesize, 0, vr->height,
+                (const uint8_t* const*)use_frame->data,
+                use_frame->linesize, 0, use_frame->height,
                 vr->yuv_frame->data, vr->yuv_frame->linesize);
+
+            if (tmp_sw) av_frame_free(&tmp_sw);
 
             SDL_UpdateYUVTexture(vr->texture, NULL,
                 vr->yuv_frame->data[0], vr->yuv_frame->linesize[0],
