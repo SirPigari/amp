@@ -45,6 +45,7 @@ char flash_text[256] = {0};
 Uint32 flash_until = 0;
 float flash_alpha = 0.0f;
 static char hw_option[32] = "auto";
+static FILE* log_file = NULL;
 
 typedef struct {
     const char* name;
@@ -460,6 +461,16 @@ void amp_log_handler(Nob_Log_Level level, const char* fmt, va_list args) {
     fprintf(stderr, "\n");
 
     fflush(stderr);
+
+    if (log_file) {
+        va_list args_file;
+        va_copy(args_file, args);
+        fprintf(log_file, "[%s] [%s] ", timebuf, level_str);
+        vfprintf(log_file, fmt, args_file);
+        va_end(args_file);
+        fprintf(log_file, "\n");
+        fflush(log_file);
+    }
 
     if (flash_debug_enabled && level == (Nob_Log_Level)flash_debug_level) {
         char flash_buf[256];
@@ -1236,6 +1247,18 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage(stdout, argv[0]);
             return 0;
+        } else if (strcmp(argv[i], "--log-file") == 0 && i + 1 < argc) {
+            if (argv[i + 1]) {
+                log_file = fopen(abspath_temp(argv[i + 1]), "a");
+                if (!log_file) {
+                    nob_log(NOB_ERROR, "Failed to open log file '%s' for writing: %s", argv[i + 1], strerror(errno));
+                } else {
+                    nob_log(NOB_INFO, "Logging to file: %s", argv[i + 1]);
+                }
+            } else {
+                nob_log(NOB_WARNING, "No log file specified after --log-file");
+            }
+            i++;
         } else if (strncmp(argv[i], "--hw=", 5) == 0) {
             const char* val = argv[i] + 5;
             strncpy(hw_option, val, sizeof(hw_option) - 1);
@@ -1944,17 +1967,17 @@ int main(int argc, char** argv) {
                     overlay_target = 1.0f;
                 }
                 if (key == SDLK_LEFT && vr && !(e.key.keysym.mod & KMOD_ALT) && !(e.key.keysym.mod & KMOD_SHIFT)) {
-                    double t = vr_get_time(vr) - 5.0;
-                    if (t < 0.0) t = 0.0;
+                    double t = vr_get_time(vr) - 5.0f;
+                    if (t < 0.0f) t = 0.0f;
                     seek_and_preview_if_paused(vr, t, paused);
                     if (video_file) history_push(playback_history, &history_count, &history_pos, video_file, t);
                     snprintf(flash_text, sizeof(flash_text), "-5s");
                     flash_until = SDL_GetTicks() + 900;
                 }
                 if (key == SDLK_RIGHT && vr && !(e.key.keysym.mod & KMOD_ALT) && !(e.key.keysym.mod & KMOD_SHIFT)) {
-                    double t = vr_get_time(vr) + 5.0;
+                    double t = vr_get_time(vr) + 5.0f;
                     double dur = vr_get_duration(vr);
-                    if (dur > 0.0 && t > dur) t = dur;
+                    if (dur > 0.0f && t > dur) t = dur;
                     seek_and_preview_if_paused(vr, t, paused);
                     if (video_file) history_push(playback_history, &history_count, &history_pos, video_file, t);
                     snprintf(flash_text, sizeof(flash_text), "+5s");

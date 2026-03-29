@@ -502,11 +502,19 @@ static void vr_process_subtitle(VideoRenderer* vr, const AVPacket* pkt) {
 
     int64_t pts_ms = AV_NOPTS_VALUE;
     if (sub.pts != AV_NOPTS_VALUE) {
-        pts_ms = av_rescale_q(sub.pts, AV_TIME_BASE_Q, (AVRational){1, 1000});
+        pts_ms = sub.pts / 1000;
     } else if (pkt->pts != AV_NOPTS_VALUE) {
         AVRational tb = vr->fmt_ctx->streams[pkt->stream_index]->time_base;
         pts_ms = av_rescale_q(pkt->pts, tb, (AVRational){1, 1000});
     }
+
+    if (pts_ms == AV_NOPTS_VALUE) {
+        avsubtitle_free(&sub);
+        return;
+    }
+
+    pts_ms -= (int64_t)(vr->start_time * 1000.0);
+    if (pts_ms < 0) pts_ms = 0;
 
     if (pts_ms == AV_NOPTS_VALUE) {
         avsubtitle_free(&sub);
@@ -991,7 +999,8 @@ int vr_render_frame(VideoRenderer* vr) {
             }
 
             if (!use_frame->data[0] || use_frame->linesize[0] <= 0 || use_frame->width <= 0 || use_frame->height <= 0) {
-                nob_log(NOB_WARNING, "Dropped frame: invalid source pointers/linesize (format=%d, w=%d, h=%d, ls0=%d)", use_frame->format, use_frame->width, use_frame->height, use_frame->linesize[0]);
+                nob_log(NOB_WARNING, "Dropped frame: invalid source pointers/linesize (format=%d, w=%d, h=%d, ls0=%d)",
+                    use_frame->format, use_frame->width, use_frame->height, use_frame->linesize[0]);
                 if (tmp_sw) av_frame_free(&tmp_sw);
                 av_frame_unref(vr->frame);
                 if (vr->hw_device_ctx && !vr->hw_disabled) {
@@ -1167,9 +1176,11 @@ int vr_render_subtitles(VideoRenderer* vr, double seconds) {
 }
 
 void vr_seek(VideoRenderer* vr, double seconds) {
-    if (!vr) return;
-    int64_t ts = (int64_t)(seconds / av_q2d(vr->fmt_ctx->streams[vr->video_stream_index]->time_base));
-    av_seek_frame(vr->fmt_ctx, vr->video_stream_index, ts, AVSEEK_FLAG_BACKWARD);
+    if (!vr || !vr->fmt_ctx || vr->video_stream_index < 0) return;
+
+    int64_t ts = (int64_t)(seconds * AV_TIME_BASE);
+    av_seek_frame(vr->fmt_ctx, -1, ts, AVSEEK_FLAG_BACKWARD);
+
     avcodec_flush_buffers(vr->video_ctx);
     if (vr->audio_ctx) avcodec_flush_buffers(vr->audio_ctx);
     if (vr->subtitle_ctx) avcodec_flush_buffers(vr->subtitle_ctx);
@@ -1192,27 +1203,24 @@ void vr_seek(VideoRenderer* vr, double seconds) {
         }
     }
 
-    vr->audio_clock_base = seconds;
-    vr->audio_clock_pts = seconds;
-    vr->audio_base_samples = 0;
-    vr->audio_samples_written = 0;
-    vr->audio_clock_valid = 1;
-    vr->current_time = seconds;
-    vr->last_time = seconds;
-    vr->start_time = seconds;
-    vr->start_time_set = 0;
-    vr->clock_start_ticks = SDL_GetTicks();
-    vr->clock_pause_ticks = 0;
-    vr->clock_pause_accum = 0;
-    vr->clock_paused = 0;
-    vr->clock_start_time = seconds;
-
     if (vr->pending_valid) {
         av_packet_unref(&vr->pending_pkt);
         vr->pending_valid = 0;
     }
     pkt_queue_clear(&vr->video_pktq);
     pkt_queue_clear(&vr->audio_pktq);
+
+    vr->current_time = seconds;
+    vr->last_time = 0.0;
+    vr->audio_clock_valid = 0;
+    vr->audio_clock_pts = 0.0;
+    vr->audio_base_samples = 0;
+    vr->audio_samples_written = 0;
+
+    vr->clock_start_time = seconds;
+    vr->clock_start_ticks = SDL_GetTicks();
+    vr->clock_pause_accum = 0;
+    vr->clock_paused = 0;
 }
 
 double vr_get_time(VideoRenderer* vr) {
@@ -1426,7 +1434,6 @@ void vr_select_subtitle_track(VideoRenderer* vr, int idx) {
     if (idx < 0 || idx >= vr->subtitle_count) {
         vr->current_subtitle = -1;
         vr->subtitle_stream_index = -1;
-        nob_log(NOB_INFO, "[SUBTITLE] Disabled subtitles");
         return;
     }
 
@@ -1434,9 +1441,6 @@ void vr_select_subtitle_track(VideoRenderer* vr, int idx) {
     vr->current_subtitle = idx;
 
     const AVStream* stream = vr->fmt_ctx->streams[vr->subtitle_stream_index];
-    const char* codec_name = avcodec_get_name(stream->codecpar->codec_id);
-    nob_log(NOB_INFO, "[SUBTITLE] Selected track %d: %s (stream %d, codec: %s)",
-            idx, vr->subtitle_names[idx], vr->subtitle_stream_index, codec_name);
 
     const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
     if (codec) {
@@ -1462,14 +1466,43 @@ void vr_select_subtitle_track(VideoRenderer* vr, int idx) {
     }
 
     double current_pos = vr_get_time(vr);
-    if (current_pos > 0.0) {
-        int64_t ts_us = (int64_t)(current_pos * AV_TIME_BASE);
-        av_seek_frame(vr->fmt_ctx, -1, ts_us, AVSEEK_FLAG_BACKWARD);
-        if (vr->subtitle_ctx) avcodec_flush_buffers(vr->subtitle_ctx);
-        if (vr->pending_valid) {
-            av_packet_unref(&vr->pending_pkt);
-            vr->pending_valid = 0;
+    int64_t ts = (int64_t)(current_pos * AV_TIME_BASE);
+    av_seek_frame(vr->fmt_ctx, -1, ts, AVSEEK_FLAG_BACKWARD);
+
+    if (vr->subtitle_ctx) avcodec_flush_buffers(vr->subtitle_ctx);
+    if (vr->pending_valid && vr->pending_pkt.stream_index == vr->subtitle_stream_index) {
+        av_packet_unref(&vr->pending_pkt);
+        vr->pending_valid = 0;
+    }
+
+    AVPacket pkt;
+    int reads = 0;
+    while (reads < 200) {
+        if (av_read_frame(vr->fmt_ctx, &pkt) < 0) break;
+        if (pkt.stream_index == vr->subtitle_stream_index) {
+            double pkt_time = 0.0;
+            if (pkt.pts != AV_NOPTS_VALUE) {
+                AVRational tb = vr->fmt_ctx->streams[pkt.stream_index]->time_base;
+                pkt_time = av_rescale_q(pkt.pts, tb, AV_TIME_BASE_Q) * av_q2d(AV_TIME_BASE_Q);
+                pkt_time -= vr->start_time;
+            }
+            vr_process_subtitle(vr, &pkt);
+            av_packet_unref(&pkt);
+            if (pkt_time > current_pos + 0.1) break;
+        } else if (pkt.stream_index == vr->video_stream_index) {
+            if (!pkt_queue_is_full(&vr->video_pktq)) {
+                pkt_queue_push(&vr->video_pktq, &pkt);
+            }
+            av_packet_unref(&pkt);
+        } else if (vr->audio_ctx && pkt.stream_index == vr->audio_stream_index) {
+            if (!pkt_queue_is_full(&vr->audio_pktq)) {
+                pkt_queue_push(&vr->audio_pktq, &pkt);
+            }
+            av_packet_unref(&pkt);
+        } else {
+            av_packet_unref(&pkt);
         }
+        reads++;
     }
 }
 
