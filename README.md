@@ -24,3 +24,4 @@ amp is a simple media player built using C and SDL2.
 - [TinyFileDialogs](https://sourceforge.net/projects/tinyfiledialogs/)
 - [Iosevka Font](https://github.com/be5invis/Iosevka)
 - [MPV](https://mpv.io/)
+- 
