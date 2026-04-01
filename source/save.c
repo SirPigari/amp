@@ -20,6 +20,9 @@ typedef enum {
     /* remembered FileConfig array */
     FIELD_REMEMBERED_FILES      = 0x0020,   /* variable-length */
 
+    /* per-file bookmarks */
+    FIELD_BOOKMARKS             = 0x0021,   /* variable-length */
+
     /* hardware-decoder cache */
     FIELD_HW_CACHE              = 0x0030,   /* variable-length */
 
@@ -52,6 +55,13 @@ typedef struct {
 } FontSettings;
 
 typedef struct {
+    double   time;
+    char     name[BOOKMARK_NAME_MAX];
+    uint32_t color_rgb;
+    int      is_default_color;
+} Bookmark;
+
+typedef struct {
     char* video_path;
     uint8_t file_hash[HASH_SIZE];
     double last_position;
@@ -61,6 +71,8 @@ typedef struct {
     int32_t subtitle_track;
     int audio_track_index;
     int subtitle_track_index;
+    int bookmark_count;
+    Bookmark bookmarks[MAX_BOOKMARKS_PER_FILE];
 } FileConfig;
 
 typedef struct {
@@ -82,6 +94,7 @@ static const LayoutField CURRENT_LAYOUT[] = {
     { FIELD_FONT_PATH,          SIZE_VARIABLE    },
     { FIELD_RECENT_FILES,       SIZE_VARIABLE    },
     { FIELD_REMEMBERED_FILES,   SIZE_VARIABLE    },
+    { FIELD_BOOKMARKS,          SIZE_VARIABLE    },
     { FIELD_HW_CACHE,           SIZE_VARIABLE    },
     { FIELD_GLOBAL,             sizeof(Global)   },
 };
@@ -309,6 +322,14 @@ static int write_save_state(const char* path, SaveState* state) {
     }
 
     total += sizeof(uint64_t);
+    for (uint64_t i = 0; i < state->remembered_count; i++) {
+        FileConfig* c = &state->remembered_files[i];
+        total += HASH_SIZE + sizeof(uint32_t);
+        total += (size_t)c->bookmark_count
+               * (sizeof(double) + BOOKMARK_NAME_MAX + sizeof(uint32_t) + sizeof(int));
+    }
+
+    total += sizeof(uint64_t);
     for (int i = 0; i < state->hw_cache.count; i++)
         total += sizeof(uint64_t) + strlen(state->hw_cache.entries[i]);
     total += sizeof(state->global);
@@ -350,6 +371,23 @@ static int write_save_state(const char* path, SaveState* state) {
         uint64_t len = c->video_path ? strlen(c->video_path) : 0;
         memcpy(ptr, &len, sizeof(len)); ptr += sizeof(len);
         if (len) { memcpy(ptr, c->video_path, len); ptr += len; }
+    }
+
+    {
+        uint64_t bm_entry_count = state->remembered_count;
+        memcpy(ptr, &bm_entry_count, sizeof(bm_entry_count)); ptr += sizeof(bm_entry_count);
+        for (uint64_t i = 0; i < state->remembered_count; i++) {
+            FileConfig* c = &state->remembered_files[i];
+            memcpy(ptr, c->file_hash, HASH_SIZE); ptr += HASH_SIZE;
+            uint32_t bm_count = (uint32_t)c->bookmark_count;
+            memcpy(ptr, &bm_count, sizeof(bm_count)); ptr += sizeof(bm_count);
+            for (int j = 0; j < c->bookmark_count; j++) {
+                memcpy(ptr, &c->bookmarks[j].time, sizeof(double)); ptr += sizeof(double);
+                memcpy(ptr, c->bookmarks[j].name, BOOKMARK_NAME_MAX); ptr += BOOKMARK_NAME_MAX;
+                memcpy(ptr, &c->bookmarks[j].color_rgb, sizeof(uint32_t)); ptr += sizeof(uint32_t);
+                memcpy(ptr, &c->bookmarks[j].is_default_color, sizeof(int)); ptr += sizeof(int);
+            }
+        }
     }
 
     uint64_t hw_count = (uint64_t)(state->hw_cache.count > 0 ? state->hw_cache.count : 0);
@@ -531,9 +569,54 @@ static int parse_payload(const uint8_t* ptr, const uint8_t* buf_end,
             break;
         }
 
+        case FIELD_SENTINEL:
+            break;
+
         case FIELD_GLOBAL: {
             if (ptr + sizeof(Global) > buf_end) break;
             memcpy(&s->global, ptr, sizeof(Global)); ptr += sizeof(Global);
+            break;
+        }
+
+        case FIELD_BOOKMARKS: {
+            if (ptr + sizeof(uint64_t) > buf_end) break;
+            uint64_t bm_entry_count = 0;
+            memcpy(&bm_entry_count, ptr, sizeof(bm_entry_count)); ptr += sizeof(bm_entry_count);
+            for (uint64_t ei = 0; ei < bm_entry_count; ei++) {
+                if (ptr + HASH_SIZE + sizeof(uint32_t) > buf_end) break;
+                uint8_t hash[HASH_SIZE];
+                memcpy(hash, ptr, HASH_SIZE); ptr += HASH_SIZE;
+                uint32_t bm_count = 0;
+                memcpy(&bm_count, ptr, sizeof(bm_count)); ptr += sizeof(bm_count);
+                if (bm_count > MAX_BOOKMARKS_PER_FILE) bm_count = MAX_BOOKMARKS_PER_FILE;
+                FileConfig* target = NULL;
+                for (uint64_t j = 0; j < s->remembered_count; j++) {
+                    if (memcmp(s->remembered_files[j].file_hash, hash, HASH_SIZE) == 0) {
+                        target = &s->remembered_files[j];
+                        break;
+                    }
+                }
+                for (uint32_t k = 0; k < bm_count; k++) {
+                    if (ptr + sizeof(double) + BOOKMARK_NAME_MAX + sizeof(uint32_t) + sizeof(int) > buf_end) break;
+                    double bm_time;
+                    char bm_name[BOOKMARK_NAME_MAX];
+                    uint32_t bm_color;
+                    int bm_is_default_color;
+                    memcpy(&bm_time,  ptr, sizeof(double));       ptr += sizeof(double);
+                    memcpy(bm_name,   ptr, BOOKMARK_NAME_MAX);    ptr += BOOKMARK_NAME_MAX;
+                    memcpy(&bm_color, ptr, sizeof(uint32_t));     ptr += sizeof(uint32_t);
+                    memcpy(&bm_is_default_color, ptr, sizeof(int)); ptr += sizeof(int);
+                    if (target && target->bookmark_count < MAX_BOOKMARKS_PER_FILE) {
+                        Bookmark* bm = &target->bookmarks[target->bookmark_count];
+                        bm->time      = bm_time;
+                        bm->color_rgb = bm_color;
+                        bm->is_default_color = bm_is_default_color;
+                        memcpy(bm->name, bm_name, BOOKMARK_NAME_MAX);
+                        bm->name[BOOKMARK_NAME_MAX - 1] = '\0';
+                        target->bookmark_count++;
+                    }
+                }
+            }
             break;
         }
 
@@ -794,6 +877,12 @@ static void debug_save_state(const SaveState* state) {
         printf("      Subtitle Track: %d\n",   cfg->subtitle_track);
         printf("      Audio Track Index: %d\n",   cfg->audio_track_index);
         printf("      Subtitle Track Index: %d\n",cfg->subtitle_track_index);
+        printf("      Bookmarks (%u):\n", cfg->bookmark_count);
+        for (int j = 0; j < cfg->bookmark_count; j++) {
+            const Bookmark* bm = &cfg->bookmarks[j];
+            printf("        - Time: %.2f, Name: %s, Color: 0x%08X, Default Color: %s\n",
+                   bm->time, bm->name, bm->color_rgb, bm->is_default_color ? "true" : "false");
+        }
     }
     printf("Font Settings:\n");
     printf("  Size: %d\n",          state->font_settings.size);
@@ -807,4 +896,35 @@ static void debug_save_state(const SaveState* state) {
         printf("  - %s\n", state->hw_cache.entries[i]);
     printf("Global:\n");
     printf("  Paused: %d\n", state->global.paused);
+}
+
+static void update_bookmarks_in_save_state(SaveState* state,
+                                            const char* video_path,
+                                            const Bookmark* bms,
+                                            int bm_count) {
+    if (!state || !video_path) return;
+    int64_t idx = get_remembered_file_index(state, video_path, NULL);
+    if (idx < 0) return;
+    FileConfig* c = &state->remembered_files[idx];
+    int cnt = (bm_count < MAX_BOOKMARKS_PER_FILE) ? bm_count : MAX_BOOKMARKS_PER_FILE;
+    c->bookmark_count = cnt;
+    if (bms && cnt > 0) {
+        for (int i = 0; i < cnt; i++) c->bookmarks[i] = bms[i];
+    }
+}
+
+static void get_bookmarks_from_save_state(const SaveState* state,
+                                           const char* video_path,
+                                           Bookmark* out_bm,
+                                           int* out_count) {
+    if (!out_count) return;
+    *out_count = 0;
+    if (!state || !video_path || !out_bm) return;
+    int64_t idx = get_remembered_file_index((SaveState*)state, video_path, NULL);
+    if (idx < 0) return;
+    const FileConfig* c = &state->remembered_files[idx];
+    int cnt = (c->bookmark_count < MAX_BOOKMARKS_PER_FILE)
+            ? c->bookmark_count : MAX_BOOKMARKS_PER_FILE;
+    for (int i = 0; i < cnt; i++) out_bm[i] = c->bookmarks[i];
+    *out_count = cnt;
 }

@@ -2,7 +2,7 @@
 #define CONFIG_H
 
 /* Build config */
-#define AMP_VERSION 0x010100 /* 1.0.0 */
+#define AMP_VERSION 0x010100 /* 1.1.0 */
 
 #define THEMES_DIR "assets/themes/"
 #define USE_THEMES 0
@@ -27,6 +27,10 @@
 #define HW_CACHE_SIZE 16
 #define HASH_SIZE 256
 #define USE_SAVE_IN_SAVE_FILE 0
+#define MAX_BOOKMARKS_PER_FILE 64
+#define BOOKMARK_NAME_MAX 64
+#define TEXT_INPUT_MAX_LEN 256
+#define BM_OVERRIDE_DEFAULT_COLOR 0
 
 /* Demuxer settings */
 #define DEMUX_MAX_READS_PER_TICK 64
@@ -55,12 +59,15 @@
 #define TIMELINE_THUMB_SIZE 12
 #define TIMELINE_CHAPTER_MARKER_WIDTH 4
 #define TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH 6
+#define TIMELINE_BOOKMARK_MARKER_WIDTH 4
+#define TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH 6
 
 /* Hamburger dimensions */
 #define HAMBURGER_LINE_HEIGHT 2
 #define HAMBURGER_LINE_MARGIN 6
 
 #define SHADOW_OFFSET 2
+#define DEFAULT_BOOKMARK_COLOR 0x44A0FF
 
 /* Colors */
 /*      Format is                 R,   G,   B */
@@ -75,6 +82,11 @@
 #define TIMELINE_THUMB_COLOR      220, 220, 230
 #define MEDIA_TITLE_COLOR         220, 220, 230
 #define CHAPTER_HOVER_BG_COLOR    22,  22,  28
+#define BOOKMARK_HOVER_BG_COLOR   22,  22,  28
+#define CONTEXT_MENU_BG_COLOR     26,  26,  34
+#define CONTEXT_MENU_ITEM_HL      40,  80,  120
+#define TEXT_INPUT_BG_COLOR       28,  28,  36
+#define TEXT_INPUT_PROMPT_COLOR   180, 180, 190
 #define HAMBURGER_BG_COLOR        35,  35,  45
 #define MENU_PANEL_BG_COLOR       28,  28,  36
 #define MENU_PANEL_ITEM_BG_COLOR  35,  35,  45

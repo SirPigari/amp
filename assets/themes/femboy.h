@@ -26,12 +26,15 @@ colors were chosen by markofwitch.
 #define TIMELINE_THUMB_SIZE 12
 #define TIMELINE_CHAPTER_MARKER_WIDTH 4
 #define TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH 6
+#define TIMELINE_BOOKMARK_MARKER_WIDTH 4
+#define TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH 6
 
 /* Hamburger dimensions (same as default) */
 #define HAMBURGER_LINE_HEIGHT 2
 #define HAMBURGER_LINE_MARGIN 6
 
 #define SHADOW_OFFSET 2
+#define DEFAULT_BOOKMARK_COLOR 0xFF96C8
 
 /* Cute Pink (Femboy) Theme */
 #define PANEL_COLOR               24,  20,  26
@@ -42,6 +45,11 @@ colors were chosen by markofwitch.
 #define LETTERBOX_COLOR           20,  20,  20
 #define OVERLAY_COLOR             80,  65,  78
 #define CHAPTER_MARKER_COLOR      255, 200, 225
+#define BOOKMARK_HOVER_BG_COLOR   36,  26,  38
+#define CONTEXT_MENU_BG_COLOR     36,  28,  38
+#define CONTEXT_MENU_ITEM_HL      90,  55,  90
+#define TEXT_INPUT_BG_COLOR       32,  24,  34
+#define TEXT_INPUT_PROMPT_COLOR   200, 180, 200
 #define TIMELINE_THUMB_COLOR      255, 210, 230
 #define MEDIA_TITLE_COLOR         250, 220, 235
 #define CHAPTER_HOVER_BG_COLOR    32,  24,  34

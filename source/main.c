@@ -875,7 +875,10 @@ static int navigate_media(
     int requested_window_h,
     PlaybackHistoryEntry history[MAX_HISTORY],
     int* history_count,
-    int* history_pos
+    int* history_pos,
+    SaveState* save_state,
+    Bookmark* bookmarks,
+    int* bookmark_count
 ) {
     if (!vr || !*vr || !video_file || !*video_file) return 0;
 
@@ -901,6 +904,13 @@ static int navigate_media(
     int old_pos = *history_pos;
     history_push(history, history_count, history_pos, *video_file, before);
 
+    #if SAVE_FILE
+    if (save_state && bookmarks && bookmark_count && *video_file) {
+        update_bookmarks_in_save_state(save_state, *video_file, bookmarks, *bookmark_count);
+        write_save_state(SAVE_FILE_PATH, save_state);
+    }
+    #endif
+
     int ok = load_media_file(
         vr, win, ren, video_file, target_path,
         volume_percent,
@@ -924,6 +934,13 @@ static int navigate_media(
         vr_set_paused(*vr, paused);
         seek_and_preview_if_paused(*vr, 0.0, paused);
     }
+
+    #if SAVE_FILE
+    if (save_state && bookmarks && bookmark_count && *video_file) {
+        get_bookmarks_from_save_state(save_state, *video_file, bookmarks, bookmark_count);
+    }
+    #endif
+
     history_push(history, history_count, history_pos, *video_file, 0.0);
     snprintf(flash_text, sizeof(flash_text), "%s media", direction > 0 ? "Next" : "Previous");
     flash_until = SDL_GetTicks() + 900;
@@ -1155,6 +1172,138 @@ static void refresh_windows_recent_menu(void) {
 }
 #endif
 
+typedef struct {
+    char     value[TEXT_INPUT_MAX_LEN];
+    char     default_val[TEXT_INPUT_MAX_LEN];
+    char     prompt[64];
+    int      max_len;
+    int      active;
+    int      done;
+    int      cancelled;
+    int      has_typed;
+} TextInputState;
+
+static void text_input_open(TextInputState* ti, const char* prompt,
+                             const char* default_val, int max_len) {
+    memset(ti, 0, sizeof(*ti));
+    ti->active = 1;
+    ti->has_typed = 0;
+    if (prompt) snprintf(ti->prompt, sizeof(ti->prompt), "%s", prompt);
+    if (default_val) {
+        snprintf(ti->default_val, TEXT_INPUT_MAX_LEN, "%s", default_val);
+        snprintf(ti->value, TEXT_INPUT_MAX_LEN, "%s", default_val);
+    }
+    ti->max_len = (max_len > 0 && max_len < TEXT_INPUT_MAX_LEN)
+                ? max_len : (TEXT_INPUT_MAX_LEN - 1);
+    SDL_StartTextInput();
+}
+
+static void text_input_handle_event(TextInputState* ti, SDL_Event* e) {
+    if (!ti->active) return;
+    if (e->type == SDL_KEYDOWN) {
+        SDL_Keycode k = e->key.keysym.sym;
+        if (k == SDLK_RETURN || k == SDLK_KP_ENTER) {
+            ti->done     = 1;
+            ti->active   = 0;
+            SDL_StopTextInput();
+        } else if (k == SDLK_ESCAPE) {
+            ti->cancelled = 1;
+            ti->active    = 0;
+            SDL_StopTextInput();
+        } else if (k == SDLK_BACKSPACE) {
+            if (!ti->has_typed) {
+                ti->has_typed = 1;
+                ti->value[0] = '\0';
+            } else {
+                int len = (int)strlen(ti->value);
+                if (len > 0) ti->value[len - 1] = '\0';
+            }
+        }
+    } else if (e->type == SDL_TEXTINPUT) {
+        if (!ti->has_typed) {
+            ti->value[0] = '\0';
+            ti->has_typed = 1;
+        }
+        int len = (int)strlen(ti->value);
+        int add = (int)strlen(e->text.text);
+        if (len + add < ti->max_len) {
+            strncat(ti->value, e->text.text, ti->max_len - len);
+        }
+    }
+}
+
+static void text_input_draw(SDL_Renderer* r, TextInputState* ti) {
+    if (!ti->active) return;
+    
+    int px = 20, py = 20, padding = 6;
+    
+    int prompt_w = 0, prompt_h = 0;
+    TTF_SizeUTF8(ui_font, ti->prompt, &prompt_w, &prompt_h);
+    
+    const char* content = ti->has_typed ? ti->value : ti->default_val;
+    int content_w = 0, content_h = 0;
+    TTF_SizeUTF8(ui_font, content, &content_w, &content_h);
+    
+    int total_w = prompt_w + padding + content_w + padding * 2;
+    int total_h = prompt_h + padding;
+    
+    SDL_Rect bg = { px, py, total_w, total_h };
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    draw_rect(r, bg, (SDL_Color){ TEXT_INPUT_BG_COLOR, 200 });
+    
+    draw_text_shadow(r, px + padding, py + padding / 2, ti->prompt,
+                      (SDL_Color){ TEXT_INPUT_PROMPT_COLOR, 255 });
+    
+    SDL_Color content_color = ti->has_typed 
+        ? (SDL_Color){ TEXT_COLOR, 255 }
+        : (SDL_Color){ MUTED_COLOR, 200 };
+    draw_text_shadow(r, px + padding + prompt_w + padding, py + padding / 2, 
+                      content, content_color);
+}
+
+static int find_nearest_bookmark(const Bookmark* bms, int bm_count,
+                                  double duration, SDL_Rect timeline,
+                                  int mouse_x, int threshold_px,
+                                  int* out_index, double* out_time) {
+    if (!bms || bm_count <= 0 || duration <= 0.0 || timeline.w <= 0) return 0;
+    int best_idx = -1, best_dist = threshold_px + 1;
+    double best_time = 0.0;
+    for (int i = 0; i < bm_count; i++) {
+        double t = bms[i].time;
+        if (t < 0.0 || t > duration) continue;
+        int cx = timeline.x + (int)((t / duration) * timeline.w);
+        int dist = abs(mouse_x - cx);
+        if (dist <= threshold_px && dist < best_dist) {
+            best_dist = dist;
+            best_idx  = i;
+            best_time = t;
+        }
+    }
+    if (best_idx < 0) return 0;
+    if (out_index) *out_index = best_idx;
+    if (out_time)  *out_time  = best_time;
+    return 1;
+}
+
+static int parse_time_string(const char* s, double* out) {
+    if (!s || !out) return 0;
+    int h = 0, m = 0, sec = 0;
+    float fsec = 0.0f;
+    if (sscanf(s, "%d:%d:%d", &h, &m, &sec) == 3) {
+        *out = (double)(h * 3600 + m * 60 + sec);
+        return 1;
+    }
+    if (sscanf(s, "%d:%d", &m, &sec) == 2) {
+        *out = (double)(m * 60 + sec);
+        return 1;
+    }
+    if (sscanf(s, "%f", &fsec) == 1) {
+        *out = (double)fsec;
+        return 1;
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     nob_set_log_handler(amp_log_handler);
 
@@ -1201,6 +1350,16 @@ int main(int argc, char** argv) {
     const int subtitle_size_count = (int)(sizeof(subtitle_override_sizes) / sizeof(subtitle_override_sizes[0]));
     const int subtitle_move_count = (int)(sizeof(subtitle_override_margins) / sizeof(subtitle_override_margins[0]));
     SDL_Event e;
+
+    Bookmark bookmarks[MAX_BOOKMARKS_PER_FILE];
+    int bookmark_count = 0;
+
+    TextInputState ti = {0};
+    typedef enum { TI_NONE = 0, TI_BOOKMARK_RENAME, TI_GOTO_TIME } TIPurpose;
+    TIPurpose ti_purpose = TI_NONE;
+    int ti_bm_idx = -1;
+
+    int bm_ctx_open = 0, bm_ctx_x = 0, bm_ctx_y = 0, bm_ctx_idx = -1;
 
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--flash-debug") == 0) {
@@ -1433,6 +1592,9 @@ int main(int argc, char** argv) {
         } else {
             nob_log(NOB_INFO, "Save file loaded successfully");
             apply_save_state_to_vr(vr, &save_state, video_file);
+            if (video_file)
+                get_bookmarks_from_save_state(&save_state, video_file,
+                                               bookmarks, &bookmark_count);
             recent_count = (int)(save_state.recent_files_count > MAX_RECENT ? MAX_RECENT : save_state.recent_files_count);
             for (int i = 0; i < recent_count; i++) {
                 recent_files[i] = save_state.recent_files[i] ? strdup(save_state.recent_files[i]) : NULL;
@@ -1514,6 +1676,45 @@ int main(int argc, char** argv) {
 
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) running = false;
+
+            if (ti.active) {
+                text_input_handle_event(&ti, &e);
+                if (ti.done && !ti.cancelled) {
+                    if (ti_purpose == TI_BOOKMARK_RENAME) {
+                        if (ti_bm_idx >= 0 && ti_bm_idx < bookmark_count) {
+                            int len = (int)strlen(ti.value);
+                            if (len >= BOOKMARK_NAME_MAX) len = BOOKMARK_NAME_MAX - 1;
+                            memcpy(bookmarks[ti_bm_idx].name, ti.value, len);
+                            bookmarks[ti_bm_idx].name[len] = '\0';
+                            #if SAVE_FILE
+                            update_bookmarks_in_save_state(&save_state, video_file,
+                                                            bookmarks, bookmark_count);
+                            write_save_state(SAVE_FILE_PATH, &save_state);
+                            #endif
+                        }
+                    } else if (ti_purpose == TI_GOTO_TIME) {
+                        double t = 0.0;
+                        if (parse_time_string(ti.value, &t) && vr) {
+                            double dur = vr_get_duration(vr);
+                            if (t < 0.0) t = 0.0;
+                            if (dur > 0.0 && t > dur) t = dur;
+                            seek_and_preview_if_paused(vr, t, paused);
+                            if (video_file) history_push(playback_history,
+                                &history_count, &history_pos, video_file, t);
+                            snprintf(flash_text, sizeof(flash_text), "Jumped to %s",
+                                     format_time_temp(t));
+                            flash_until = SDL_GetTicks() + 900;
+                        } else {
+                            snprintf(flash_text, sizeof(flash_text),
+                                     "Invalid time format");
+                            flash_until = SDL_GetTicks() + 900;
+                        }
+                    }
+                    ti_purpose = TI_NONE;
+                    ti_bm_idx = -1;
+                }
+                continue;
+            }
 
             if (e.type == SDL_MOUSEMOTION) {
                 last_mouse_move = SDL_GetTicks();
@@ -1691,7 +1892,10 @@ int main(int argc, char** argv) {
                                 requested_window_h,
                                 playback_history,
                                 &history_count,
-                                &history_pos
+                                &history_pos,
+                                &save_state,
+                                bookmarks,
+                                &bookmark_count
                             );
                         } else if(id == MENU_NEXT_MEDIA_WRAP || id == MENU_PREV_MEDIA_WRAP) {
                             navigate_media(
@@ -1710,7 +1914,10 @@ int main(int argc, char** argv) {
                                 requested_window_h,
                                 playback_history,
                                 &history_count,
-                                &history_pos
+                                &history_pos,
+                                &save_state,
+                                bookmarks,
+                                &bookmark_count
                             );
                         } else if(id == MENU_SEEK_BACK && vr) {
                             double t = vr_get_time(vr) - 5.0;
@@ -1901,7 +2108,10 @@ int main(int argc, char** argv) {
                             requested_window_h,
                             playback_history,
                             &history_count,
-                            &history_pos
+                            &history_pos,
+                            &save_state,
+                            bookmarks,
+                            &bookmark_count
                         );
                     } else {
                     navigate_media(
@@ -1920,7 +2130,10 @@ int main(int argc, char** argv) {
                         requested_window_h,
                         playback_history,
                         &history_count,
-                        &history_pos
+                        &history_pos,
+                        &save_state,
+                        bookmarks,
+                        &bookmark_count
                     );
                     }
                 }
@@ -1942,7 +2155,10 @@ int main(int argc, char** argv) {
                             requested_window_h,
                             playback_history,
                             &history_count,
-                            &history_pos
+                            &history_pos,
+                            &save_state,
+                            bookmarks,
+                            &bookmark_count
                         );
                     } else {
                     navigate_media(
@@ -1961,12 +2177,17 @@ int main(int argc, char** argv) {
                         requested_window_h,
                         playback_history,
                         &history_count,
-                        &history_pos
+                        &history_pos,
+                        &save_state,
+                        bookmarks,
+                        &bookmark_count
                     );
                     }
                 }
                 if (key == SDLK_ESCAPE) {
-                    if (menu_open) {
+                    if (bm_ctx_open) {
+                        bm_ctx_open = 0;
+                    } else if (menu_open) {
                         menu_open = false;
                         audio_menu_open = false;
                         subtitle_menu_open = false;
@@ -2111,6 +2332,31 @@ int main(int argc, char** argv) {
                     }
                     flash_until = SDL_GetTicks() + 900;
                 }
+                if (key == SDLK_m && !(e.key.keysym.mod & KMOD_ALT) && vr && !ti.active) {
+                    if (bookmark_count < MAX_BOOKMARKS_PER_FILE) {
+                        Bookmark* bm = &bookmarks[bookmark_count];
+                        bm->time      = vr_get_time(vr);
+                        snprintf(bm->name, BOOKMARK_NAME_MAX, "%s",
+                                 format_time_temp(bm->time));
+                        bm->color_rgb = DEFAULT_BOOKMARK_COLOR;
+                        bm->is_default_color = true;
+                        bookmark_count++;
+                        #if SAVE_FILE
+                        update_bookmarks_in_save_state(&save_state, video_file,
+                                                        bookmarks, bookmark_count);
+                        write_save_state(SAVE_FILE_PATH, &save_state);
+                        #endif
+                        snprintf(flash_text, sizeof(flash_text), "Bookmark added: %s", bm->name);
+                    } else {
+                        snprintf(flash_text, sizeof(flash_text),
+                                 "Max bookmarks (%d) reached", MAX_BOOKMARKS_PER_FILE);
+                    }
+                    flash_until = SDL_GetTicks() + 900;
+                }
+                if (key == SDLK_g && (e.key.keysym.mod & KMOD_CTRL) && vr && !ti.active) {
+                    text_input_open(&ti, "Jump to:", format_time_temp(vr_get_time(vr)), 16);
+                    ti_purpose = TI_GOTO_TIME;
+                }
             }
 
             if (e.type == SDL_MOUSEWHEEL && menu_open) {
@@ -2126,6 +2372,24 @@ int main(int argc, char** argv) {
                     subtitle_scroll -= dy * 3;
                     int max_scroll = (count + 1) > 10 ? (count + 1) - 10 : 0;
                     subtitle_scroll = subtitle_scroll < 0 ? 0 : (subtitle_scroll > max_scroll ? max_scroll : subtitle_scroll);
+                }
+            }
+
+            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) {
+                int mx = e.button.x;
+                int my = e.button.y;
+                if (point_in_rect(mx, my, timeline_hitbox)) {
+                    double dur = vr ? vr_get_duration(vr) : 0.0;
+                    if (dur > 0.0 && vr) {
+                        int bm_idx = -1;
+                        double bm_time = 0.0;
+                        if (find_nearest_bookmark(bookmarks, bookmark_count, dur, timeline_rect, mx, TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH, &bm_idx, &bm_time)) {
+                            bm_ctx_open = 1;
+                            bm_ctx_x = mx;
+                            bm_ctx_y = my;
+                            bm_ctx_idx = bm_idx;
+                        }
+                    }
                 }
             }
 
@@ -2398,30 +2662,110 @@ int main(int argc, char** argv) {
                     }
                     click_processed = true;
                 }
+                else if (bm_ctx_open) {
+                    int ctx_item = -1;
+                    int ctx_w = 150, ctx_item_h = 26;
+                    int total_h = ctx_item_h * 3 + 8;
+                    int cx = bm_ctx_x, cy = bm_ctx_y;
+                    if (cx + ctx_w > w) cx = w - ctx_w;
+                    if (cy + total_h > h) cy = h - total_h;
+                    if (point_in_rect(mx, my, (SDL_Rect){ cx, cy, ctx_w, total_h })) {
+                        if (my < cy + ctx_item_h) ctx_item = 0;
+                        else if (my < cy + ctx_item_h * 2) ctx_item = 1;
+                        else if (my >= cy + ctx_item_h * 2 + 8) ctx_item = 2;
+                        
+                        if (ctx_item == 0) {
+                            if (bm_ctx_idx >= 0 && bm_ctx_idx < bookmark_count) {
+                                text_input_open(&ti, "Rename bookmark:",
+                                                bookmarks[bm_ctx_idx].name, BOOKMARK_NAME_MAX);
+                                ti_purpose = TI_BOOKMARK_RENAME;
+                                ti_bm_idx  = bm_ctx_idx;
+                            }
+                            bm_ctx_open = 0;
+                        } else if (ctx_item == 1) {
+                            if (bm_ctx_idx >= 0 && bm_ctx_idx < bookmark_count) {
+                                uint32_t col = bookmarks[bm_ctx_idx].color_rgb;
+                                unsigned char rgb[3] = {
+                                    (unsigned char)((col >> 16) & 0xFF),
+                                    (unsigned char)((col >> 8) & 0xFF),
+                                    (unsigned char)(col & 0xFF)
+                                };
+                                unsigned char out_rgb[3];
+                                const char* res = tinyfd_colorChooser("Choose bookmark color",
+                                                                       NULL, rgb, out_rgb);
+                                if (res) {
+                                    bookmarks[bm_ctx_idx].color_rgb = 
+                                        ((uint32_t)out_rgb[0] << 16) |
+                                        ((uint32_t)out_rgb[1] << 8) |
+                                        (uint32_t)out_rgb[2];
+                                    if (bookmarks[bm_ctx_idx].color_rgb != DEFAULT_BOOKMARK_COLOR) {
+                                        bookmarks[bm_ctx_idx].is_default_color = false;
+                                    } else {
+                                        bookmarks[bm_ctx_idx].is_default_color = true;
+                                    }
+                                    #if SAVE_FILE
+                                    update_bookmarks_in_save_state(&save_state, video_file,
+                                                                    bookmarks, bookmark_count);
+                                    write_save_state(SAVE_FILE_PATH, &save_state);
+                                    #endif
+                                }
+                            }
+                            bm_ctx_open = 0;
+                        } else if (ctx_item == 2) {
+                            if (bm_ctx_idx >= 0 && bm_ctx_idx < bookmark_count) {
+                                for (int i = bm_ctx_idx; i < bookmark_count - 1; i++) {
+                                    bookmarks[i] = bookmarks[i + 1];
+                                }
+                                bookmark_count--;
+                                #if SAVE_FILE
+                                update_bookmarks_in_save_state(&save_state, video_file,
+                                                                bookmarks, bookmark_count);
+                                write_save_state(SAVE_FILE_PATH, &save_state);
+                                #endif
+                            }
+                            bm_ctx_open = 0;
+                        }
+                    } else {
+                        bm_ctx_open = 0;
+                    }
+                    click_processed = true;
+                }
                 else if (point_in_rect(mx, my, overlay_rect)) {
                     overlay_target = 1.0f;
                     if (point_in_rect(mx, my, timeline_hitbox)) {
                         double dur = vr ? vr_get_duration(vr) : 0.0;
                         if (dur > 0.0 && vr) {
-                            int chapter_idx = -1;
-                            double chapter_time = 0.0;
-                            if (find_nearest_chapter(vr, dur, timeline_rect, mx, 6, &chapter_idx, &chapter_time)) {
-                                seek_and_preview_if_paused(vr, chapter_time, paused);
+                            int bm_idx = -1;
+                            double bm_time = 0.0;
+                            if (find_nearest_bookmark(bookmarks, bookmark_count, dur, timeline_rect, mx, TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH, &bm_idx, &bm_time)) {
+                                seek_and_preview_if_paused(vr, bm_time, paused);
                                 if (video_file) {
-                                    history_push(playback_history, &history_count, &history_pos, video_file, chapter_time);
+                                    history_push(playback_history, &history_count, &history_pos, video_file, bm_time);
                                 }
-                                char chapter_name[160];
-                                char chapter_ts[32];
-                                get_media_chapter_label(vr, chapter_idx, chapter_name, sizeof(chapter_name));
-                                format_time(chapter_time, chapter_ts, sizeof(chapter_ts));
-                                snprintf(flash_text, sizeof(flash_text), "%s (%s)", chapter_name, chapter_ts);
+                                snprintf(flash_text, sizeof(flash_text), "%s (%s)", bookmarks[bm_idx].name, format_time_temp(bm_time));
                                 flash_until = SDL_GetTicks() + 900;
                                 click_processed = true;
                             } else {
-                            double t = (double)(mx - timeline_rect.x) / (double)timeline_rect.w;
-                            t = clampf((float)t, 0.0f, 1.0f);
-                            drag_time = t * dur;
-                            dragging_timeline = true;
+                                int chapter_idx = -1;
+                                double chapter_time = 0.0;
+                                if (find_nearest_chapter(vr, dur, timeline_rect, mx, 6, &chapter_idx, &chapter_time)) {
+                                    seek_and_preview_if_paused(vr, chapter_time, paused);
+                                    if (video_file) {
+                                        history_push(playback_history, &history_count, &history_pos, video_file, chapter_time);
+                                    }
+                                    char chapter_name[160];
+                                    char chapter_ts[32];
+                                    get_media_chapter_label(vr, chapter_idx, chapter_name, sizeof(chapter_name));
+                                    format_time(chapter_time, chapter_ts, sizeof(chapter_ts));
+                                    snprintf(flash_text, sizeof(flash_text), "%s (%s)", chapter_name, chapter_ts);
+                                    flash_until = SDL_GetTicks() + 900;
+                                    click_processed = true;
+                                } else {
+                                    double t = (double)(mx - timeline_rect.x) / (double)timeline_rect.w;
+                                    t = clampf((float)t, 0.0f, 1.0f);
+                                    drag_time = t * dur;
+                                    dragging_timeline = true;
+                                }
                             }
                         }
                         click_processed = true;
@@ -2532,6 +2876,26 @@ int main(int argc, char** argv) {
                     SDL_Rect chapter_line = { chapter_x, base.y, TIMELINE_CHAPTER_MARKER_WIDTH, base.h };
                     draw_rect(ren, chapter_line, (SDL_Color){ CHAPTER_MARKER_COLOR, (Uint8)(190 * overlay_alpha) });
                 }
+                for (int i = 0; i < bookmark_count; i++) {
+                    double bm_time = bookmarks[i].time;
+                    if (bm_time < 0.0 || bm_time > dur) continue;
+                    int bm_x = base.x + (int)((bm_time / dur) * base.w);
+                    SDL_Rect bm_line = { bm_x, base.y, TIMELINE_BOOKMARK_MARKER_WIDTH, base.h };
+                    uint32_t col_rgb;
+                    #if !BM_OVERRIDE_DEFAULT_COLOR
+                    if (bookmarks[i].is_default_color) {
+                        col_rgb = DEFAULT_BOOKMARK_COLOR;
+                    } else {
+                        col_rgb = bookmarks[i].color_rgb;
+                    }
+                    #else
+                    col_rgb = bookmarks[i].color_rgb;
+                    #endif
+                    uint8_t r = (col_rgb >> 16) & 0xFF;
+                    uint8_t g = (col_rgb >> 8) & 0xFF;
+                    uint8_t b = col_rgb & 0xFF;
+                    draw_rect(ren, bm_line, (SDL_Color){ r, g, b, (Uint8)(230 * overlay_alpha) });
+                }
             }
             SDL_Rect fill = { base.x, base.y, (int)(base.w * t), base.h };
             draw_rect(ren, fill, accent);
@@ -2549,28 +2913,46 @@ int main(int argc, char** argv) {
                 int mouse_y = 0;
                 SDL_GetMouseState(&mouse_x, &mouse_y);
                 if (point_in_rect(mouse_x, mouse_y, timeline_hitbox)) {
-                    int chapter_idx = -1;
-                    double chapter_time = 0.0;
-                    if (find_nearest_chapter(vr, dur, timeline_rect, mouse_x, TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH, &chapter_idx, &chapter_time)) {
-                        char chapter_name[160];
-                        char chapter_ts[32];
+                    int bm_idx = -1;
+                    double bm_time = 0.0;
+                    if (find_nearest_bookmark(bookmarks, bookmark_count, dur, timeline_rect, mouse_x, TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH, &bm_idx, &bm_time)) {
+                        char bm_ts[32];
                         char hover_text[224];
-                        get_media_chapter_label(vr, chapter_idx, chapter_name, sizeof(chapter_name));
-                        format_time(chapter_time, chapter_ts, sizeof(chapter_ts));
-                        snprintf(hover_text, sizeof(hover_text), "%s (%s)", chapter_name, chapter_ts);
-
-                        int hover_w = 0;
-                        int hover_h = 0;
+                        format_time(bm_time, bm_ts, sizeof(bm_ts));
+                        snprintf(hover_text, sizeof(hover_text), "%s (%s)", bookmarks[bm_idx].name, bm_ts);
+                        int hover_w = 0, hover_h = 0;
                         TTF_SizeUTF8(ui_font, hover_text, &hover_w, &hover_h);
-                        int hover_x = mouse_x + 10;
-                        int hover_y = base.y - hover_h - 14;
+                        int hover_x = mouse_x + 10, hover_y = base.y - hover_h - 14;
                         if (hover_x + hover_w + 8 > w) hover_x = w - hover_w - 8;
                         if (hover_x < margin) hover_x = margin;
                         if (hover_y < margin) hover_y = margin;
-
                         SDL_Rect hover_bg = { hover_x - 4, hover_y - 2, hover_w + 8, hover_h + 4 };
-                        draw_rect(ren, hover_bg, (SDL_Color){ CHAPTER_HOVER_BG_COLOR, (Uint8)(220 * overlay_alpha) });
+                        draw_rect(ren, hover_bg, (SDL_Color){ BOOKMARK_HOVER_BG_COLOR, (Uint8)(220 * overlay_alpha) });
                         draw_text_shadow(ren, hover_x, hover_y, hover_text, text);
+                    } else {
+                        int chapter_idx = -1;
+                        double chapter_time = 0.0;
+                        if (find_nearest_chapter(vr, dur, timeline_rect, mouse_x, TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH, &chapter_idx, &chapter_time)) {
+                            char chapter_name[160];
+                            char chapter_ts[32];
+                            char hover_text[224];
+                            get_media_chapter_label(vr, chapter_idx, chapter_name, sizeof(chapter_name));
+                            format_time(chapter_time, chapter_ts, sizeof(chapter_ts));
+                            snprintf(hover_text, sizeof(hover_text), "%s (%s)", chapter_name, chapter_ts);
+
+                            int hover_w = 0;
+                            int hover_h = 0;
+                            TTF_SizeUTF8(ui_font, hover_text, &hover_w, &hover_h);
+                            int hover_x = mouse_x + 10;
+                            int hover_y = base.y - hover_h - 14;
+                            if (hover_x + hover_w + 8 > w) hover_x = w - hover_w - 8;
+                            if (hover_x < margin) hover_x = margin;
+                            if (hover_y < margin) hover_y = margin;
+
+                            SDL_Rect hover_bg = { hover_x - 4, hover_y - 2, hover_w + 8, hover_h + 4 };
+                            draw_rect(ren, hover_bg, (SDL_Color){ CHAPTER_HOVER_BG_COLOR, (Uint8)(220 * overlay_alpha) });
+                            draw_text_shadow(ren, hover_x, hover_y, hover_text, text);
+                        }
                     }
                 }
             }
@@ -2836,7 +3218,7 @@ int main(int argc, char** argv) {
         }
 
         pause_alpha = lerpf(pause_alpha, paused ? 1.0f : 0.0f, clampf(dt * 6.0f, 0.0f, 1.0f));
-        if (pause_alpha > 0.01f) {
+        if (pause_alpha > 0.01f && !ti.active) {
             SDL_Color pcol = { PAUSED_TEXT_COLOR, (Uint8)(255 * pause_alpha) };
             draw_text_shadow(ren, 20, 20, "PAUSED", pcol);
         }
@@ -2858,6 +3240,44 @@ int main(int argc, char** argv) {
         if (vr && playback_speed > 2.0f) {
             SDL_Color acol = { ACOL_TEXT_COLOR, ACOL_TEXT_ALPHA };
             draw_text_shadow(ren, 20, 92, "Audio disabled at high speed", acol);
+        }
+
+        if (bm_ctx_open) {
+            #define CTX_ITEM_H 26
+            #define CTX_W 150
+            int total_h = CTX_ITEM_H * 3 + 8;
+            int cx = bm_ctx_x, cy = bm_ctx_y;
+            if (cx + CTX_W > w) cx = w - CTX_W;
+            if (cy + total_h > h) cy = h - total_h;
+            SDL_Rect ctxbg = { cx, cy, CTX_W, total_h };
+            SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+            draw_rect(ren, ctxbg, (SDL_Color){ CONTEXT_MENU_BG_COLOR, 240 });
+            SDL_Rect r0 = { cx, cy, CTX_W, CTX_ITEM_H };
+            SDL_Rect r1 = { cx, cy + CTX_ITEM_H, CTX_W, CTX_ITEM_H };
+            SDL_Rect r2 = { cx, cy + CTX_ITEM_H * 2 + 8, CTX_W, CTX_ITEM_H };
+            SDL_Color text_col = { TEXT_COLOR, 255 };
+            int mx2 = 0, my2 = 0;
+            SDL_GetMouseState(&mx2, &my2);
+            if (point_in_rect(mx2, my2, ctxbg)) {
+                if (my2 < cy + CTX_ITEM_H) {
+                    draw_rect(ren, r0, (SDL_Color){ CONTEXT_MENU_ITEM_HL, 200 });
+                } else if (my2 < cy + CTX_ITEM_H * 2) {
+                    draw_rect(ren, r1, (SDL_Color){ CONTEXT_MENU_ITEM_HL, 200 });
+                } else if (my2 >= cy + CTX_ITEM_H * 2 + 8) {
+                    draw_rect(ren, r2, (SDL_Color){ CONTEXT_MENU_ITEM_HL, 200 });
+                }
+            }
+            draw_text_shadow(ren, cx + 8, cy + 4, "Rename", text_col);
+            draw_text_shadow(ren, cx + 8, cy + CTX_ITEM_H + 4, "Change Color", text_col);
+            SDL_Rect sep = { cx + 4, cy + CTX_ITEM_H * 2 + 4, CTX_W - 8, 1 };
+            draw_rect(ren, sep, (SDL_Color){ MUTED_COLOR, 160 });
+            draw_text_shadow(ren, cx + 8, cy + CTX_ITEM_H * 2 + 10, "Remove", text_col);
+            #undef CTX_ITEM_H
+            #undef CTX_W
+        }
+
+        if (ti.active) {
+            text_input_draw(ren, &ti);
         }
 
         SDL_RenderPresent(ren);
