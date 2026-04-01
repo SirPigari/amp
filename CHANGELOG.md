@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0
+
+- Added bookmarks
+- Fixed scaling issue (moire patterns) by switching to LANCZOS from BILINEAR
+- Added deinterlacing
+
 ## 1.1.0
 
 - Added save data layout to recover from an old version save file

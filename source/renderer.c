@@ -16,6 +16,9 @@
 #include "../thirdparty/libavutil/opt.h"
 #include "../thirdparty/libavutil/channel_layout.h"
 #include "../thirdparty/libavutil/time.h"
+#include "../thirdparty/libavfilter/avfilter.h"
+#include "../thirdparty/libavfilter/buffersrc.h"
+#include "../thirdparty/libavfilter/buffersink.h"
 #include "../thirdparty/ass/ass.h"
 
 #define VIDEO_PKT_QUEUE_CAP 128
@@ -115,6 +118,11 @@ typedef struct {
     int hw_bad_frame_count;
     int hw_disabled;
     int hw_backend_marked;
+
+    AVFilterGraph* filter_graph;
+    AVFilterContext* buffersrc_ctx;
+    AVFilterContext* buffersink_ctx;
+    AVFrame* filtered_frame;
 } VideoRenderer;
 
 static void pkt_queue_init(PacketQueue* q, int capacity) {
@@ -298,6 +306,17 @@ static void vr_reset_stream(VideoRenderer* vr) {
         vr->hw_pix_fmt = AV_PIX_FMT_NONE;
         vr->hw_device_type = AV_HWDEVICE_TYPE_NONE;
         vr->hw_device_name[0] = '\0';
+    }
+
+    if (vr->filtered_frame) {
+        av_frame_free(&vr->filtered_frame);
+        vr->filtered_frame = NULL;
+    }
+    if (vr->filter_graph) {
+        avfilter_graph_free(&vr->filter_graph);
+        vr->filter_graph = NULL;
+        vr->buffersrc_ctx = NULL;
+        vr->buffersink_ctx = NULL;
     }
 
     if (vr->pending_valid) {
@@ -762,11 +781,13 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
             vr->texture = SDL_CreateTexture(vr->renderer,
                 SDL_PIXELFORMAT_YV12, SDL_TEXTUREACCESS_STREAMING,
                 vr->width, vr->height);
+            
+            SDL_SetTextureScaleMode(vr->texture, SDL_ScaleModeLinear);
 
             vr->sws_ctx = sws_getContext(
                 vr->width, vr->height, vr->video_ctx->pix_fmt,
                 vr->width, vr->height, AV_PIX_FMT_YUV420P,
-                SWS_BILINEAR, NULL, NULL, NULL);
+                SWS_LANCZOS | SWS_ACCURATE_RND, NULL, NULL, NULL);
             vr->sws_src_pix_fmt = vr->video_ctx->pix_fmt;
 
             vr->frame = av_frame_alloc();
@@ -951,6 +972,92 @@ static void vr_decode_audio(VideoRenderer* vr) {
     }
 }
 
+static int vr_init_deinterlace_filter(VideoRenderer* vr, AVFrame* frame) {
+    if (!vr || !frame) return -1;
+
+    char args[512];
+    int ret = 0;
+    const AVFilter* buffersrc = avfilter_get_by_name("buffer");
+    const AVFilter* buffersink = avfilter_get_by_name("buffersink");
+    AVFilterInOut* outputs = avfilter_inout_alloc();
+    AVFilterInOut* inputs = avfilter_inout_alloc();
+
+    vr->filter_graph = avfilter_graph_alloc();
+    if (!outputs || !inputs || !vr->filter_graph) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+
+    snprintf(args, sizeof(args),
+             "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
+             frame->width, frame->height, frame->format,
+             vr->video_time_base.num, vr->video_time_base.den,
+             frame->sample_aspect_ratio.num, 
+             frame->sample_aspect_ratio.den > 0 ? frame->sample_aspect_ratio.den : 1);
+
+    ret = avfilter_graph_create_filter(&vr->buffersrc_ctx, buffersrc, "in",
+                                        args, NULL, vr->filter_graph);
+    if (ret < 0) {
+        nob_log(NOB_ERROR, "Cannot create buffer source");
+        goto end;
+    }
+
+    ret = avfilter_graph_create_filter(&vr->buffersink_ctx, buffersink, "out",
+                                        NULL, NULL, vr->filter_graph);
+    if (ret < 0) {
+        nob_log(NOB_ERROR, "Cannot create buffer sink");
+        goto end;
+    }
+
+    outputs->name       = av_strdup("in");
+    outputs->filter_ctx = vr->buffersrc_ctx;
+    outputs->pad_idx    = 0;
+    outputs->next       = NULL;
+
+    inputs->name       = av_strdup("out");
+    inputs->filter_ctx = vr->buffersink_ctx;
+    inputs->pad_idx    = 0;
+    inputs->next       = NULL;
+
+    const char* filter_descr = "bwdif=mode=send_frame:parity=auto:deint=all";
+    
+    ret = avfilter_graph_parse_ptr(vr->filter_graph, filter_descr,
+                                     &inputs, &outputs, NULL);
+    if (ret < 0) {
+        nob_log(NOB_ERROR, "Failed to parse filter graph");
+        goto end;
+    }
+
+    ret = avfilter_graph_config(vr->filter_graph, NULL);
+    if (ret < 0) {
+        nob_log(NOB_ERROR, "Failed to configure filter graph");
+        goto end;
+    }
+
+    vr->filtered_frame = av_frame_alloc();
+    if (!vr->filtered_frame) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+
+end:
+    avfilter_inout_free(&inputs);
+    avfilter_inout_free(&outputs);
+
+    if (ret < 0 && vr->filter_graph) {
+        avfilter_graph_free(&vr->filter_graph);
+        vr->filter_graph = NULL;
+        vr->buffersrc_ctx = NULL;
+        vr->buffersink_ctx = NULL;
+        if (vr->filtered_frame) {
+            av_frame_free(&vr->filtered_frame);
+            vr->filtered_frame = NULL;
+        }
+    }
+
+    return ret;
+}
+
 int vr_render_frame(VideoRenderer* vr) {
     if (!vr || !vr->video_ctx) return 0;
 
@@ -1014,15 +1121,36 @@ int vr_render_frame(VideoRenderer* vr) {
                 continue;
             }
 
-            if (use_frame->format != vr->sws_src_pix_fmt) {
+            if (!vr->filter_graph) {
+                if (vr_init_deinterlace_filter(vr, use_frame) < 0) {
+                    nob_log(NOB_WARNING, "Failed to initialize deinterlace filter, continuing without it");
+                }
+            }
+
+            AVFrame* final_frame = use_frame;
+
+            if (vr->filter_graph) {
+                if (av_buffersrc_add_frame_flags(vr->buffersrc_ctx, use_frame, AV_BUFFERSRC_FLAG_KEEP_REF) >= 0) {
+                    if (av_buffersink_get_frame(vr->buffersink_ctx, vr->filtered_frame) >= 0) {
+                        final_frame = vr->filtered_frame;
+                        static int logged_filter_use = 0;
+                        if (!logged_filter_use) {
+                            logged_filter_use = 1;
+                        }
+                    }
+                }
+            }
+
+            if (final_frame->format != vr->sws_src_pix_fmt) {
                 if (vr->sws_ctx) sws_freeContext(vr->sws_ctx);
                 vr->sws_ctx = sws_getContext(
-                    use_frame->width, use_frame->height, use_frame->format,
-                    use_frame->width, use_frame->height, AV_PIX_FMT_YUV420P,
-                    SWS_BILINEAR, NULL, NULL, NULL);
-                vr->sws_src_pix_fmt = use_frame->format;
+                    final_frame->width, final_frame->height, final_frame->format,
+                    final_frame->width, final_frame->height, AV_PIX_FMT_YUV420P,
+                    SWS_LANCZOS | SWS_ACCURATE_RND, NULL, NULL, NULL);
+                vr->sws_src_pix_fmt = final_frame->format;
                 if (!vr->sws_ctx) {
-                    nob_log(NOB_ERROR, "Failed to create sws_ctx for format %d", use_frame->format);
+                    nob_log(NOB_ERROR, "Failed to create sws_ctx for format %d", final_frame->format);
+                    if (final_frame == vr->filtered_frame) av_frame_unref(vr->filtered_frame);
                     if (tmp_sw) av_frame_free(&tmp_sw);
                     av_frame_unref(vr->frame);
                     continue;
@@ -1030,10 +1158,13 @@ int vr_render_frame(VideoRenderer* vr) {
             }
 
             sws_scale(vr->sws_ctx,
-                (const uint8_t* const*)use_frame->data,
-                use_frame->linesize, 0, use_frame->height,
+                (const uint8_t* const*)final_frame->data,
+                final_frame->linesize, 0, final_frame->height,
                 vr->yuv_frame->data, vr->yuv_frame->linesize);
 
+            if (final_frame == vr->filtered_frame) {
+                av_frame_unref(vr->filtered_frame);
+            }
             if (tmp_sw) av_frame_free(&tmp_sw);
 
             SDL_UpdateYUVTexture(vr->texture, NULL,
@@ -1118,6 +1249,7 @@ int vr_render_subtitles(VideoRenderer* vr, double seconds) {
             SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING,
             vr->width, vr->height);
         SDL_SetTextureBlendMode(vr->subtitle_texture, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(vr->subtitle_texture, SDL_ScaleModeLinear);
     }
 
     void* pixels = NULL;

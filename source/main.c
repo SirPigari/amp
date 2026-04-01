@@ -1462,6 +1462,8 @@ int main(int argc, char** argv) {
         }
     }
     
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+    
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         nob_log(NOB_ERROR, "SDL_Init Error: %s", SDL_GetError());
         return 1;
