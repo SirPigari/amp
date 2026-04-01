@@ -96,9 +96,10 @@ int main(int argc, char** argv) {
     }
 
 #ifdef _WIN32
+    nob_cmd_append(&cmd, CC);
+    if (opt) nob_cmd_append(&cmd, RELEASE_CFLAGS);
+    else nob_cmd_append(&cmd, CFLAGS);
     nob_cmd_append(&cmd,
-                    CC,
-                    opt ? RELEASE_CFLAGS : CFLAGS,
                     "source/main.c",
                     "-DSDL_MAIN_HANDLED",
                     "-L", sdl_lib,
@@ -123,9 +124,10 @@ int main(int argc, char** argv) {
                     "-mconsole",
                     "-o", OUT_EXE_NAME".exe");
 #else
+    nob_cmd_append(&cmd, CC);
+    if (opt) nob_cmd_append(&cmd, RELEASE_CFLAGS);
+    else nob_cmd_append(&cmd, CFLAGS);
     nob_cmd_append(&cmd,
-                    CC,
-                    opt ? RELEASE_CFLAGS : CFLAGS,
                     "source/main.c",
                     "-L", sdl_lib,
                     "-L", ffmpeg_lib,

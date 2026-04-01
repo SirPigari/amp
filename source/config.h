@@ -11,7 +11,7 @@
 #define CC "gcc"
 #define CFLAGS         "-Wno-cast-function-type", "-Wall", "-Wextra", "-D"THEME
 #define RELEASE_CFLAGS "-Wno-cast-function-type", "-Wall", "-Wextra", "-D"THEME, "-O3"
-#define SAVE_FILE_MAGIC 0x41504D56 /* 'APMV' */
+#define SAVE_FILE_MAGIC 0x414D5056 /* 'AMPV' */
 #define OUT_EXE_NAME "main"
 
 #define AMP_FLASH_DEBUG_DEFAULT 0
@@ -26,6 +26,7 @@
 #define SAVE_FILE_PATH "./amp_save.dat"
 #define HW_CACHE_SIZE 16
 #define HASH_SIZE 256
+#define USE_SAVE_IN_SAVE_FILE 0
 
 /* Demuxer settings */
 #define DEMUX_MAX_READS_PER_TICK 64
@@ -102,7 +103,7 @@
 
 #else
 
-// for arch linux
+/* for arch linux */
 #define PLATFORM_FONTS \
     { "DejaVu Sans", "/usr/share/fonts/TTF/DejaVuSans.ttf" }, \
     { "DejaVu Mono", "/usr/share/fonts/TTF/DejaVuSansMono.ttf" }

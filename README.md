@@ -1,6 +1,6 @@
-# AMP - Media Player
+# amp - Media Player
 
-AMP is a simple media player built using C and SDL2.
+amp is a simple media player built using C and SDL2.
 
 ## Features
 
@@ -9,6 +9,7 @@ AMP is a simple media player built using C and SDL2.
 - Remember last playback position and settings for each video file
 - Hardware and software decoding
 - Compile time themes
+- Recent files
 
 ## Dependencies
 

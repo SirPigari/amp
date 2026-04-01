@@ -667,8 +667,15 @@ static int get_adjacent_supported_media(const char* current_media_path, int dire
     while ((ent = readdir(d)) != NULL) {
         if (ent->d_name[0] == '.') continue;
         char full[4096];
-        snprintf(full, sizeof(full), "%s/%s", dir_path, ent->d_name);
+
+        size_t n = sizeof(full);
+        int written = snprintf(full, n, "%s/%s", dir_path, ent->d_name);
+        if (written < 0 || (size_t)written >= n) {
+            continue;
+        }
+
         if (!is_supported_video_file(full)) continue;
+
         char** grown = (char**)realloc(files, sizeof(char*) * (size_t)(count + 1));
         if (!grown) continue;
         files = grown;
@@ -923,6 +930,52 @@ static int navigate_media(
     return 1;
 }
 
+
+static void run_playback_tick(VideoRenderer* vr, float playback_speed) {
+    if (!vr) return;
+
+    vr_demux_packets(vr);
+    if (playback_speed <= 2.0f) {
+        vr_decode_audio(vr);
+    }
+    vr_render_frame(vr);
+
+    if (vr->audio_dev && playback_speed <= 2.0f) {
+        double video_time = vr_get_video_time(vr);
+        double audio_time = vr_get_audio_time(vr);
+        double diff = video_time - audio_time;
+
+        if (diff < -0.05) {
+            int catchup = 0;
+            while (diff < -0.02 && catchup < 8) {
+                if (!vr_render_frame(vr)) {
+                    vr_demux_packets(vr);
+                    if (!vr_render_frame(vr)) break;
+                }
+                video_time = vr_get_video_time(vr);
+                audio_time = vr_get_audio_time(vr);
+                diff = video_time - audio_time;
+                catchup++;
+            }
+        } else if (diff > 0.01) {
+            int delay_ms = (int)(diff * 1000.0);
+            if (delay_ms > 120) delay_ms = 120;
+            SDL_Delay(delay_ms);
+        }
+    } else {
+        double master_time = vr_get_master_time(vr);
+        double video_time = vr_get_video_time(vr);
+        int catchup = 0;
+        while (video_time < master_time - 0.001 && catchup < 30) {
+            vr_demux_packets(vr);
+            if (!vr_render_frame(vr)) break;
+            video_time = vr_get_video_time(vr);
+            catchup++;
+        }
+        SDL_Delay(1);
+    }
+}
+
 #ifdef _WIN32
 static WNDPROC g_prev_menu_wndproc = NULL;
 static VideoRenderer** g_menu_vr_ptr = NULL;
@@ -931,8 +984,6 @@ static SDL_Renderer* g_menu_ren = NULL;
 static bool* g_menu_paused_ptr = NULL;
 static float* g_menu_playback_speed_ptr = NULL;
 static HMENU g_current_win_menu = NULL;
-
-static void run_playback_tick(VideoRenderer* vr, float playback_speed);
 
 static void menu_pump_playback_tick(void) {
     if (!g_menu_vr_ptr || !*g_menu_vr_ptr || !g_menu_win || !g_menu_ren || !g_menu_paused_ptr || !g_menu_playback_speed_ptr) return;
@@ -964,48 +1015,6 @@ static void menu_pump_playback_tick(void) {
     }
 
     SDL_RenderPresent(g_menu_ren);
-}
-
-static void run_playback_tick(VideoRenderer* vr, float playback_speed) {
-    if (!vr) return;
-
-    vr_demux_packets(vr);
-    if (playback_speed <= 2.0f) {
-        vr_decode_audio(vr);
-    }
-    vr_render_frame(vr);
-
-    if (vr->audio_dev && playback_speed <= 2.0f) {
-        double video_time = vr_get_video_time(vr);
-        double audio_time = vr_get_audio_time(vr);
-        double diff = video_time - audio_time;
-
-        if (diff < -0.05) {
-            int catchup = 0;
-            while (diff < -0.02 && catchup < 8) {
-                if (!vr_render_frame(vr)) break;
-                video_time = vr_get_video_time(vr);
-                audio_time = vr_get_audio_time(vr);
-                diff = video_time - audio_time;
-                catchup++;
-            }
-        } else if (diff > 0.01) {
-            int delay_ms = (int)(diff * 1000.0);
-            if (delay_ms > 120) delay_ms = 120;
-            SDL_Delay(delay_ms);
-        }
-    } else {
-        double master_time = vr_get_master_time(vr);
-        double video_time = vr_get_video_time(vr);
-        int catchup = 0;
-        while (video_time < master_time - 0.001 && catchup < 30) {
-            vr_demux_packets(vr);
-            if (!vr_render_frame(vr)) break;
-            video_time = vr_get_video_time(vr);
-            catchup++;
-        }
-        SDL_Delay(1);
-    }
 }
 
 static LRESULT CALLBACK amp_menu_wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -1405,8 +1414,22 @@ int main(int argc, char** argv) {
 
     #if SAVE_FILE
         SaveState save_state = {0};
-        if (!load_save_state(abspath_temp(SAVE_FILE_PATH), &save_state)) {
+        int load_save_state_result = load_save_state(abspath_temp(SAVE_FILE_PATH), &save_state);
+        if (load_save_state_result == 0) {
             nob_log(NOB_INFO, "No save file found, starting with default settings");
+        } else if (load_save_state_result == -1) {
+            nob_log(NOB_ERROR, "Failed to load save file due to an error");
+            if (vr) vr_free(vr);
+            history_clear_from(playback_history, &history_count, 0);
+            if (ui_font) TTF_CloseFont(ui_font);
+            TTF_Quit();
+            for (int i = 0; i < recent_count; i++) free(recent_files[i]);
+            abspath_temp_free();
+            SDL_DestroyRenderer(ren);
+            SDL_DestroyWindow(win);
+            SDL_Quit();
+            nob_log(NOB_INFO, "Exited due to save file load error");
+            return 0xF1;
         } else {
             nob_log(NOB_INFO, "Save file loaded successfully");
             apply_save_state_to_vr(vr, &save_state, video_file);
@@ -1415,6 +1438,13 @@ int main(int argc, char** argv) {
                 recent_files[i] = save_state.recent_files[i] ? strdup(save_state.recent_files[i]) : NULL;
             }
         }
+        #if USE_SAVE_IN_SAVE_FILE
+            if (save_state.global.paused) {
+                vr_demux_packets(vr);
+                vr_render_frame(vr);
+                paused = save_state.global.paused;
+            }
+        #endif
     #endif
 
     if (video_file) {
@@ -1443,6 +1473,7 @@ int main(int argc, char** argv) {
     int overlay_h = 100;
     int margin = 24;
     int w, h;
+    int last_subtitle_track = -1;
 
     while(running) {
         int subtitle_style_mode = vr ? vr_get_subtitle_style_mode(vr) : 0; /* 0 none, 1 text/srt, 2 ass/ssa */
@@ -1481,16 +1512,16 @@ int main(int argc, char** argv) {
             subtitle_settings_box = (SDL_Rect){ row_x, row_y0 + row_step * 4, row_w, row_h };
         }
 
-        while(SDL_PollEvent(&e)) {
-            if(e.type == SDL_QUIT) running = false;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) running = false;
 
-            if(e.type == SDL_MOUSEMOTION) {
+            if (e.type == SDL_MOUSEMOTION) {
                 last_mouse_move = SDL_GetTicks();
                 overlay_target = 1.0f;
             }
 
 #ifdef _WIN32
-            if(e.type == SDL_SYSWMEVENT) {
+            if (e.type == SDL_SYSWMEVENT) {
                 SDL_SysWMmsg* sysmsg = e.syswm.msg;
                 if(sysmsg && sysmsg->subsystem == SDL_SYSWM_WINDOWS) {
                     if(sysmsg->msg.win.msg == WM_COMMAND) {
@@ -1504,7 +1535,7 @@ int main(int argc, char** argv) {
                                 video_file = f;
                                 if(!vr) vr = vr_create(win, ren);
                                 if(vr_load(vr, f, hw_option)) {
-                                    fill_save_state_from_vr(vr, &save_state, video_file);
+                                    fill_save_state_from_vr(vr, &save_state, video_file, paused);
                                     vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                                     apply_subtitle_override(
                                         vr,
@@ -1522,7 +1553,7 @@ int main(int argc, char** argv) {
                                 }
                             }
                             #if SAVE_FILE
-                                fill_save_state_from_vr(vr, &save_state, video_file);
+                                fill_save_state_from_vr(vr, &save_state, video_file, paused);
                             #endif
                         } else if(id >= MENU_RECENT_BASE && id < MENU_RECENT_BASE+MAX_RECENT) {
                             int idx = id - MENU_RECENT_BASE;
@@ -1536,7 +1567,7 @@ int main(int argc, char** argv) {
                                 video_file = selected_recent;
                                 if(!vr) vr = vr_create(win, ren);
                                 if(vr_load(vr, video_file, hw_option)) {
-                                    fill_save_state_from_vr(vr, &save_state, video_file);
+                                    fill_save_state_from_vr(vr, &save_state, video_file, paused);
                                     vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                                     apply_subtitle_override(
                                         vr,
@@ -1549,6 +1580,7 @@ int main(int argc, char** argv) {
                                     set_window_title_for_media(win, vr, video_file);
                                     nob_log(NOB_INFO, "Loaded %s", video_file);
                                     history_push(playback_history, &history_count, &history_pos, video_file, vr_get_time(vr));
+                                    paused = save_state.global.paused;
                                 } else {
                                     nob_log(NOB_ERROR, "Failed to load %s", video_file);
                                 }
@@ -1757,9 +1789,9 @@ int main(int argc, char** argv) {
             }
 #endif
 
-            if(e.type == SDL_KEYDOWN) {
+            if (e.type == SDL_KEYDOWN) {
                 SDL_Keycode key = e.key.keysym.sym;
-                if((key==SDLK_o)&&(e.key.keysym.mod & KMOD_CTRL)) {
+                if ((key==SDLK_o)&&(e.key.keysym.mod & KMOD_CTRL)) {
                     char* f = open_file_dialog(
                         (const char*[]){"*.mkv", "*.mp4"}, 2, "Video Files (*.mkv, *.mp4)", false,
                         "Select Video File", NULL, &is_supported_video_file
@@ -1768,7 +1800,7 @@ int main(int argc, char** argv) {
                         video_file = f;
                         if(!vr) vr = vr_create(win, ren);
                         if(vr_load(vr, f, hw_option)) {
-                            fill_save_state_from_vr(vr, &save_state, video_file);
+                            fill_save_state_from_vr(vr, &save_state, video_file, paused);
                             vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                             apply_subtitle_override(
                                 vr,
@@ -1788,10 +1820,10 @@ int main(int argc, char** argv) {
                         nob_log(NOB_INFO, "No file selected");
                     }
                     #if SAVE_FILE
-                        fill_save_state_from_vr(vr, &save_state, video_file);
+                        fill_save_state_from_vr(vr, &save_state, video_file, paused);
                     #endif
-                } else if(key==SDLK_F4 && (e.key.keysym.mod & KMOD_ALT)) running=0;
-                if(key==SDLK_F11 || (key==SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT))) {
+                } else if (key==SDLK_F4 && (e.key.keysym.mod & KMOD_ALT)) running=0;
+                if (key==SDLK_F11 || (key==SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT))) {
                     fullscreen =! fullscreen;
                     if (fullscreen) {
                         maximized = (SDL_GetWindowFlags(win) & SDL_WINDOW_MAXIMIZED) != 0;
@@ -2044,6 +2076,40 @@ int main(int argc, char** argv) {
                         }
                         flash_until = SDL_GetTicks() + 900;
                     }
+                }
+                if (key == SDLK_c && !(e.key.keysym.mod & KMOD_CTRL) && vr) {
+                    int count = vr_get_subtitle_track_count(vr);
+                    if (vr->current_subtitle >= 0) {
+                        last_subtitle_track = vr->current_subtitle;
+                        vr_select_subtitle_track(vr, -1);
+                        snprintf(flash_text, sizeof(flash_text), "Subtitles: Off");
+                    } else if (count > 0) {
+                        int pick = (last_subtitle_track >= 0 && last_subtitle_track < count) ? last_subtitle_track : 0;
+                        vr_select_subtitle_track(vr, pick);
+                        const char* name = vr_get_subtitle_track_name(vr, pick);
+                        snprintf(flash_text, sizeof(flash_text), "Subtitles: %s", name ? name : "");
+                    } else {
+                        snprintf(flash_text, sizeof(flash_text), "No subtitles");
+                    }
+                    flash_until = SDL_GetTicks() + 900;
+                }
+                if (key == SDLK_c && !(e.key.keysym.mod & KMOD_CTRL) && (e.key.keysym.mod & KMOD_ALT) && vr) {
+                    int count = vr_get_subtitle_track_count(vr);
+                    if (count <= 0) {
+                        snprintf(flash_text, sizeof(flash_text), "No subtitles");
+                    } else {
+                        int next = vr->current_subtitle + 1;
+                        if (next >= count) next = -1;
+                        vr_select_subtitle_track(vr, next);
+                        if (next >= 0) {
+                            last_subtitle_track = next;
+                            const char* name = vr_get_subtitle_track_name(vr, next);
+                            snprintf(flash_text, sizeof(flash_text), "Subtitles: %s", name ? name : "");
+                        } else {
+                            snprintf(flash_text, sizeof(flash_text), "Subtitles: Off");
+                        }
+                    }
+                    flash_until = SDL_GetTicks() + 900;
                 }
             }
 
@@ -2469,7 +2535,7 @@ int main(int argc, char** argv) {
             }
             SDL_Rect fill = { base.x, base.y, (int)(base.w * t), base.h };
             draw_rect(ren, fill, accent);
-            SDL_Rect handle = { base.x + (int)(base.w * t) - TIMELINE_THUMB_SIZE / 2, base.y - TIMELINE_THUMB_SIZE / 3, TIMELINE_THUMB_SIZE, TIMELINE_THUMB_SIZE };
+            SDL_Rect handle = { base.x + (int)(base.w * t) - ( TIMELINE_THUMB_SIZE / 2), base.y - (TIMELINE_THUMB_SIZE / 3), TIMELINE_THUMB_SIZE, TIMELINE_THUMB_SIZE };
             draw_rect(ren, handle, (SDL_Color){ TIMELINE_THUMB_COLOR, (Uint8)(220 * overlay_alpha) });
 
             if (vr) {
@@ -2796,9 +2862,9 @@ int main(int argc, char** argv) {
 
         SDL_RenderPresent(ren);
     }
-
+    
     #if SAVE_FILE
-        fill_save_state_from_vr(vr, &save_state, video_file);
+        fill_save_state_from_vr(vr, &save_state, video_file, paused);
         for (uint64_t i = 0; i < save_state.recent_files_count && i < MAX_RECENT; i++) {
             if (save_state.recent_files[i]) {
                 free(save_state.recent_files[i]);

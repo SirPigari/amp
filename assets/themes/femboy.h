@@ -73,7 +73,7 @@ colors were chosen by markofwitch.
 
 #else
 
-// for arch linux
+/* for arch linux */
 #define PLATFORM_FONTS \
     { "DejaVu Sans", "/usr/share/fonts/TTF/DejaVuSans.ttf" }, \
     { "DejaVu Mono", "/usr/share/fonts/TTF/DejaVuSansMono.ttf" }

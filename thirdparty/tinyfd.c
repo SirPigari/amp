@@ -57,6 +57,7 @@ misrepresented as being the original software.
     |__________________________________________|
 */
 
+#pragma once
 
 #if defined(__GNUC__) || defined(__clang__)
 #ifndef _GNU_SOURCE
