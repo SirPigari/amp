@@ -760,11 +760,11 @@ static int64_t get_remembered_file_index(SaveState* state,
 }
 
 static void fill_save_state_from_vr_idx(VideoRenderer* vr,
-                                         SaveState* state, int idx) {
+                                         SaveState* state, int idx, float volume_percent) {
     if (!vr || !state || idx < 0 || idx >= (int)state->remembered_count) return;
     FileConfig* existing = &state->remembered_files[idx];
     existing->last_position        = vr->last_time;
-    existing->volume_percent       = (uint32_t)(vr->audio_volume * 100.0f);
+    existing->volume_percent       = (uint32_t)volume_percent;
     existing->playback_speed       = vr->playback_speed;
     existing->audio_track          = vr->current_audio;
     existing->subtitle_track       = vr->current_subtitle;
@@ -774,7 +774,7 @@ static void fill_save_state_from_vr_idx(VideoRenderer* vr,
 
 static void fill_save_state_from_vr(VideoRenderer* vr,
                                      SaveState* state,
-                                     const char* video_path, bool paused) {
+                                     const char* video_path, bool paused, float volume_percent) {
     if (!vr || !state || !video_path) return;
 
     uint8_t hash[HASH_SIZE];
@@ -784,13 +784,13 @@ static void fill_save_state_from_vr(VideoRenderer* vr,
 
     int64_t idx = get_remembered_file_index(state, NULL, hash);
     if (idx >= 0) {
-        fill_save_state_from_vr_idx(vr, state, (int)idx);
+        fill_save_state_from_vr_idx(vr, state, (int)idx, volume_percent);
     } else {
         FileConfig config = {0};
         config.video_path    = strdup(video_path);
         memcpy(config.file_hash, hash, HASH_SIZE);
         config.last_position       = vr->last_time;
-        config.volume_percent      = (uint32_t)(vr->audio_volume * 100.0f);
+        config.volume_percent      = (uint32_t)volume_percent;
         config.playback_speed      = vr->playback_speed;
         config.audio_track         = vr->current_audio;
         config.subtitle_track      = vr->current_subtitle;
@@ -811,7 +811,8 @@ static void fill_save_state_from_vr(VideoRenderer* vr,
 
 static void apply_save_state_to_vr(VideoRenderer* vr,
                                     SaveState* state,
-                                    const char* video_path) {
+                                    const char* video_path,
+                                    float* out_volume_percent) {
     if (!vr || !state) return;
     for (uint64_t i = 0; i < state->remembered_count; i++) {
         if (state->remembered_files[i].video_path && video_path &&
@@ -821,7 +822,7 @@ static void apply_save_state_to_vr(VideoRenderer* vr,
             if (state->remembered_files[i].subtitle_track >= -1)
                 vr_select_subtitle_track(vr, state->remembered_files[i].subtitle_track);
             vr_set_speed(vr, state->remembered_files[i].playback_speed);
-            vr_set_volume(vr, state->remembered_files[i].volume_percent / 100.0f);
+            if (out_volume_percent) *out_volume_percent = (float)state->remembered_files[i].volume_percent;
             double target_pos = state->remembered_files[i].last_position;
             vr_seek(vr, target_pos);
             for (int j = 0; j < 128 && vr->current_time < target_pos - 0.05; j++) {

@@ -380,15 +380,6 @@ static float volume_percent_to_gain(float percent) {
     return powf(10.0f, db / 20.0f);
 }
 
-/*
-static float gain_to_volume_percent(float gain) {
-    if (gain <= 0.0f) return 0.0f;
-    float db = 20.0f * log10f(gain);
-    float t = (db + 50.0f) / 50.0f;
-    return clampf(t * 100.0f, 0.0f, 200.0f);
-}
-*/
-
 static int point_in_rect(int x, int y, SDL_Rect r) {
     return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
 }
@@ -1026,7 +1017,7 @@ static void menu_pump_playback_tick(void) {
         SDL_RenderCopy(g_menu_ren, tex, NULL, &video_dst);
     }
 
-    if (vr_render_subtitles(vr, vr_get_time(vr))) {
+    if (vr_render_subtitles(vr, vr_get_video_time(vr))) {
         SDL_Texture* sub = vr_get_subtitle_texture(vr);
         if (sub) SDL_RenderCopy(g_menu_ren, sub, NULL, &video_dst);
     }
@@ -1598,7 +1589,8 @@ int main(int argc, char** argv) {
             return 0xF1;
         } else {
             nob_log(NOB_INFO, "Save file loaded successfully");
-            apply_save_state_to_vr(vr, &save_state, video_file);
+            apply_save_state_to_vr(vr, &save_state, video_file, &volume_percent);
+            if (vr) vr_set_volume(vr, volume_percent_to_gain(volume_percent));
             if (video_file)
                 get_bookmarks_from_save_state(&save_state, video_file,
                                                bookmarks, &bookmark_count);
@@ -1743,7 +1735,8 @@ int main(int argc, char** argv) {
                                 video_file = f;
                                 if(!vr) vr = vr_create(win, ren);
                                 if(vr_load(vr, f, hw_option)) {
-                                    fill_save_state_from_vr(vr, &save_state, video_file, paused);
+                                    fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
+                                    apply_save_state_to_vr(vr, &save_state, video_file, &volume_percent);
                                     vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                                     apply_subtitle_override(
                                         vr,
@@ -1761,7 +1754,7 @@ int main(int argc, char** argv) {
                                 }
                             }
                             #if SAVE_FILE
-                                fill_save_state_from_vr(vr, &save_state, video_file, paused);
+                                fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
                             #endif
                         } else if(id >= MENU_RECENT_BASE && id < MENU_RECENT_BASE+MAX_RECENT) {
                             int idx = id - MENU_RECENT_BASE;
@@ -1775,7 +1768,8 @@ int main(int argc, char** argv) {
                                 video_file = selected_recent;
                                 if(!vr) vr = vr_create(win, ren);
                                 if(vr_load(vr, video_file, hw_option)) {
-                                    fill_save_state_from_vr(vr, &save_state, video_file, paused);
+                                    fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
+                                    apply_save_state_to_vr(vr, &save_state, video_file, &volume_percent);
                                     vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                                     apply_subtitle_override(
                                         vr,
@@ -2014,7 +2008,8 @@ int main(int argc, char** argv) {
                         video_file = f;
                         if(!vr) vr = vr_create(win, ren);
                         if(vr_load(vr, f, hw_option)) {
-                            fill_save_state_from_vr(vr, &save_state, video_file, paused);
+                            fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
+                            apply_save_state_to_vr(vr, &save_state, video_file, &volume_percent);
                             vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                             apply_subtitle_override(
                                 vr,
@@ -2034,7 +2029,7 @@ int main(int argc, char** argv) {
                         nob_log(NOB_INFO, "No file selected");
                     }
                     #if SAVE_FILE
-                        fill_save_state_from_vr(vr, &save_state, video_file, paused);
+                        fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
                     #endif
                 } else if (key==SDLK_F4 && (e.key.keysym.mod & KMOD_ALT)) running=0;
                 if (key==SDLK_F11 || (key==SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT))) {
@@ -2848,7 +2843,7 @@ int main(int argc, char** argv) {
                 video_dst = compute_video_dst_rect(window_w, window_h, src_w, src_h);
                 SDL_RenderCopy(ren, tex, NULL, &video_dst);
             }
-            if (vr_render_subtitles(vr, vr_get_time(vr))) {
+            if (vr_render_subtitles(vr, vr_get_video_time(vr))) {
                 SDL_Texture* sub = vr_get_subtitle_texture(vr);
                 if (sub) SDL_RenderCopy(ren, sub, NULL, &video_dst);
             }
@@ -3291,7 +3286,7 @@ int main(int argc, char** argv) {
     }
     
     #if SAVE_FILE
-        fill_save_state_from_vr(vr, &save_state, video_file, paused);
+        fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
         for (uint64_t i = 0; i < save_state.recent_files_count && i < MAX_RECENT; i++) {
             if (save_state.recent_files[i]) {
                 free(save_state.recent_files[i]);
