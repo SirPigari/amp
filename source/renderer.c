@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <errno.h>
+#include "config.h"
 #include "../thirdparty/nob.h"
 #include "../thirdparty/SDL2/SDL.h"
 #include "../thirdparty/libavformat/avformat.h"

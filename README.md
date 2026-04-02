@@ -14,13 +14,13 @@ amp is a simple media player built using C and SDL2.
 ## Dependencies
 
 - [SDL2](https://www.libsdl.org/)
-- [SDL2_ttf](https://www.libsdl.org/projects/SDL_ttf/)
+- [SDL2_ttf](https://github.com/libsdl-org/SDL_ttf)
 - [FFmpeg](https://ffmpeg.org/)
 - [libass](https://github.com/libass/libass)
 
 ## References
 
-- [Nob](https://github.com/tsoding/nob)
+- [Nob](https://github.com/tsoding/nob.h)
 - [TinyFileDialogs](https://sourceforge.net/projects/tinyfiledialogs/)
 - [Iosevka Font](https://github.com/be5invis/Iosevka)
 - [MPV](https://mpv.io/)

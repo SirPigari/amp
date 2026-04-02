@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.1
+
+- Fixed vaapi on Unix
+- Fixed path issues in [libavfilter](thirdparty/libavfilter)
+- Updated links in [README.md](README.md) for `SDL2_ttf` and `Nob`
+
 ## 1.2.0
 
 - Added bookmarks
