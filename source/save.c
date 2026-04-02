@@ -23,6 +23,9 @@ typedef enum {
     /* per-file bookmarks */
     FIELD_BOOKMARKS             = 0x0021,   /* variable-length */
 
+    /* per-file display config (AR + window size) */
+    FIELD_PER_FILE_DISPLAY      = 0x0022,   /* variable-length */
+
     /* hardware-decoder cache */
     FIELD_HW_CACHE              = 0x0030,   /* variable-length */
 
@@ -73,6 +76,8 @@ typedef struct {
     int subtitle_track_index;
     int bookmark_count;
     Bookmark bookmarks[MAX_BOOKMARKS_PER_FILE];
+    uint32_t ar_x, ar_y;
+    int32_t win_w, win_h;
 } FileConfig;
 
 typedef struct {
@@ -95,6 +100,7 @@ static const LayoutField CURRENT_LAYOUT[] = {
     { FIELD_RECENT_FILES,       SIZE_VARIABLE    },
     { FIELD_REMEMBERED_FILES,   SIZE_VARIABLE    },
     { FIELD_BOOKMARKS,          SIZE_VARIABLE    },
+    { FIELD_PER_FILE_DISPLAY,   SIZE_VARIABLE    },
     { FIELD_HW_CACHE,           SIZE_VARIABLE    },
     { FIELD_GLOBAL,             sizeof(Global)   },
 };
@@ -330,6 +336,11 @@ static int write_save_state(const char* path, SaveState* state) {
     }
 
     total += sizeof(uint64_t);
+    for (uint64_t i = 0; i < state->remembered_count; i++) {
+        total += HASH_SIZE + sizeof(uint32_t) * 2 + sizeof(int32_t) * 2;
+    }
+
+    total += sizeof(uint64_t);
     for (int i = 0; i < state->hw_cache.count; i++)
         total += sizeof(uint64_t) + strlen(state->hw_cache.entries[i]);
     total += sizeof(state->global);
@@ -387,6 +398,19 @@ static int write_save_state(const char* path, SaveState* state) {
                 memcpy(ptr, &c->bookmarks[j].color_rgb, sizeof(uint32_t)); ptr += sizeof(uint32_t);
                 memcpy(ptr, &c->bookmarks[j].is_default_color, sizeof(int)); ptr += sizeof(int);
             }
+        }
+    }
+
+    {
+        uint64_t disp_entry_count = state->remembered_count;
+        memcpy(ptr, &disp_entry_count, sizeof(disp_entry_count)); ptr += sizeof(disp_entry_count);
+        for (uint64_t i = 0; i < state->remembered_count; i++) {
+            FileConfig* c = &state->remembered_files[i];
+            memcpy(ptr, c->file_hash, HASH_SIZE); ptr += HASH_SIZE;
+            memcpy(ptr, &c->ar_x, sizeof(uint32_t)); ptr += sizeof(uint32_t);
+            memcpy(ptr, &c->ar_y, sizeof(uint32_t)); ptr += sizeof(uint32_t);
+            memcpy(ptr, &c->win_w, sizeof(int32_t)); ptr += sizeof(int32_t);
+            memcpy(ptr, &c->win_h, sizeof(int32_t)); ptr += sizeof(int32_t);
         }
     }
 
@@ -620,6 +644,33 @@ static int parse_payload(const uint8_t* ptr, const uint8_t* buf_end,
             break;
         }
 
+        case FIELD_PER_FILE_DISPLAY: {
+            if (ptr + sizeof(uint64_t) > buf_end) break;
+            uint64_t disp_count = 0;
+            memcpy(&disp_count, ptr, sizeof(disp_count)); ptr += sizeof(disp_count);
+            for (uint64_t ei = 0; ei < disp_count; ei++) {
+                if (ptr + HASH_SIZE + sizeof(uint32_t) * 2 + sizeof(int32_t) * 2 > buf_end) break;
+                uint8_t hash[HASH_SIZE];
+                memcpy(hash, ptr, HASH_SIZE); ptr += HASH_SIZE;
+                uint32_t ar_x = 0, ar_y = 0;
+                int32_t  win_w = 0, win_h = 0;
+                memcpy(&ar_x,  ptr, sizeof(uint32_t)); ptr += sizeof(uint32_t);
+                memcpy(&ar_y,  ptr, sizeof(uint32_t)); ptr += sizeof(uint32_t);
+                memcpy(&win_w, ptr, sizeof(int32_t));  ptr += sizeof(int32_t);
+                memcpy(&win_h, ptr, sizeof(int32_t));  ptr += sizeof(int32_t);
+                for (uint64_t j = 0; j < s->remembered_count; j++) {
+                    if (memcmp(s->remembered_files[j].file_hash, hash, HASH_SIZE) == 0) {
+                        s->remembered_files[j].ar_x  = ar_x;
+                        s->remembered_files[j].ar_y  = ar_y;
+                        s->remembered_files[j].win_w = win_w;
+                        s->remembered_files[j].win_h = win_h;
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+
         default:
             nob_log(NOB_ERROR, "[layout] unhandled tag 0x%04X in parse_payload", tag);
             break;
@@ -688,7 +739,6 @@ static int load_save_state(const char* path, SaveState* s) {
 
         if (reset) {
             nob_log(NOB_ERROR, "[layout] user chose reset - returning default state");
-            init_default_save_state(s);
             hw_cache = s->hw_cache;
             write_save_state(path, s);
             return 1;
@@ -713,7 +763,8 @@ static int load_save_state(const char* path, SaveState* s) {
         return 0;
     }
 
-    hw_cache = s->hw_cache;
+    for (int i = 0; i < s->hw_cache.count; i++)
+        hw_cache_mark_success(s->hw_cache.entries[i]);
 
     if (diff == LAYOUT_RECOVERABLE) {
         nob_log(NOB_WARNING,
@@ -770,12 +821,18 @@ static void fill_save_state_from_vr_idx(VideoRenderer* vr,
     existing->subtitle_track       = vr->current_subtitle;
     existing->audio_track_index    = vr->audio_stream_index;
     existing->subtitle_track_index = vr->subtitle_stream_index;
+    existing->ar_x           = vr->ar_x;
+    existing->ar_y           = vr->ar_y;
+    existing->win_w          = (int32_t)vr->desired_win_w;
+    existing->win_h          = (int32_t)vr->desired_win_h;
 }
 
 static void fill_save_state_from_vr(VideoRenderer* vr,
                                      SaveState* state,
                                      const char* video_path, bool paused, float volume_percent) {
     if (!vr || !state || !video_path) return;
+
+    state->hw_cache = hw_cache;
 
     uint8_t hash[HASH_SIZE];
     hash_file(video_path, hash);
@@ -796,6 +853,10 @@ static void fill_save_state_from_vr(VideoRenderer* vr,
         config.subtitle_track      = vr->current_subtitle;
         config.audio_track_index   = vr->audio_stream_index;
         config.subtitle_track_index= vr->subtitle_stream_index;
+        config.ar_x          = vr->ar_x;
+        config.ar_y          = vr->ar_y;
+        config.win_w         = (int32_t)vr->desired_win_w;
+        config.win_h         = (int32_t)vr->desired_win_h;
 
         FileConfig* tmp = realloc(state->remembered_files,
                                   (state->remembered_count + 1) * sizeof(FileConfig));
@@ -823,6 +884,10 @@ static void apply_save_state_to_vr(VideoRenderer* vr,
                 vr_select_subtitle_track(vr, state->remembered_files[i].subtitle_track);
             vr_set_speed(vr, state->remembered_files[i].playback_speed);
             if (out_volume_percent) *out_volume_percent = (float)state->remembered_files[i].volume_percent;
+            vr->ar_x = state->remembered_files[i].ar_x;
+            vr->ar_y = state->remembered_files[i].ar_y;
+            vr->desired_win_w = (int)state->remembered_files[i].win_w;
+            vr->desired_win_h = (int)state->remembered_files[i].win_h;
             double target_pos = state->remembered_files[i].last_position;
             vr_seek(vr, target_pos);
             for (int j = 0; j < 128 && vr->current_time < target_pos - 0.05; j++) {
@@ -878,6 +943,8 @@ static void debug_save_state(const SaveState* state) {
         printf("      Subtitle Track: %d\n",   cfg->subtitle_track);
         printf("      Audio Track Index: %d\n",   cfg->audio_track_index);
         printf("      Subtitle Track Index: %d\n",cfg->subtitle_track_index);
+        printf("      Aspect Ratio: %u:%u\n", cfg->ar_x, cfg->ar_y);
+        printf("      Window Size: %dx%d\n", cfg->win_w, cfg->win_h);
         printf("      Bookmarks (%u):\n", cfg->bookmark_count);
         for (int j = 0; j < cfg->bookmark_count; j++) {
             const Bookmark* bm = &cfg->bookmarks[j];

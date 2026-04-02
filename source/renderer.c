@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <errno.h>
+#include <limits.h>
 #include "config.h"
 #include "../thirdparty/nob.h"
 #include "../thirdparty/SDL2/SDL.h"
@@ -124,6 +125,9 @@ typedef struct {
     AVFilterContext* buffersrc_ctx;
     AVFilterContext* buffersink_ctx;
     AVFrame* filtered_frame;
+
+    unsigned int ar_x, ar_y;
+    int desired_win_w, desired_win_h;
 } VideoRenderer;
 
 static void pkt_queue_init(PacketQueue* q, int capacity) {
@@ -257,9 +261,10 @@ static void vr_reset_stream(VideoRenderer* vr) {
 
     if (vr->audio_dev) {
         SDL_PauseAudioDevice(vr->audio_dev, 1);
+        Uint32 drain_start = SDL_GetTicks();
+        while (SDL_GetQueuedAudioSize(vr->audio_dev) > 0 && SDL_GetTicks() - drain_start < 200)
+            SDL_Delay(5);
         SDL_ClearQueuedAudio(vr->audio_dev);
-        SDL_CloseAudioDevice(vr->audio_dev);
-        vr->audio_dev = 0;
     }
     if (vr->audio_frame) {
         av_frame_free(&vr->audio_frame);
@@ -498,6 +503,7 @@ static void vr_queue_audio(VideoRenderer* vr, AVFrame* frame) {
     }
 
     SDL_QueueAudio(vr->audio_dev, vr->audio_buf, bytes);
+    SDL_PauseAudioDevice(vr->audio_dev, 0);
     if (vr->audio_time_base.num != 0 && vr->audio_time_base.den != 0) {
         int64_t pts = frame->best_effort_timestamp;
         if (pts != AV_NOPTS_VALUE) {
@@ -637,6 +643,10 @@ VideoRenderer* vr_create(SDL_Window* window, SDL_Renderer* renderer) {
     vr->current_filename[0] = '\0';
     vr->hw_bad_frame_count = 0;
     vr->hw_disabled = 0;
+    vr->ar_x = 0;
+    vr->ar_y = 0;
+    vr->desired_win_w = 0;
+    vr->desired_win_h = 0;
     return vr;
 }
 
@@ -703,9 +713,12 @@ static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVC
         enum AVHWDeviceType type = av_hwdevice_find_type_by_name(name);
         if (type == AV_HWDEVICE_TYPE_NONE) continue;
 
-        
         if (ctx->codec_id == AV_CODEC_ID_HEVC && ctx->profile == 2 && strcmp(name, "vaapi") == 0) {
             nob_log(NOB_INFO, "HEVC profile 2 detected (10-bit), skipping hardware acceleration");
+            return -1;
+        }
+        if (ctx->codec_id == AV_CODEC_ID_H264) {
+            nob_log(NOB_INFO, "H.264 detected, skipping hardware acceleration");
             return -1;
         }
 
@@ -762,6 +775,8 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
 
     av_log_set_level(AV_LOG_QUIET);
 
+    Uint32 load_start = SDL_GetTicks();
+
     AVDictionary* open_opts = NULL;
     av_dict_set(&open_opts, "probesize", AMP_FF_PROBE_SIZE, 0);
     av_dict_set(&open_opts, "analyzeduration", AMP_FF_ANALYZE_DURATION_US, 0);
@@ -793,7 +808,10 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
             if (!codec) { nob_log(NOB_ERROR, "Failed to find video decoder"); continue; }
             
             int skip_hw = 0;
-            if (stream->codecpar->codec_id == AV_CODEC_ID_HEVC && stream->codecpar->profile == 2 && hw_opt && strcmp(hw_opt, "vaapi") == 0) {
+            if (stream->codecpar->codec_id == AV_CODEC_ID_H264) {
+                nob_log(NOB_INFO, "H.264 detected, using software decoding");
+                skip_hw = 1;
+            } else if (stream->codecpar->codec_id == AV_CODEC_ID_HEVC && stream->codecpar->profile == 2 && hw_opt && strcmp(hw_opt, "vaapi") == 0) {
                 nob_log(NOB_INFO, "HEVC profile 2 detected (10-bit), forcing software decoding");
                 skip_hw = 1;
             }
@@ -914,9 +932,18 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
             want.channels = 2;
             want.samples = 1024;
             want.callback = NULL;
-            vr->audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &vr->audio_spec,
-                                                 SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
-            if (vr->audio_dev) SDL_PauseAudioDevice(vr->audio_dev, 0);
+            if (vr->audio_dev && vr->audio_spec.freq == want.freq) {
+                SDL_ClearQueuedAudio(vr->audio_dev);
+                SDL_PauseAudioDevice(vr->audio_dev, 1);
+            } else {
+                if (vr->audio_dev) {
+                    SDL_PauseAudioDevice(vr->audio_dev, 1);
+                    SDL_CloseAudioDevice(vr->audio_dev);
+                    vr->audio_dev = 0;
+                }
+                vr->audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &vr->audio_spec,
+                                                     SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
+            }
 
             AVChannelLayout in_layout = vr->audio_ctx->ch_layout;
             AVChannelLayout out_layout;
@@ -951,6 +978,7 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
             i, vr->subtitle_names[i], vr->subtitle_streams[i]);
     }
 
+    nob_log(NOB_INFO, "vr_load total: %u ms", SDL_GetTicks() - load_start);
     return 1;
 }
 
@@ -1180,6 +1208,13 @@ int vr_render_frame(VideoRenderer* vr) {
                         nob_log(NOB_ERROR, "Too many bad HW->SW frames, disabling HW and reloading as software decode");
                         char fname[512];
                         snprintf(fname, sizeof(fname), "%s", vr->current_filename[0] ? vr->current_filename : "");
+                        if (vr->hw_device_ctx) {
+                            av_buffer_unref(&vr->hw_device_ctx);
+                            vr->hw_device_ctx = NULL;
+                        }
+                        vr->hw_pix_fmt = AV_PIX_FMT_NONE;
+                        vr->hw_device_type = AV_HWDEVICE_TYPE_NONE;
+                        vr->hw_device_name[0] = '\0';
                         vr_reset_stream(vr);
                         if (fname[0]) {
                             if (!vr_load(vr, fname, "none")) {
@@ -1543,6 +1578,12 @@ int vr_get_subtitle_style_mode(VideoRenderer* vr) {
     return vr_subtitle_style_mode(vr);
 }
 
+void vr_set_aspect_ratio_mode(VideoRenderer* vr, unsigned int x, unsigned int y) {
+    if (!vr) return;
+    vr->ar_x = x;
+    vr->ar_y = y;
+}
+
 float vr_get_volume(VideoRenderer* vr) {
     return vr ? vr->audio_volume : 1.0f;
 }
@@ -1787,6 +1828,11 @@ void vr_set_paused(VideoRenderer* vr, int paused) {
 void vr_free(VideoRenderer* vr) {
     if (!vr) return;
     vr_reset_stream(vr);
+    if (vr->audio_dev) {
+        SDL_PauseAudioDevice(vr->audio_dev, 1);
+        SDL_CloseAudioDevice(vr->audio_dev);
+        vr->audio_dev = 0;
+    }
     pkt_queue_free(&vr->video_pktq);
     pkt_queue_free(&vr->audio_pktq);
     free(vr);

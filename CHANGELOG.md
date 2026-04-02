@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.4.0
+
+- Added <kbd>[</kbd> and <kbd>]</kbd> for jumping to the previous and next bookmark/chapter.
+- Added <kbd>Ctrl+R</kbd> to reload the current video file from disk
+- Added logging for `vr_load` total time
+- Added <kbd>Home</kbd> and <kbd>End</kbd> keys for jumping to the beginning and end of the video.
+- Added `Aspect Ratio` submenu to `View` menu with options for aspect ratio override:
+  - `Original` (default): use the original aspect ratio of the video
+  - `Stretch to Window`: stretch the video to fill the window, ignoring the original aspect ratio
+  - `Custom`: open a dialog to enter custom aspect ratio values
+  - `1:1`, `4:3`, `16:9`, `21:9`: common aspect ratios
+- Added `Custom` to the Resolution submenu
+- Added <kbd>Alt+A</kbd> to open the custom aspect ratio dialog
+- Added <kbd>Alt+R</kbd> to open the custom resolution dialog
+- Added <kbd>Shift+Alt+A</kbd> to reset aspect ratio override to original
+- Added <kbd>Shift+Alt+R</kbd> to reset desired resolution to the video resolution
+- Fixed a bug where the HW Cache would be cleared on save
+- Fixed a bug where loading a new file wouldnt load its saved settings and instead start from start with default settings
+
 ## 1.3.0
 
 - Switched add bookmark from <kbd>m</kbd> to <kbd>b</kbd>

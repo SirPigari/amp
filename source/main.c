@@ -348,18 +348,22 @@ static void fit_window_to_display(int* w, int* h) {
     if (*h < 180) *h = 180;
 }
 
-static SDL_Rect compute_video_dst_rect(int win_w, int win_h, int src_w, int src_h) {
+static SDL_Rect compute_video_dst_rect(int win_w, int win_h, int src_w, int src_h, unsigned int ar_x, unsigned int ar_y) {
     SDL_Rect dst = {0, 0, win_w, win_h};
     if (win_w <= 0 || win_h <= 0 || src_w <= 0 || src_h <= 0) return dst;
 
-    float sx = (float)win_w / (float)src_w;
-    float sy = (float)win_h / (float)src_h;
+    int eff_w = (ar_x == UINT_MAX) ? win_w : (ar_x == 0 ? src_w : (int)ar_x);
+    int eff_h = (ar_y == UINT_MAX) ? win_h : (ar_y == 0 ? src_h : (int)ar_y);
+    if (eff_w <= 0 || eff_h <= 0) return dst;
+
+    float sx = (float)win_w / (float)eff_w;
+    float sy = (float)win_h / (float)eff_h;
     float s = sx < sy ? sx : sy;
-    if (s > 1.0f) s = 1.0f;
+    if (ar_x == 0 && ar_y == 0 && s > 1.0f) s = 1.0f;
     if (s <= 0.0f) return dst;
 
-    dst.w = (int)(src_w * s);
-    dst.h = (int)(src_h * s);
+    dst.w = (int)(eff_w * s);
+    dst.h = (int)(eff_h * s);
     dst.x = (win_w - dst.w) / 2;
     dst.y = (win_h - dst.h) / 2;
     return dst;
@@ -827,6 +831,15 @@ static void hist_push_seek(
     hist_push(history, cnt, pos, e);
 }
 
+static void sort_bookmarks_by_time(Bookmark* bms, int count) {
+    for (int i = 1; i < count; i++) {
+        Bookmark key = bms[i];
+        int j = i - 1;
+        while (j >= 0 && bms[j].time > key.time) { bms[j + 1] = bms[j]; j--; }
+        bms[j + 1] = key;
+    }
+}
+
 static void hist_push_bookmark(
     HistoryEntry* history, int* cnt, int* pos,
     const Bookmark* before_bms, int before_count,
@@ -1035,6 +1048,9 @@ static int navigate_media(
     if (save_state && *video_file) {
         apply_save_state_to_vr(*vr, save_state, *video_file, volume_percent);
         vr_set_volume(*vr, volume_percent_to_gain(*volume_percent));
+        if (*vr && (*vr)->desired_win_w > 0 && (*vr)->desired_win_h > 0) {
+            apply_window_size_for_video(win, vr_get_texture(*vr), (*vr)->desired_win_w, (*vr)->desired_win_h);
+        }
     }
     if (save_state && bookmarks && bookmark_count && *video_file) {
         get_bookmarks_from_save_state(save_state, *video_file, bookmarks, bookmark_count);
@@ -1122,11 +1138,8 @@ static void menu_pump_playback_tick(void) {
         int src_w = 0;
         int src_h = 0;
         SDL_QueryTexture(tex, NULL, NULL, &src_w, &src_h);
-        video_dst = compute_video_dst_rect(window_w, window_h, src_w, src_h);
+        video_dst = compute_video_dst_rect(window_w, window_h, src_w, src_h, vr->ar_x, vr->ar_y);
         SDL_RenderCopy(g_menu_ren, tex, NULL, &video_dst);
-    }
-
-    if (vr_render_subtitles(vr, vr_get_video_time(vr))) {
         SDL_Texture* sub = vr_get_subtitle_texture(vr);
         if (sub) SDL_RenderCopy(g_menu_ren, sub, NULL, &video_dst);
     }
@@ -1164,10 +1177,18 @@ enum {
     MENU_MAXIMIZE,
     MENU_MINIMIZE,
     MENU_RESOLUTION_NATIVE,
+    MENU_RESOLUTION_CUSTOM,
     MENU_RESOLUTION_480P,
     MENU_RESOLUTION_720P,
     MENU_RESOLUTION_1080P,
     MENU_RESOLUTION_1440P,
+    MENU_ASPECT_RATIO_1_1,
+    MENU_ASPECT_RATIO_4_3,
+    MENU_ASPECT_RATIO_16_9,
+    MENU_ASPECT_RATIO_21_9,
+    MENU_ASPECT_RATIO_STRETCH,
+    MENU_ASPECT_RATIO_ORIGINAL,
+    MENU_ASPECT_RATIO_CUSTOM,
     MENU_PLAY_PAUSE,
     MENU_NEXT_FRAME,
     MENU_PREV_FRAME,
@@ -1177,6 +1198,8 @@ enum {
     MENU_PREV_MEDIA_WRAP,
     MENU_SEEK_BACK,
     MENU_SEEK_FORWARD,
+    MENU_SEEK_BEGINNING,
+    MENU_SEEK_END,
     MENU_VOLUME_UP,
     MENU_VOLUME_DOWN,
     MENU_VOLUME_UP_FINE,
@@ -1186,6 +1209,8 @@ enum {
     MENU_SET_VOLUME200,
     MENU_ADD_BOOKMARK,
     MENU_DELETE_BOOKMARK,
+    MENU_NEXT_BOOKMARK,
+    MENU_PREV_BOOKMARK,
     MENU_UNDO,
     MENU_REDO,
     MENU_RECENT_BASE = 100
@@ -1207,16 +1232,17 @@ HMENU create_windows_menu(SDL_Window* window) {
     HMENU hFileMenu = CreatePopupMenu();
     HMENU hViewMenu = CreatePopupMenu();
     HMENU hResolutionMenu = CreatePopupMenu();
+    HMENU hAspectRatioMenu = CreatePopupMenu();
     HMENU hPlaybackMenu = CreatePopupMenu();
     HMENU hVolumeMenu = CreatePopupMenu();
     HMENU hBookmarksMenu = CreatePopupMenu();
 
     AppendMenu(hFileMenu, MF_STRING, MENU_OPEN, "Open File\tCtrl+O");
 
-    if(recent_count > 0) {
+    if (recent_count > 0) {
         HMENU hRecent = CreatePopupMenu();
-        for(int i=0; i<recent_count; i++) {
-            AppendMenu(hRecent, MF_STRING, MENU_RECENT_BASE+i, recent_files[i]);
+        for (int i = 0; i < recent_count; i++) {
+            AppendMenu(hRecent, MF_STRING, MENU_RECENT_BASE + i, recent_files[i]);
         }
         AppendMenu(hFileMenu, MF_POPUP, (UINT_PTR)hRecent, "Recent Files");
     }
@@ -1229,12 +1255,22 @@ HMENU create_windows_menu(SDL_Window* window) {
     AppendMenu(hViewMenu, MF_STRING, MENU_MAXIMIZE, "Maximize\tF10");
     AppendMenu(hViewMenu, MF_STRING, MENU_MINIMIZE, "Minimize\tAlt+M");
     AppendMenu(hResolutionMenu, MF_STRING, MENU_RESOLUTION_NATIVE, "Native (Video)");
+    AppendMenu(hResolutionMenu, MF_STRING, MENU_RESOLUTION_CUSTOM, "Custom\tAlt+R");
     AppendMenu(hResolutionMenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(hResolutionMenu, MF_STRING, MENU_RESOLUTION_480P, "854x480");
     AppendMenu(hResolutionMenu, MF_STRING, MENU_RESOLUTION_720P, "1280x720");
     AppendMenu(hResolutionMenu, MF_STRING, MENU_RESOLUTION_1080P, "1920x1080");
     AppendMenu(hResolutionMenu, MF_STRING, MENU_RESOLUTION_1440P, "2560x1440");
     AppendMenu(hViewMenu, MF_POPUP, (UINT_PTR)hResolutionMenu, "Resolution");
+    AppendMenu(hAspectRatioMenu, MF_STRING, MENU_ASPECT_RATIO_STRETCH, "Stretch to Window");
+    AppendMenu(hAspectRatioMenu, MF_STRING, MENU_ASPECT_RATIO_ORIGINAL, "Original (Video)");
+    AppendMenu(hAspectRatioMenu, MF_STRING, MENU_ASPECT_RATIO_CUSTOM, "Custom\tAlt+A");
+    AppendMenu(hAspectRatioMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hAspectRatioMenu, MF_STRING, MENU_ASPECT_RATIO_1_1, "1:1");
+    AppendMenu(hAspectRatioMenu, MF_STRING, MENU_ASPECT_RATIO_4_3, "4:3");
+    AppendMenu(hAspectRatioMenu, MF_STRING, MENU_ASPECT_RATIO_16_9, "16:9");
+    AppendMenu(hAspectRatioMenu, MF_STRING, MENU_ASPECT_RATIO_21_9, "21:9");
+    AppendMenu(hViewMenu, MF_POPUP, (UINT_PTR)hAspectRatioMenu, "Aspect Ratio");
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hViewMenu, "View");
 
     
@@ -1248,6 +1284,8 @@ HMENU create_windows_menu(SDL_Window* window) {
 
     AppendMenu(hBookmarksMenu, MF_STRING, MENU_ADD_BOOKMARK, "Add Bookmark\tB");
     AppendMenu(hBookmarksMenu, MF_STRING, MENU_DELETE_BOOKMARK, "Delete closest Bookmark\tShift+B");
+    AppendMenu(hBookmarksMenu, MF_STRING, MENU_NEXT_BOOKMARK, "Next Bookmark\t]");
+    AppendMenu(hBookmarksMenu, MF_STRING, MENU_PREV_BOOKMARK, "Previous Bookmark\t[");
 
     AppendMenu(hPlaybackMenu, MF_STRING, MENU_PLAY_PAUSE, "Play/Pause\tSpace");
     AppendMenu(hPlaybackMenu, MF_STRING, MENU_NEXT_FRAME, "Next Frame\tAlt+Right");
@@ -1259,6 +1297,8 @@ HMENU create_windows_menu(SDL_Window* window) {
     AppendMenu(hPlaybackMenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(hPlaybackMenu, MF_STRING, MENU_SEEK_BACK, "Seek -5s\tLeft");
     AppendMenu(hPlaybackMenu, MF_STRING, MENU_SEEK_FORWARD, "Seek +5s\tRight");
+    AppendMenu(hPlaybackMenu, MF_STRING, MENU_SEEK_BEGINNING, "Seek to Beginning\tHome");
+    AppendMenu(hPlaybackMenu, MF_STRING, MENU_SEEK_END, "Seek to End\tEnd");
     AppendMenu(hPlaybackMenu, MF_POPUP, (UINT_PTR)hVolumeMenu, "Volume");
     AppendMenu(hPlaybackMenu, MF_POPUP, (UINT_PTR)hBookmarksMenu, "Bookmarks");
     AppendMenu(hPlaybackMenu, MF_SEPARATOR, 0, NULL);
@@ -1425,6 +1465,39 @@ static int parse_time_string(const char* s, double* out) {
     return 0;
 }
 
+static int parse_custom_resolution(const char* s, int* out_w, int* out_h) {
+    if (!s || !out_w || !out_h) return 0;
+    int w = 0, h = 0;
+    char buf[128] = {0};
+    int j = 0;
+    for (int i = 0; s[i] && j < 127; i++) {
+        if (s[i] != ' ' && s[i] != '\t') buf[j++] = s[i];
+    }
+    buf[j] = '\0';
+    if (sscanf(buf, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) { *out_w = w; *out_h = h; return 1; }
+    if (sscanf(buf, "%dX%d", &w, &h) == 2 && w > 0 && h > 0) { *out_w = w; *out_h = h; return 1; }
+    if (sscanf(buf, "%d,%d", &w, &h) == 2 && w > 0 && h > 0) { *out_w = w; *out_h = h; return 1; }
+    if (sscanf(buf, "%d-%d", &w, &h) == 2 && w > 0 && h > 0) { *out_w = w; *out_h = h; return 1; }
+    if (sscanf(s, "%d %d", &w, &h) == 2 && w > 0 && h > 0) { *out_w = w; *out_h = h; return 1; }
+    return 0;
+}
+
+static int parse_custom_aspect_ratio(const char* s, unsigned int* out_x, unsigned int* out_y) {
+    if (!s || !out_x || !out_y) return 0;
+    unsigned int x = 0, y = 0;
+    char buf[128] = {0};
+    int j = 0;
+    for (int i = 0; s[i] && j < 127; i++) {
+        if (s[i] != ' ' && s[i] != '\t') buf[j++] = s[i];
+    }
+    buf[j] = '\0';
+    if (sscanf(buf, "%u:%u", &x, &y) == 2 && x > 0 && y > 0) { *out_x = x; *out_y = y; return 1; }
+    if (sscanf(buf, "%u,%u", &x, &y) == 2 && x > 0 && y > 0) { *out_x = x; *out_y = y; return 1; }
+    if (sscanf(buf, "%u-%u", &x, &y) == 2 && x > 0 && y > 0) { *out_x = x; *out_y = y; return 1; }
+    if (sscanf(s,   "%u %u", &x, &y) == 2 && x > 0 && y > 0) { *out_x = x; *out_y = y; return 1; }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     nob_set_log_handler(amp_log_handler);
 
@@ -1479,7 +1552,7 @@ int main(int argc, char** argv) {
     int history_pos   = -1;
 
     TextInputState ti = {0};
-    typedef enum { TI_NONE = 0, TI_BOOKMARK_RENAME, TI_GOTO_TIME } TIPurpose;
+    typedef enum { TI_NONE = 0, TI_BOOKMARK_RENAME, TI_GOTO_TIME, TI_SET_RESOLUTION, TI_SET_ASPECT_RATIO } TIPurpose;
     TIPurpose ti_purpose = TI_NONE;
     int ti_bm_idx = -1;
     char ti_bm_old_name[BOOKMARK_NAME_MAX] = {0};
@@ -1656,10 +1729,10 @@ int main(int argc, char** argv) {
         (maximized ? SDL_WINDOW_MAXIMIZED : 0)
     );
 
-    if(!win) { nob_log(NOB_ERROR, "SDL_CreateWindow failed: %s", SDL_GetError()); return 1; }
+    if (!win) { nob_log(NOB_ERROR, "SDL_CreateWindow failed: %s", SDL_GetError()); return 1; }
 
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if(!ren) { SDL_DestroyWindow(win); nob_log(NOB_ERROR, "SDL_CreateRenderer failed: %s", SDL_GetError()); return 1; }
+    if (!ren) { SDL_DestroyWindow(win); nob_log(NOB_ERROR, "SDL_CreateRenderer failed: %s", SDL_GetError()); return 1; }
 
     SDL_RaiseWindow(win);
 #ifdef _WIN32
@@ -1689,22 +1762,6 @@ int main(int argc, char** argv) {
     }
     */
 
-    if(video_file) {
-        vr = vr_create(win, ren);
-        if(vr_load(vr, video_file, hw_option)) {
-            vr_set_volume(vr, volume_percent_to_gain(volume_percent));
-            apply_subtitle_override(
-                vr,
-                subtitle_override_colors[subtitle_color_idx],
-                subtitle_override_sizes[subtitle_size_idx],
-                subtitle_override_margins[subtitle_move_idx]
-            );
-            apply_window_size_for_video(win, vr_get_texture(vr), requested_window_w, requested_window_h);
-            set_window_title_for_media(win, vr, video_file);
-            nob_log(NOB_INFO, "Loaded %s", video_file);
-        }
-    }
-
     #if SAVE_FILE
         SaveState save_state = {0};
         int load_save_state_result = load_save_state(abspath_temp(SAVE_FILE_PATH), &save_state);
@@ -1724,16 +1781,42 @@ int main(int argc, char** argv) {
             nob_log(NOB_INFO, "Exited due to save file load error");
             return 0xF1;
         } else {
-            nob_log(NOB_INFO, "Save file loaded successfully");
-            apply_save_state_to_vr(vr, &save_state, video_file, &volume_percent);
-            if (vr) vr_set_volume(vr, volume_percent_to_gain(volume_percent));
-            if (video_file)
-                get_bookmarks_from_save_state(&save_state, video_file,
-                                               bookmarks, &bookmark_count);
+            nob_log(NOB_INFO, "Save file loaded successfully (pre-load)");
             recent_count = (int)(save_state.recent_files_count > MAX_RECENT ? MAX_RECENT : save_state.recent_files_count);
             for (int i = 0; i < recent_count; i++) {
                 recent_files[i] = save_state.recent_files[i] ? strdup(save_state.recent_files[i]) : NULL;
             }
+        }
+    #endif
+
+    if (video_file) {
+        vr = vr_create(win, ren);
+        if (vr_load(vr, video_file, hw_option)) {
+            vr_set_volume(vr, volume_percent_to_gain(volume_percent));
+            apply_subtitle_override(
+                vr,
+                subtitle_override_colors[subtitle_color_idx],
+                subtitle_override_sizes[subtitle_size_idx],
+                subtitle_override_margins[subtitle_move_idx]
+            );
+            apply_window_size_for_video(win, vr_get_texture(vr), requested_window_w, requested_window_h);
+            set_window_title_for_media(win, vr, video_file);
+            nob_log(NOB_INFO, "Loaded %s", video_file);
+        }
+    }
+
+    #if SAVE_FILE
+        if (load_save_state_result > 0) {
+            apply_save_state_to_vr(vr, &save_state, video_file, &volume_percent);
+            if (vr) vr_set_volume(vr, volume_percent_to_gain(volume_percent));
+            if (vr && vr->desired_win_w > 0 && vr->desired_win_h > 0) {
+                requested_window_w = vr->desired_win_w;
+                requested_window_h = vr->desired_win_h;
+                apply_window_size_for_video(win, vr_get_texture(vr), requested_window_w, requested_window_h);
+            }
+            if (video_file)
+                get_bookmarks_from_save_state(&save_state, video_file,
+                                               bookmarks, &bookmark_count);
         }
         #if USE_SAVE_IN_SAVE_FILE
             if (save_state.global.paused) {
@@ -1850,6 +1933,53 @@ int main(int argc, char** argv) {
                                      "Invalid time format");
                             flash_until = SDL_GetTicks() + 900;
                         }
+                    } else if (ti_purpose == TI_SET_RESOLUTION) {
+                        int rw = 0, rh = 0;
+                        if (parse_custom_resolution(ti.value, &rw, &rh)) {
+                            if (fullscreen) {
+                                fullscreen = false;
+                                SDL_SetWindowFullscreen(win, 0);
+#ifdef _WIN32
+                                if (win_hwnd) { SetMenu(win_hwnd, g_current_win_menu); DrawMenuBar(win_hwnd); }
+#endif
+                            }
+                            SDL_RestoreWindow(win);
+                            maximized = false;
+                            requested_window_w = rw;
+                            requested_window_h = rh;
+                            if (vr) { vr->desired_win_w = rw; vr->desired_win_h = rh; }
+                            int tw = rw, th = rh;
+                            fit_window_to_display(&tw, &th);
+                            SDL_SetWindowSize(win, tw, th);
+                            SDL_SetWindowPosition(win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+                            snprintf(flash_text, sizeof(flash_text), "Resolution: %dx%d", rw, rh);
+#ifdef _WIN32
+                            if (vr && video_file) {
+                                fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
+                                write_save_state(SAVE_FILE_PATH, &save_state);
+                            }
+#endif
+                        } else {
+                            snprintf(flash_text, sizeof(flash_text), "Invalid resolution (use WxH, W H, W,H or W-H)");
+                        }
+                        flash_until = SDL_GetTicks() + 900;
+                    } else if (ti_purpose == TI_SET_ASPECT_RATIO) {
+                        unsigned int ax = 0, ay = 0;
+                        if (parse_custom_aspect_ratio(ti.value, &ax, &ay)) {
+                            if (vr) {
+                                vr_set_aspect_ratio_mode(vr, ax, ay);
+#if SAVE_FILE
+                                if (video_file) {
+                                    fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
+                                    write_save_state(SAVE_FILE_PATH, &save_state);
+                                }
+#endif
+                            }
+                            snprintf(flash_text, sizeof(flash_text), "Aspect Ratio: %u:%u", ax, ay);
+                        } else {
+                            snprintf(flash_text, sizeof(flash_text), "Invalid aspect ratio (use X:Y, X Y, X,Y or X-Y)");
+                        }
+                        flash_until = SDL_GetTicks() + 900;
                     }
                     ti_purpose = TI_NONE;
                     ti_bm_idx = -1;
@@ -1865,22 +1995,30 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
             if (e.type == SDL_SYSWMEVENT) {
                 SDL_SysWMmsg* sysmsg = e.syswm.msg;
-                if(sysmsg && sysmsg->subsystem == SDL_SYSWM_WINDOWS) {
-                    if(sysmsg->msg.win.msg == WM_COMMAND) {
+                if (sysmsg && sysmsg->subsystem == SDL_SYSWM_WINDOWS) {
+                    if (sysmsg->msg.win.msg == WM_COMMAND) {
                         int id = LOWORD(sysmsg->msg.win.wParam);
-                        if(id == MENU_OPEN) {
+                        if (id == MENU_OPEN) {
                             char* f = open_file_dialog(
                                 (const char*[]){"*.mkv", "*.mp4"}, 2, "Video Files (*.mkv, *.mp4)", false,
                                 "Select Video File", NULL, &is_supported_video_file
                             );
-                            if(f) {
+                            if (f) {
                                 const char* old_file_open = video_file;
                                 double old_time_open = vr ? vr_get_time(vr) : 0.0;
-                                video_file = f;
-                                if(!vr) vr = vr_create(win, ren);
-                                if(vr_load(vr, f, hw_option)) {
+                                #if SAVE_FILE
+                                if (vr && video_file) {
                                     fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
+                                    write_save_state(SAVE_FILE_PATH, &save_state);
+                                }
+                                #endif
+                                video_file = f;
+                                if (!vr) vr = vr_create(win, ren);
+                                if (vr_load(vr, f, hw_option)) {
+                                    #if SAVE_FILE
                                     apply_save_state_to_vr(vr, &save_state, video_file, &volume_percent);
+                                    get_bookmarks_from_save_state(&save_state, video_file, bookmarks, &bookmark_count);
+                                    #endif
                                     vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                                     apply_subtitle_override(
                                         vr,
@@ -1888,6 +2026,10 @@ int main(int argc, char** argv) {
                                         subtitle_override_sizes[subtitle_size_idx],
                                         subtitle_override_margins[subtitle_move_idx]
                                     );
+                                    if (vr->desired_win_w > 0 && vr->desired_win_h > 0) {
+                                        requested_window_w = vr->desired_win_w;
+                                        requested_window_h = vr->desired_win_h;
+                                    }
                                     apply_window_size_for_video(win, vr_get_texture(vr), requested_window_w, requested_window_h);
                                     add_recent_file(f);
                                     set_window_title_for_media(win, vr, f);
@@ -1897,12 +2039,9 @@ int main(int argc, char** argv) {
                                     nob_log(NOB_ERROR, "Failed to load %s", f);
                                 }
                             }
-                            #if SAVE_FILE
-                                fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
-                            #endif
-                        } else if(id >= MENU_RECENT_BASE && id < MENU_RECENT_BASE+MAX_RECENT) {
+                        } else if (id >= MENU_RECENT_BASE && id < MENU_RECENT_BASE + MAX_RECENT) {
                             int idx = id - MENU_RECENT_BASE;
-                            if(idx < recent_count) {
+                            if (idx < recent_count) {
                                 char* selected_recent = abspath_temp_safe(recent_files[idx]);
                                 if (!selected_recent) {
                                     nob_log(NOB_ERROR, "Failed to resolve recent file path: %s", recent_files[idx]);
@@ -1910,11 +2049,19 @@ int main(int argc, char** argv) {
                                 }
                                 const char* old_file_recent = video_file;
                                 double old_time_recent = vr ? vr_get_time(vr) : 0.0;
-                                video_file = selected_recent;
-                                if(!vr) vr = vr_create(win, ren);
-                                if(vr_load(vr, video_file, hw_option)) {
+                                #if SAVE_FILE
+                                if (vr && video_file) {
                                     fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
+                                    write_save_state(SAVE_FILE_PATH, &save_state);
+                                }
+                                #endif
+                                video_file = selected_recent;
+                                if (!vr) vr = vr_create(win, ren);
+                                if (vr_load(vr, video_file, hw_option)) {
+                                    #if SAVE_FILE
                                     apply_save_state_to_vr(vr, &save_state, video_file, &volume_percent);
+                                    get_bookmarks_from_save_state(&save_state, video_file, bookmarks, &bookmark_count);
+                                    #endif
                                     vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                                     apply_subtitle_override(
                                         vr,
@@ -1922,6 +2069,10 @@ int main(int argc, char** argv) {
                                         subtitle_override_sizes[subtitle_size_idx],
                                         subtitle_override_margins[subtitle_move_idx]
                                     );
+                                    if (vr->desired_win_w > 0 && vr->desired_win_h > 0) {
+                                        requested_window_w = vr->desired_win_w;
+                                        requested_window_h = vr->desired_win_h;
+                                    }
                                     apply_window_size_for_video(win, vr_get_texture(vr), requested_window_w, requested_window_h);
                                     add_recent_file(video_file);
                                     set_window_title_for_media(win, vr, video_file);
@@ -1932,8 +2083,8 @@ int main(int argc, char** argv) {
                                     nob_log(NOB_ERROR, "Failed to load %s", video_file);
                                 }
                             }
-                        } else if(id == MENU_EXIT) running = false;
-                        else if(id == MENU_FULLSCREEN) {
+                        } else if (id == MENU_EXIT) running = false;
+                        else if (id == MENU_FULLSCREEN) {
                             fullscreen = !fullscreen;
                             if (fullscreen) {
                                 maximized = (SDL_GetWindowFlags(win) & SDL_WINDOW_MAXIMIZED) != 0;
@@ -1958,8 +2109,8 @@ int main(int argc, char** argv) {
                                 DrawMenuBar(win_hwnd);
                             }
 #endif
-                        } else if(id == MENU_MINIMIZE) SDL_MinimizeWindow(win);
-                        else if(id == MENU_MAXIMIZE) {
+                        } else if (id == MENU_MINIMIZE) SDL_MinimizeWindow(win);
+                        else if (id == MENU_MAXIMIZE) {
                             maximized = !maximized;
                             if (maximized) {
                                 SDL_MaximizeWindow(win);
@@ -1986,6 +2137,7 @@ int main(int argc, char** argv) {
                             if (id == MENU_RESOLUTION_NATIVE) {
                                 requested_window_w = 0;
                                 requested_window_h = 0;
+                                if (vr) { vr->desired_win_w = 0; vr->desired_win_h = 0; }
                                 if (vr) {
                                     apply_window_size_for_video(win, vr_get_texture(vr), requested_window_w, requested_window_h);
                                 }
@@ -2003,6 +2155,7 @@ int main(int argc, char** argv) {
                                     requested_window_w = 2560;
                                     requested_window_h = 1440;
                                 }
+                                if (vr) { vr->desired_win_w = requested_window_w; vr->desired_win_h = requested_window_h; }
 
                                 int target_w = requested_window_w;
                                 int target_h = requested_window_h;
@@ -2010,20 +2163,48 @@ int main(int argc, char** argv) {
                                 SDL_SetWindowSize(win, target_w, target_h);
                                 SDL_SetWindowPosition(win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
                             }
-                        }
-                        else if(id == MENU_PLAY_PAUSE) {
+                            #if SAVE_FILE
+                            if (vr && video_file) {
+                                fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
+                                write_save_state(SAVE_FILE_PATH, &save_state);
+                            }
+                            #endif
+                        } else if (id == MENU_RESOLUTION_CUSTOM) {
+                            text_input_open(&ti, "Resolution (WxH):", "", 20);
+                            ti_purpose = TI_SET_RESOLUTION;
+                        } else if (id == MENU_ASPECT_RATIO_16_9 || id == MENU_ASPECT_RATIO_4_3 || id == MENU_ASPECT_RATIO_1_1 || id == MENU_ASPECT_RATIO_21_9 || id == MENU_ASPECT_RATIO_STRETCH || id == MENU_ASPECT_RATIO_ORIGINAL) {
+                            if (vr) {
+                                switch (id) {
+                                    case MENU_ASPECT_RATIO_16_9:     vr_set_aspect_ratio_mode(vr, 16, 9);              break;
+                                    case MENU_ASPECT_RATIO_4_3:      vr_set_aspect_ratio_mode(vr, 4, 3);               break;
+                                    case MENU_ASPECT_RATIO_1_1:      vr_set_aspect_ratio_mode(vr, 1, 1);               break;
+                                    case MENU_ASPECT_RATIO_21_9:     vr_set_aspect_ratio_mode(vr, 21, 9);              break;
+                                    case MENU_ASPECT_RATIO_STRETCH:  vr_set_aspect_ratio_mode(vr, UINT_MAX, UINT_MAX); break;
+                                    case MENU_ASPECT_RATIO_ORIGINAL: vr_set_aspect_ratio_mode(vr, 0, 0);               break;
+                                }
+                                #if SAVE_FILE
+                                if (video_file) {
+                                    fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
+                                    write_save_state(SAVE_FILE_PATH, &save_state);
+                                }
+                                #endif
+                            }
+                        } else if (id == MENU_ASPECT_RATIO_CUSTOM) {
+                            text_input_open(&ti, "Aspect Ratio (X:Y):", "", 16);
+                            ti_purpose = TI_SET_ASPECT_RATIO;
+                        } else if (id == MENU_PLAY_PAUSE) {
                             paused = !paused;
                             if (vr) vr_set_paused(vr, paused);
                             overlay_target = 1.0f;
-                        } else if(id == MENU_NEXT_FRAME && vr) {
+                        } else if (id == MENU_NEXT_FRAME && vr) {
                             double bt_nxt = vr_get_time(vr);
                             vr_next_frame(vr, 1);
                             if (video_file) hist_push_seek(history, &history_count, &history_pos, video_file, bt_nxt, video_file, vr_get_time(vr));
-                        } else if(id == MENU_PREV_FRAME && vr) {
+                        } else if (id == MENU_PREV_FRAME && vr) {
                             double bt_prv = vr_get_time(vr);
                             vr_next_frame(vr, -1);
                             if (video_file) hist_push_seek(history, &history_count, &history_pos, video_file, bt_prv, video_file, vr_get_time(vr));
-                        } else if(id == MENU_NEXT_MEDIA || id == MENU_PREV_MEDIA) {
+                        } else if (id == MENU_NEXT_MEDIA || id == MENU_PREV_MEDIA) {
                             navigate_media(
                                 &vr,
                                 win,
@@ -2045,7 +2226,7 @@ int main(int argc, char** argv) {
                                 bookmarks,
                                 &bookmark_count
                             );
-                        } else if(id == MENU_NEXT_MEDIA_WRAP || id == MENU_PREV_MEDIA_WRAP) {
+                        } else if (id == MENU_NEXT_MEDIA_WRAP || id == MENU_PREV_MEDIA_WRAP) {
                             navigate_media(
                                 &vr,
                                 win,
@@ -2067,7 +2248,7 @@ int main(int argc, char** argv) {
                                 bookmarks,
                                 &bookmark_count
                             );
-                        } else if(id == MENU_SEEK_BACK && vr) {
+                        } else if (id == MENU_SEEK_BACK && vr) {
                             double bt_back = vr_get_time(vr);
                             double t = bt_back - 5.0;
                             if (t < 0.0) t = 0.0;
@@ -2075,7 +2256,7 @@ int main(int argc, char** argv) {
                             if (video_file) hist_push_seek(history, &history_count, &history_pos, video_file, bt_back, video_file, t);
                             snprintf(flash_text, sizeof(flash_text), "-5s");
                             flash_until = SDL_GetTicks() + 900;
-                        } else if(id == MENU_SEEK_FORWARD && vr) {
+                        } else if (id == MENU_SEEK_FORWARD && vr) {
                             double bt_fwd = vr_get_time(vr);
                             double t = bt_fwd + 5.0;
                             double dur = vr_get_duration(vr);
@@ -2084,56 +2265,71 @@ int main(int argc, char** argv) {
                             if (video_file) hist_push_seek(history, &history_count, &history_pos, video_file, bt_fwd, video_file, t);
                             snprintf(flash_text, sizeof(flash_text), "+5s");
                             flash_until = SDL_GetTicks() + 900;
-                        } else if(id == MENU_VOLUME_UP && vr) {
+                        } else if (id == MENU_SEEK_BEGINNING && vr) {
+                            double bt_beg = vr_get_time(vr);
+                            seek_and_preview_if_paused(vr, 0.0, paused);
+                            if (video_file) hist_push_seek(history, &history_count, &history_pos, video_file, bt_beg, video_file, 0.0);
+                            snprintf(flash_text, sizeof(flash_text), "Beginning");
+                            flash_until = SDL_GetTicks() + 900;
+                        } else if (id == MENU_SEEK_END && vr) {
+                            double dur_end = vr_get_duration(vr);
+                            if (dur_end > 0.0) {
+                                double bt_end = vr_get_time(vr);
+                                seek_and_preview_if_paused(vr, dur_end, paused);
+                                if (video_file) hist_push_seek(history, &history_count, &history_pos, video_file, bt_end, video_file, dur_end);
+                                snprintf(flash_text, sizeof(flash_text), "End");
+                                flash_until = SDL_GetTicks() + 900;
+                            }
+                        } else if (id == MENU_VOLUME_UP && vr) {
                             float v_before_mup = volume_percent;
                             volume_percent = clampf(volume_percent + 5.0f, 0.0f, 200.0f);
                             vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                             hist_push_volume(history, &history_count, &history_pos, v_before_mup, volume_percent);
                             snprintf(flash_text, sizeof(flash_text), "VOL %d", (int)volume_percent);
                             flash_until = SDL_GetTicks() + 900;
-                        } else if(id == MENU_VOLUME_DOWN && vr) {
+                        } else if (id == MENU_VOLUME_DOWN && vr) {
                             float v_before_mdn = volume_percent;
                             volume_percent = clampf(volume_percent - 5.0f, 0.0f, 200.0f);
                             vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                             hist_push_volume(history, &history_count, &history_pos, v_before_mdn, volume_percent);
                             snprintf(flash_text, sizeof(flash_text), "VOL %d", (int)volume_percent);
                             flash_until = SDL_GetTicks() + 900;
-                        } else if(id == MENU_VOLUME_UP_FINE && vr) {
+                        } else if (id == MENU_VOLUME_UP_FINE && vr) {
                             float v_before_muf = volume_percent;
                             volume_percent = clampf(volume_percent + 1.0f, 0.0f, 200.0f);
                             vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                             hist_push_volume(history, &history_count, &history_pos, v_before_muf, volume_percent);
                             snprintf(flash_text, sizeof(flash_text), "VOL %d", (int)volume_percent);
                             flash_until = SDL_GetTicks() + 900;
-                        } else if(id == MENU_VOLUME_DOWN_FINE && vr) {
+                        } else if (id == MENU_VOLUME_DOWN_FINE && vr) {
                             float v_before_mdf = volume_percent;
                             volume_percent = clampf(volume_percent - 1.0f, 0.0f, 200.0f);
                             vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                             hist_push_volume(history, &history_count, &history_pos, v_before_mdf, volume_percent);
                             snprintf(flash_text, sizeof(flash_text), "VOL %d", (int)volume_percent);
                             flash_until = SDL_GetTicks() + 900;
-                        } else if(id == MENU_SET_VOLUME0 && vr) {
+                        } else if (id == MENU_SET_VOLUME0 && vr) {
                             float v_before_sv0 = volume_percent;
                             volume_percent = 0.0f;
                             vr_set_volume(vr, 0.0f);
                             hist_push_volume(history, &history_count, &history_pos, v_before_sv0, volume_percent);
                             snprintf(flash_text, sizeof(flash_text), "VOL 0");
                             flash_until = SDL_GetTicks() + 900;
-                        } else if(id == MENU_SET_VOLUME100 && vr) {
+                        } else if (id == MENU_SET_VOLUME100 && vr) {
                             float v_before_sv100 = volume_percent;
                             volume_percent = 100.0f;
                             vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                             hist_push_volume(history, &history_count, &history_pos, v_before_sv100, volume_percent);
                             snprintf(flash_text, sizeof(flash_text), "VOL 100");
                             flash_until = SDL_GetTicks() + 900;
-                        } else if(id == MENU_SET_VOLUME200 && vr) {
+                        } else if (id == MENU_SET_VOLUME200 && vr) {
                             float v_before_sv200 = volume_percent;
                             volume_percent = 200.0f;
                             vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                             hist_push_volume(history, &history_count, &history_pos, v_before_sv200, volume_percent);
                             snprintf(flash_text, sizeof(flash_text), "VOL 200");
                             flash_until = SDL_GetTicks() + 900;
-                        } else if(id == MENU_ADD_BOOKMARK && vr) {
+                        } else if (id == MENU_ADD_BOOKMARK && vr) {
                             if (bookmark_count < MAX_BOOKMARKS_PER_FILE) {
                                 int before_cnt_add = bookmark_count;
                                 Bookmark before_bms_add[MAX_BOOKMARKS_PER_FILE];
@@ -2145,6 +2341,7 @@ int main(int argc, char** argv) {
                                 bm->color_rgb = DEFAULT_BOOKMARK_COLOR;
                                 bm->is_default_color = true;
                                 bookmark_count++;
+                                sort_bookmarks_by_time(bookmarks, bookmark_count);
                                 { char _d[128]; snprintf(_d, sizeof(_d), "bookmark add %s", bm->name); hist_push_bookmark(history, &history_count, &history_pos, before_bms_add, before_cnt_add, bookmarks, bookmark_count, _d); }
                                 #if SAVE_FILE
                                 update_bookmarks_in_save_state(&save_state, video_file,
@@ -2157,7 +2354,7 @@ int main(int argc, char** argv) {
                                         "Max bookmarks (%d) reached", MAX_BOOKMARKS_PER_FILE);
                             }
                             flash_until = SDL_GetTicks() + 900;
-                        } else if(id == MENU_DELETE_BOOKMARK && vr) {
+                        } else if (id == MENU_DELETE_BOOKMARK && vr) {
                             if (bookmark_count > 0) {
                                 double cur = vr_get_time(vr);
                                 int closest = 0;
@@ -2183,7 +2380,42 @@ int main(int argc, char** argv) {
                                 snprintf(flash_text, sizeof(flash_text), "Bookmark deleted: %s", del_name);
                                 flash_until = SDL_GetTicks() + 900;
                             }
-                        } else if(id == MENU_UNDO && vr) {
+                        } else if ((id == MENU_NEXT_BOOKMARK || id == MENU_PREV_BOOKMARK) && vr) {
+                            int go_next_m = (id == MENU_NEXT_BOOKMARK);
+                            double cur_m = vr_get_time(vr);
+                            double dur_m = vr_get_duration(vr);
+                            double best_m = -1.0;
+                            char best_name_m[192] = {0};
+                            for (int i = 0; i < bookmark_count; i++) {
+                                double t = bookmarks[i].time;
+                                if (go_next_m ? (t > cur_m + 0.1) : (t < cur_m - 1.0)) {
+                                    if (best_m < 0.0 || (go_next_m ? t < best_m : t > best_m)) {
+                                        best_m = t;
+                                        snprintf(best_name_m, sizeof(best_name_m), "%s", bookmarks[i].name);
+                                    }
+                                }
+                            }
+                            int ch_count_m = get_media_chapter_count(vr);
+                            for (int i = 0; i < ch_count_m; i++) {
+                                double t = get_media_chapter_time(vr, i);
+                                if (t < 0.0 || t > dur_m) continue;
+                                if (go_next_m ? (t > cur_m + 0.1) : (t < cur_m - 1.0)) {
+                                    if (best_m < 0.0 || (go_next_m ? t < best_m : t > best_m)) {
+                                        best_m = t;
+                                        get_media_chapter_label(vr, i, best_name_m, sizeof(best_name_m));
+                                    }
+                                }
+                            }
+                            if (best_m >= 0.0) {
+                                double bt_menu_brk = vr_get_time(vr);
+                                seek_and_preview_if_paused(vr, best_m, paused);
+                                if (video_file) hist_push_seek(history, &history_count, &history_pos, video_file, bt_menu_brk, video_file, best_m);
+                                snprintf(flash_text, sizeof(flash_text), "%s (%s)", best_name_m, format_time_temp(best_m));
+                            } else {
+                                snprintf(flash_text, sizeof(flash_text), go_next_m ? "No next bookmark/chapter" : "No previous bookmark/chapter");
+                            }
+                            flash_until = SDL_GetTicks() + 900;
+                        } else if (id == MENU_UNDO && vr) {
                             if (!hist_undo(history, &history_count, &history_pos,
                                     &vr, win, ren, &video_file, paused, &volume_percent,
                                     subtitle_override_colors[subtitle_color_idx],
@@ -2194,7 +2426,7 @@ int main(int argc, char** argv) {
                                 snprintf(flash_text, sizeof(flash_text), "Nothing to undo");
                             }
                             flash_until = SDL_GetTicks() + 900;
-                        } else if(id == MENU_REDO && vr) {
+                        } else if (id == MENU_REDO && vr) {
                             if (!hist_redo(history, &history_count, &history_pos,
                                     &vr, win, ren, &video_file, paused, &volume_percent,
                                     subtitle_override_colors[subtitle_color_idx],
@@ -2211,6 +2443,48 @@ int main(int argc, char** argv) {
             }
 #endif
 
+            if (e.type == SDL_TEXTINPUT && vr) {
+                const char* txt = e.text.text;
+                int go_next_ti = -1;
+                if (txt[0] == ']' && txt[1] == '\0') go_next_ti = 1;
+                else if (txt[0] == '[' && txt[1] == '\0') go_next_ti = 0;
+                if (go_next_ti >= 0) {
+                    double cur_ti = vr_get_time(vr);
+                    double dur_ti = vr_get_duration(vr);
+                    double best_ti = -1.0;
+                    char best_name_ti[192] = {0};
+                    for (int i = 0; i < bookmark_count; i++) {
+                        double t = bookmarks[i].time;
+                        if (go_next_ti ? (t > cur_ti + 0.1) : (t < cur_ti - 1.0)) {
+                            if (best_ti < 0.0 || (go_next_ti ? t < best_ti : t > best_ti)) {
+                                best_ti = t;
+                                snprintf(best_name_ti, sizeof(best_name_ti), "%s", bookmarks[i].name);
+                            }
+                        }
+                    }
+                    int ch_count_ti = get_media_chapter_count(vr);
+                    for (int i = 0; i < ch_count_ti; i++) {
+                        double t = get_media_chapter_time(vr, i);
+                        if (t < 0.0 || t > dur_ti) continue;
+                        if (go_next_ti ? (t > cur_ti + 0.1) : (t < cur_ti - 1.0)) {
+                            if (best_ti < 0.0 || (go_next_ti ? t < best_ti : t > best_ti)) {
+                                best_ti = t;
+                                get_media_chapter_label(vr, i, best_name_ti, sizeof(best_name_ti));
+                            }
+                        }
+                    }
+                    if (best_ti >= 0.0) {
+                        double bt_ti = vr_get_time(vr);
+                        seek_and_preview_if_paused(vr, best_ti, paused);
+                        if (video_file) hist_push_seek(history, &history_count, &history_pos, video_file, bt_ti, video_file, best_ti);
+                        snprintf(flash_text, sizeof(flash_text), "%s (%s)", best_name_ti, format_time_temp(best_ti));
+                    } else {
+                        snprintf(flash_text, sizeof(flash_text), go_next_ti ? "No next bookmark/chapter" : "No previous bookmark/chapter");
+                    }
+                    flash_until = SDL_GetTicks() + 900;
+                }
+            }
+
             if (e.type == SDL_KEYDOWN) {
                 SDL_Keycode key = e.key.keysym.sym;
                 if ((key==SDLK_o)&&(e.key.keysym.mod & KMOD_CTRL)) {
@@ -2218,14 +2492,22 @@ int main(int argc, char** argv) {
                         (const char*[]){"*.mkv", "*.mp4"}, 2, "Video Files (*.mkv, *.mp4)", false,
                         "Select Video File", NULL, &is_supported_video_file
                     );
-                    if(f) {
+                    if (f) {
                         const char* old_file_o = video_file;
                         double old_time_o = vr ? vr_get_time(vr) : 0.0;
-                        video_file = f;
-                        if(!vr) vr = vr_create(win, ren);
-                        if(vr_load(vr, f, hw_option)) {
+                        #if SAVE_FILE
+                        if (vr && video_file) {
                             fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
+                            write_save_state(SAVE_FILE_PATH, &save_state);
+                        }
+                        #endif
+                        video_file = f;
+                        if (!vr) vr = vr_create(win, ren);
+                        if (vr_load(vr, f, hw_option)) {
+                            #if SAVE_FILE
                             apply_save_state_to_vr(vr, &save_state, video_file, &volume_percent);
+                            get_bookmarks_from_save_state(&save_state, video_file, bookmarks, &bookmark_count);
+                            #endif
                             vr_set_volume(vr, volume_percent_to_gain(volume_percent));
                             apply_subtitle_override(
                                 vr,
@@ -2233,6 +2515,10 @@ int main(int argc, char** argv) {
                                 subtitle_override_sizes[subtitle_size_idx],
                                 subtitle_override_margins[subtitle_move_idx]
                             );
+                            if (vr->desired_win_w > 0 && vr->desired_win_h > 0) {
+                                requested_window_w = vr->desired_win_w;
+                                requested_window_h = vr->desired_win_h;
+                            }
                             apply_window_size_for_video(win, vr_get_texture(vr), requested_window_w, requested_window_h);
                             add_recent_file(f);
                             set_window_title_for_media(win, vr, f);
@@ -2244,9 +2530,33 @@ int main(int argc, char** argv) {
                     } else {
                         nob_log(NOB_INFO, "No file selected");
                     }
-                    #if SAVE_FILE
-                        fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
-                    #endif
+                } else if ((key == SDLK_r) && (e.key.keysym.mod & KMOD_CTRL) && vr && video_file) {
+                    double rl_time     = vr_get_time(vr);
+                    int    rl_audio    = vr->current_audio;
+                    int    rl_subtitle = vr->current_subtitle;
+                    if (vr_load(vr, video_file, hw_option)) {
+                        if (rl_audio >= 0 && rl_audio < vr_get_audio_track_count(vr))
+                            vr_select_audio_track(vr, rl_audio);
+                        vr_select_subtitle_track(vr, rl_subtitle);
+                        vr_set_volume(vr, volume_percent_to_gain(volume_percent));
+                        apply_subtitle_override(
+                            vr,
+                            subtitle_override_colors[subtitle_color_idx],
+                            subtitle_override_sizes[subtitle_size_idx],
+                            subtitle_override_margins[subtitle_move_idx]
+                        );
+                        vr_set_speed(vr, playback_speed);
+                        if (vr->audio_dev) SDL_ClearQueuedAudio(vr->audio_dev);
+                        vr->audio_clock_valid = 0;
+                        seek_and_preview_if_paused(vr, rl_time, paused);
+                        vr_set_paused(vr, paused);
+                        nob_log(NOB_INFO, "Reloaded %s", video_file);
+                        snprintf(flash_text, sizeof(flash_text), "Reloaded");
+                    } else {
+                        nob_log(NOB_ERROR, "Failed to reload %s", video_file);
+                        snprintf(flash_text, sizeof(flash_text), "Reload failed");
+                    }
+                    flash_until = SDL_GetTicks() + 900;
                 } else if (key==SDLK_F4 && (e.key.keysym.mod & KMOD_ALT)) running=0;
                 if (key==SDLK_F11 || (key==SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT))) {
                     fullscreen =! fullscreen;
@@ -2256,7 +2566,7 @@ int main(int argc, char** argv) {
                         SDL_GetWindowSize(win, &windowed_w, &windowed_h);
                         windowed_valid = 1;
                     }
-                    SDL_SetWindowFullscreen(win, fullscreen?SDL_WINDOW_FULLSCREEN_DESKTOP:0);
+                    SDL_SetWindowFullscreen(win, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
 #ifdef _WIN32
                     if (win_hwnd) {
                         SetMenu(win_hwnd, fullscreen ? NULL : g_current_win_menu);
@@ -2441,8 +2751,8 @@ int main(int argc, char** argv) {
                 }
                 if (key == SDLK_LEFT && vr && !(e.key.keysym.mod & KMOD_ALT) && !(e.key.keysym.mod & KMOD_SHIFT)) {
                     double bt_left = vr_get_time(vr);
-                    double t = bt_left - 5.0f;
-                    if (t < 0.0f) t = 0.0f;
+                    double t = bt_left - 5.0;
+                    if (t < 0.0) t = 0.0;
                     seek_and_preview_if_paused(vr, t, paused);
                     if (video_file) hist_push_seek(history, &history_count, &history_pos, video_file, bt_left, video_file, t);
                     snprintf(flash_text, sizeof(flash_text), "-5s");
@@ -2450,9 +2760,9 @@ int main(int argc, char** argv) {
                 }
                 if (key == SDLK_RIGHT && vr && !(e.key.keysym.mod & KMOD_ALT) && !(e.key.keysym.mod & KMOD_SHIFT)) {
                     double bt_right = vr_get_time(vr);
-                    double t = bt_right + 5.0f;
+                    double t = bt_right + 5.0;
                     double dur = vr_get_duration(vr);
-                    if (dur > 0.0f && t > dur) t = dur;
+                    if (dur > 0.0 && t > dur) t = dur;
                     seek_and_preview_if_paused(vr, t, paused);
                     if (video_file) hist_push_seek(history, &history_count, &history_pos, video_file, bt_right, video_file, t);
                     snprintf(flash_text, sizeof(flash_text), "+5s");
@@ -2562,6 +2872,7 @@ int main(int argc, char** argv) {
                         bm->color_rgb = DEFAULT_BOOKMARK_COLOR;
                         bm->is_default_color = true;
                         bookmark_count++;
+                        sort_bookmarks_by_time(bookmarks, bookmark_count);
                         { char _d[128]; snprintf(_d, sizeof(_d), "bookmark add %s", bm->name); hist_push_bookmark(history, &history_count, &history_pos, before_bms_b, before_cnt_b, bookmarks, bookmark_count, _d); }
                         #if SAVE_FILE
                         update_bookmarks_in_save_state(&save_state, video_file,
@@ -2620,6 +2931,55 @@ int main(int argc, char** argv) {
                 if (key == SDLK_g && (e.key.keysym.mod & KMOD_CTRL) && vr && !ti.active) {
                     text_input_open(&ti, "Jump to:", format_time_temp(vr_get_time(vr)), 16);
                     ti_purpose = TI_GOTO_TIME;
+                }
+                if (key == SDLK_r && (e.key.keysym.mod & KMOD_ALT) && !ti.active) {
+                    if (e.key.keysym.mod & KMOD_SHIFT) {
+                        requested_window_w = 0;
+                        requested_window_h = 0;
+                        if (vr) {
+                            vr->desired_win_w = 0;
+                            vr->desired_win_h = 0;
+                            apply_window_size_for_video(win, vr_get_texture(vr), requested_window_w, requested_window_h);
+                            #if SAVE_FILE
+                            if (video_file) { fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent); write_save_state(SAVE_FILE_PATH, &save_state); }
+                            #endif
+                        }
+                        snprintf(flash_text, sizeof(flash_text), "Resolution: Native");
+                        flash_until = SDL_GetTicks() + 900;
+                    } else {
+                        text_input_open(&ti, "Resolution (WxH):", "", 20);
+                        ti_purpose = TI_SET_RESOLUTION;
+                    }
+                }
+                if (key == SDLK_a && (e.key.keysym.mod & KMOD_ALT) && vr && !ti.active) {
+                    if (e.key.keysym.mod & KMOD_SHIFT) {
+                        vr_set_aspect_ratio_mode(vr, 0, 0);
+                        #if SAVE_FILE
+                        if (video_file) { fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent); write_save_state(SAVE_FILE_PATH, &save_state); }
+                        #endif
+                        snprintf(flash_text, sizeof(flash_text), "Aspect Ratio: Original");
+                        flash_until = SDL_GetTicks() + 900;
+                    } else {
+                        text_input_open(&ti, "Aspect Ratio (X:Y):", "", 16);
+                        ti_purpose = TI_SET_ASPECT_RATIO;
+                    }
+                }
+                if (key == SDLK_HOME && vr) {
+                    double bt_home = vr_get_time(vr);
+                    seek_and_preview_if_paused(vr, 0.0, paused);
+                    if (video_file) hist_push_seek(history, &history_count, &history_pos, video_file, bt_home, video_file, 0.0);
+                    snprintf(flash_text, sizeof(flash_text), "Beginning");
+                    flash_until = SDL_GetTicks() + 900;
+                }
+                if (key == SDLK_END && vr) {
+                    double dur_end = vr_get_duration(vr);
+                    if (dur_end > 0.0) {
+                        double bt_end = vr_get_time(vr);
+                        seek_and_preview_if_paused(vr, dur_end, paused);
+                        if (video_file) hist_push_seek(history, &history_count, &history_pos, video_file, bt_end, video_file, dur_end);
+                        snprintf(flash_text, sizeof(flash_text), "End");
+                        flash_until = SDL_GetTicks() + 900;
+                    }
                 }
             }
 
@@ -3115,7 +3475,7 @@ int main(int argc, char** argv) {
         SDL_SetRenderDrawColor(ren, LETTERBOX_COLOR, 255);
         SDL_RenderClear(ren);
 
-        if(vr) {
+        if (vr) {
             if (!paused) {
                 run_playback_tick(vr, playback_speed);
             }
@@ -3128,7 +3488,7 @@ int main(int argc, char** argv) {
                 int src_w = 0;
                 int src_h = 0;
                 SDL_QueryTexture(tex, NULL, NULL, &src_w, &src_h);
-                video_dst = compute_video_dst_rect(window_w, window_h, src_w, src_h);
+                video_dst = compute_video_dst_rect(window_w, window_h, src_w, src_h, vr->ar_x, vr->ar_y);
                 SDL_RenderCopy(ren, tex, NULL, &video_dst);
             }
             if (vr_render_subtitles(vr, vr_get_video_time(vr))) {
