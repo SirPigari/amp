@@ -256,6 +256,8 @@ static void vr_reset_stream(VideoRenderer* vr) {
     }
 
     if (vr->audio_dev) {
+        SDL_PauseAudioDevice(vr->audio_dev, 1);
+        SDL_ClearQueuedAudio(vr->audio_dev);
         SDL_CloseAudioDevice(vr->audio_dev);
         vr->audio_dev = 0;
     }
@@ -367,16 +369,22 @@ static char* vr_dup_stream_name(const AVStream* stream, const char* kind) {
 
 static void vr_add_track(VideoRenderer* vr, int is_audio, int stream_index, const char* name) {
     if (is_audio) {
-        vr->audio_streams = (int*)realloc(vr->audio_streams, sizeof(int) * (vr->audio_count + 1));
-        vr->audio_names = (char**)realloc(vr->audio_names, sizeof(char*) * (vr->audio_count + 1));
+        int*   s = (int*)  realloc(vr->audio_streams, sizeof(int)    * (vr->audio_count + 1));
+        char** n = (char**)realloc(vr->audio_names,   sizeof(char*)  * (vr->audio_count + 1));
+        if (!s || !n) return;
+        vr->audio_streams = s;
+        vr->audio_names   = n;
         vr->audio_streams[vr->audio_count] = stream_index;
-        vr->audio_names[vr->audio_count] = strdup(name);
+        vr->audio_names[vr->audio_count]   = strdup(name);
         vr->audio_count++;
     } else {
-        vr->subtitle_streams = (int*)realloc(vr->subtitle_streams, sizeof(int) * (vr->subtitle_count + 1));
-        vr->subtitle_names = (char**)realloc(vr->subtitle_names, sizeof(char*) * (vr->subtitle_count + 1));
+        int*   s = (int*)  realloc(vr->subtitle_streams, sizeof(int)   * (vr->subtitle_count + 1));
+        char** n = (char**)realloc(vr->subtitle_names,   sizeof(char*) * (vr->subtitle_count + 1));
+        if (!s || !n) return;
+        vr->subtitle_streams = s;
+        vr->subtitle_names   = n;
         vr->subtitle_streams[vr->subtitle_count] = stream_index;
-        vr->subtitle_names[vr->subtitle_count] = strdup(name);
+        vr->subtitle_names[vr->subtitle_count]   = strdup(name);
         vr->subtitle_count++;
     }
 }
@@ -465,7 +473,9 @@ static void vr_queue_audio(VideoRenderer* vr, AVFrame* frame) {
     if (out_buf_size <= 0) return;
 
     if (out_buf_size > vr->audio_buf_size) {
-        vr->audio_buf = (uint8_t*)realloc(vr->audio_buf, out_buf_size);
+        uint8_t* tmp = (uint8_t*)realloc(vr->audio_buf, out_buf_size);
+        if (!tmp) return;
+        vr->audio_buf = tmp;
         vr->audio_buf_size = out_buf_size;
     }
 

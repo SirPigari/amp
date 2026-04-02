@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.0
+
+- Switched add bookmark from <kbd>m</kbd> to <kbd>b</kbd>
+- Added mute toggle to <kbd>m</kbd>
+- Extended history handling with bookmark changes and volume changes
+- Rearanged Windows HMENU
+  - Moved volume controls to their own submenu
+  - Added menu items for setting volume to specific values (0%, 100%, 200%)
+  - Added bookmark submenu
+- Added <kbd>Shift+b</kbd> to delete the closest bookmark
+- Added <kbd>Ctrl+1</kbd> for volume set to 100% and <kbd>Ctrl+2</kbd> for 200%
+- Fixed many bugs with double free and unchecked `realloc`
+
 ## 1.2.3
 
 - Fixed a bug where per-file saved volume wouldn't load and always defaulted to 100%.
