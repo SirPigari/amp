@@ -499,7 +499,7 @@ void usage(FILE* out, const char* prog_name) {
     fprintf(out, "  --flash-debug                Show log messages as on-screen flash\n");
     fprintf(out, "  --no-flash-debug             Disable on-screen flash for log messages\n");
     fprintf(out, "  --flash-debug-level [LEVEL]  Show log messages as on-screen flash (LEVEL: 0 - NO LOGS, 1 - INFO, 2 - WARNING, 3 - ERROR)\n");
-    fprintf(out, "  --hw [auto|accel|vaapi|dxva2|d3d11va|none]  Hardware decode backend (auto tries available)\n");
+    fprintf(out, "  --hw [auto|none|accel|TYPE]  Hardware decode backend (TYPE: vaapi [unix only], dxva2 [win only], d3d11va [win only])\n");
 }
 
 void add_recent_file(const char* file) {

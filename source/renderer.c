@@ -643,11 +643,6 @@ static enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelF
 static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVCodec* codec, const char* hw_requested) {
     if (!vr || !ctx || !codec) return -1;
     if (!hw_requested || !hw_requested[0]) return -1;
-    
-    if (ctx->codec_id == AV_CODEC_ID_HEVC && ctx->profile == 2) {
-        nob_log(NOB_INFO, "HEVC profile 2 detected (10-bit), skipping hardware acceleration");
-        return -1;
-    }
 
     char req[32];
     snprintf(req, sizeof(req), "%s", hw_requested);
@@ -660,8 +655,14 @@ static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVC
 #define MAX_TRY 8
     const char* try_list[MAX_TRY];
     int try_count = 0;
-    if (strcmp(req, "none") == 0) return -1;
-    if (strcmp(req, "auto") == 0 || strcmp(req, "accel") == 0) {
+    if (strcmp(req, "none") == 0) {
+        nob_log(NOB_INFO, "Hardware decode disabled");
+        return -1;
+    }
+    int is_auto  = strcmp(req, "auto")  == 0;
+    int is_accel = strcmp(req, "accel") == 0;
+
+    if (is_auto || is_accel) {
 #ifdef _WIN32
         const char* defaults[] = {"d3d11va", "dxva2", "vaapi"};
         for (int i = 0; i < (int)(sizeof(defaults)/sizeof(defaults[0])) && try_count < MAX_TRY; i++) {
@@ -691,6 +692,12 @@ static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVC
         const char* name = try_list[ti];
         enum AVHWDeviceType type = av_hwdevice_find_type_by_name(name);
         if (type == AV_HWDEVICE_TYPE_NONE) continue;
+
+        
+        if (ctx->codec_id == AV_CODEC_ID_HEVC && ctx->profile == 2 && strcmp(name, "vaapi") == 0) {
+            nob_log(NOB_INFO, "HEVC profile 2 detected (10-bit), skipping hardware acceleration");
+            return -1;
+        }
 
         enum AVPixelFormat pix = AV_PIX_FMT_NONE;
         for (int i = 0; ; i++) {
@@ -730,6 +737,9 @@ static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVC
         return 0;
     }
 
+    if (is_accel) {
+        nob_log(NOB_WARNING, "HW accel requested but none available");
+    }
     return -1;
 }
 
@@ -773,7 +783,7 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
             if (!codec) { nob_log(NOB_ERROR, "Failed to find video decoder"); continue; }
             
             int skip_hw = 0;
-            if (stream->codecpar->codec_id == AV_CODEC_ID_HEVC && stream->codecpar->profile == 2) {
+            if (stream->codecpar->codec_id == AV_CODEC_ID_HEVC && stream->codecpar->profile == 2 && hw_opt && strcmp(hw_opt, "vaapi") == 0) {
                 nob_log(NOB_INFO, "HEVC profile 2 detected (10-bit), forcing software decoding");
                 skip_hw = 1;
             }
