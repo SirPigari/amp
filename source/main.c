@@ -1307,6 +1307,7 @@ static int parse_time_string(const char* s, double* out) {
 int main(int argc, char** argv) {
     nob_set_log_handler(amp_log_handler);
 
+
     VideoRenderer* vr = NULL;
     char* video_file = NULL;
     bool running = true;
@@ -1360,6 +1361,10 @@ int main(int argc, char** argv) {
     int ti_bm_idx = -1;
 
     int bm_ctx_open = 0, bm_ctx_x = 0, bm_ctx_y = 0, bm_ctx_idx = -1;
+
+#ifndef _WIN32
+    setenv("LIBVA_DRIVER_NAME", "", 1);
+#endif
 
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--flash-debug") == 0) {

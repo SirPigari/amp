@@ -642,6 +642,11 @@ static enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelF
 static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVCodec* codec, const char* hw_requested) {
     if (!vr || !ctx || !codec) return -1;
     if (!hw_requested || !hw_requested[0]) return -1;
+    
+    if (ctx->codec_id == AV_CODEC_ID_HEVC && ctx->profile == 2) {
+        nob_log(NOB_INFO, "HEVC profile 2 detected (10-bit), skipping hardware acceleration");
+        return -1;
+    }
 
     char req[32];
     snprintf(req, sizeof(req), "%s", hw_requested);
@@ -734,7 +739,7 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
     vr->hw_bad_frame_count = 0;
     vr->hw_disabled = 0;
 
-    av_log_set_level(AV_LOG_ERROR);
+    av_log_set_level(AV_LOG_QUIET);
 
     AVDictionary* open_opts = NULL;
     av_dict_set(&open_opts, "probesize", AMP_FF_PROBE_SIZE, 0);
@@ -765,15 +770,61 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
             vr->video_stream_index = (int)i;
             const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
             if (!codec) { nob_log(NOB_ERROR, "Failed to find video decoder"); continue; }
+            
+            int skip_hw = 0;
+            if (stream->codecpar->codec_id == AV_CODEC_ID_HEVC && stream->codecpar->profile == 2) {
+                nob_log(NOB_INFO, "HEVC profile 2 detected (10-bit), forcing software decoding");
+                skip_hw = 1;
+            }
+            
             vr->video_ctx = avcodec_alloc_context3(codec);
             avcodec_parameters_to_context(vr->video_ctx, stream->codecpar);
-            try_init_hw_decoder(vr, vr->video_ctx, codec, hw_opt);
-            if (avcodec_open2(vr->video_ctx, (AVCodec*)codec, NULL) < 0) {
-                nob_log(NOB_ERROR, "Failed to open video decoder");
-                avcodec_free_context(&vr->video_ctx);
-                vr->video_ctx = NULL;
-                continue;
+            
+            int hw_tried = 0;
+            if (!skip_hw && hw_opt && strcmp(hw_opt, "none") != 0) {
+                hw_tried = (try_init_hw_decoder(vr, vr->video_ctx, codec, hw_opt) == 0);
             }
+            
+            if (avcodec_open2(vr->video_ctx, (AVCodec*)codec, NULL) < 0) {
+                if (hw_tried) {
+                    nob_log(NOB_WARNING, "Hardware decoder failed to open, falling back to software decoding");
+                    avcodec_free_context(&vr->video_ctx);
+                    
+                    if (vr->hw_device_ctx) {
+                        av_buffer_unref(&vr->hw_device_ctx);
+                        vr->hw_device_ctx = NULL;
+                    }
+                    vr->hw_pix_fmt = AV_PIX_FMT_NONE;
+                    vr->hw_device_type = AV_HWDEVICE_TYPE_NONE;
+                    vr->hw_device_name[0] = '\0';
+                    
+                    vr->video_ctx = avcodec_alloc_context3(codec);
+                    avcodec_parameters_to_context(vr->video_ctx, stream->codecpar);
+                    
+                    if (avcodec_open2(vr->video_ctx, (AVCodec*)codec, NULL) < 0) {
+                        nob_log(NOB_ERROR, "Failed to open video decoder (software fallback also failed)");
+                        avcodec_free_context(&vr->video_ctx);
+                        vr->video_ctx = NULL;
+                        continue;
+                    } else {
+                        nob_log(NOB_INFO, "Successfully opened software decoder");
+                    }
+                } else {
+                    nob_log(NOB_ERROR, "Failed to open video decoder");
+                    avcodec_free_context(&vr->video_ctx);
+                    vr->video_ctx = NULL;
+                    continue;
+                }
+            } else {
+                if (hw_tried && vr->hw_device_ctx) {
+                    nob_log(NOB_INFO, "Successfully opened hardware decoder: %s", vr->hw_device_name);
+                } else {
+                    nob_log(NOB_INFO, "Successfully opened software decoder");
+                }
+            }
+
+            av_log_set_level(AV_LOG_ERROR);
+
             vr->video_time_base = stream->time_base;
             vr->width = vr->video_ctx->width;
             vr->height = vr->video_ctx->height;
