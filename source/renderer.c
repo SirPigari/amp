@@ -1426,6 +1426,13 @@ void vr_seek(VideoRenderer* vr, double seconds) {
     if (vr->subtitle_ctx) avcodec_flush_buffers(vr->subtitle_ctx);
     if (vr->audio_dev) SDL_ClearQueuedAudio(vr->audio_dev);
 
+    if (vr->filter_graph) {
+        avfilter_graph_free(&vr->filter_graph);
+        vr->filter_graph = NULL;
+        vr->buffersrc_ctx = NULL;
+        vr->buffersink_ctx = NULL;
+    }
+
     if (vr->ass_track && vr->ass_lib) {
         ass_free_track(vr->ass_track);
         vr->ass_track = ass_new_track(vr->ass_lib);

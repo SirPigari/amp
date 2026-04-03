@@ -405,7 +405,7 @@ static int point_in_rect(int x, int y, SDL_Rect r) {
 static bool is_supported_video_file(const char* path) {
     if (!path) return false;
 
-    av_log_set_level(AV_LOG_ERROR);
+    av_log_set_level(AV_LOG_QUIET);
 
     AVFormatContext* ctx = NULL;
 
@@ -426,6 +426,9 @@ static bool is_supported_video_file(const char* path) {
         ));
 
     avformat_close_input(&ctx);
+
+    av_log_set_level(AV_LOG_ERROR);
+
     return ok;
 }
 #else
@@ -1254,7 +1257,7 @@ HMENU create_windows_menu(SDL_Window* window) {
     AppendMenu(hViewMenu, MF_STRING, MENU_FULLSCREEN, "Fullscreen\tF11");
     AppendMenu(hViewMenu, MF_STRING, MENU_MAXIMIZE, "Maximize\tF10");
     AppendMenu(hViewMenu, MF_STRING, MENU_MINIMIZE, "Minimize\tAlt+M");
-    AppendMenu(hResolutionMenu, MF_STRING, MENU_RESOLUTION_NATIVE, "Native (Video)");
+    AppendMenu(hResolutionMenu, MF_STRING, MENU_RESOLUTION_NATIVE, "Native (Video)\tShift+Alt+R");
     AppendMenu(hResolutionMenu, MF_STRING, MENU_RESOLUTION_CUSTOM, "Custom\tAlt+R");
     AppendMenu(hResolutionMenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(hResolutionMenu, MF_STRING, MENU_RESOLUTION_480P, "854x480");
@@ -1262,8 +1265,8 @@ HMENU create_windows_menu(SDL_Window* window) {
     AppendMenu(hResolutionMenu, MF_STRING, MENU_RESOLUTION_1080P, "1920x1080");
     AppendMenu(hResolutionMenu, MF_STRING, MENU_RESOLUTION_1440P, "2560x1440");
     AppendMenu(hViewMenu, MF_POPUP, (UINT_PTR)hResolutionMenu, "Resolution");
-    AppendMenu(hAspectRatioMenu, MF_STRING, MENU_ASPECT_RATIO_STRETCH, "Stretch to Window");
-    AppendMenu(hAspectRatioMenu, MF_STRING, MENU_ASPECT_RATIO_ORIGINAL, "Original (Video)");
+    AppendMenu(hAspectRatioMenu, MF_STRING, MENU_ASPECT_RATIO_STRETCH, "Stretch to Window\tShift+Alt+S");
+    AppendMenu(hAspectRatioMenu, MF_STRING, MENU_ASPECT_RATIO_ORIGINAL, "Original (Video)\tShift+Alt+A");
     AppendMenu(hAspectRatioMenu, MF_STRING, MENU_ASPECT_RATIO_CUSTOM, "Custom\tAlt+A");
     AppendMenu(hAspectRatioMenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(hAspectRatioMenu, MF_STRING, MENU_ASPECT_RATIO_1_1, "1:1");
@@ -1332,95 +1335,6 @@ static void refresh_windows_recent_menu(void) {
     }
 }
 #endif
-
-typedef struct {
-    char     value[TEXT_INPUT_MAX_LEN];
-    char     default_val[TEXT_INPUT_MAX_LEN];
-    char     prompt[64];
-    int      max_len;
-    int      active;
-    int      done;
-    int      cancelled;
-    int      has_typed;
-} TextInputState;
-
-static void text_input_open(TextInputState* ti, const char* prompt,
-                             const char* default_val, int max_len) {
-    memset(ti, 0, sizeof(*ti));
-    ti->active = 1;
-    ti->has_typed = 0;
-    if (prompt) snprintf(ti->prompt, sizeof(ti->prompt), "%s", prompt);
-    if (default_val) {
-        snprintf(ti->default_val, TEXT_INPUT_MAX_LEN, "%s", default_val);
-        snprintf(ti->value, TEXT_INPUT_MAX_LEN, "%s", default_val);
-    }
-    ti->max_len = (max_len > 0 && max_len < TEXT_INPUT_MAX_LEN)
-                ? max_len : (TEXT_INPUT_MAX_LEN - 1);
-    SDL_StartTextInput();
-}
-
-static void text_input_handle_event(TextInputState* ti, SDL_Event* e) {
-    if (!ti->active) return;
-    if (e->type == SDL_KEYDOWN) {
-        SDL_Keycode k = e->key.keysym.sym;
-        if (k == SDLK_RETURN || k == SDLK_KP_ENTER) {
-            ti->done     = 1;
-            ti->active   = 0;
-            SDL_StopTextInput();
-        } else if (k == SDLK_ESCAPE) {
-            ti->cancelled = 1;
-            ti->active    = 0;
-            SDL_StopTextInput();
-        } else if (k == SDLK_BACKSPACE) {
-            if (!ti->has_typed) {
-                ti->has_typed = 1;
-                ti->value[0] = '\0';
-            } else {
-                int len = (int)strlen(ti->value);
-                if (len > 0) ti->value[len - 1] = '\0';
-            }
-        }
-    } else if (e->type == SDL_TEXTINPUT) {
-        if (!ti->has_typed) {
-            ti->value[0] = '\0';
-            ti->has_typed = 1;
-        }
-        int len = (int)strlen(ti->value);
-        int add = (int)strlen(e->text.text);
-        if (len + add < ti->max_len) {
-            strncat(ti->value, e->text.text, ti->max_len - len);
-        }
-    }
-}
-
-static void text_input_draw(SDL_Renderer* r, TextInputState* ti) {
-    if (!ti->active) return;
-    
-    int px = 20, py = 20, padding = 6;
-    
-    int prompt_w = 0, prompt_h = 0;
-    TTF_SizeUTF8(ui_font, ti->prompt, &prompt_w, &prompt_h);
-    
-    const char* content = ti->has_typed ? ti->value : ti->default_val;
-    int content_w = 0, content_h = 0;
-    TTF_SizeUTF8(ui_font, content, &content_w, &content_h);
-    
-    int total_w = prompt_w + padding + content_w + padding * 2;
-    int total_h = prompt_h + padding;
-    
-    SDL_Rect bg = { px, py, total_w, total_h };
-    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
-    draw_rect(r, bg, (SDL_Color){ TEXT_INPUT_BG_COLOR, 200 });
-    
-    draw_text_shadow(r, px + padding, py + padding / 2, ti->prompt,
-                      (SDL_Color){ TEXT_INPUT_PROMPT_COLOR, 255 });
-    
-    SDL_Color content_color = ti->has_typed 
-        ? (SDL_Color){ TEXT_COLOR, 255 }
-        : (SDL_Color){ MUTED_COLOR, 200 };
-    draw_text_shadow(r, px + padding + prompt_w + padding, py + padding / 2, 
-                      content, content_color);
-}
 
 static int find_nearest_bookmark(const Bookmark* bms, int bm_count,
                                   double duration, SDL_Rect timeline,
@@ -2963,6 +2877,14 @@ int main(int argc, char** argv) {
                         text_input_open(&ti, "Aspect Ratio (X:Y):", "", 16);
                         ti_purpose = TI_SET_ASPECT_RATIO;
                     }
+                }
+                if (key == SDLK_s && (e.key.keysym.mod & KMOD_ALT) && (e.key.keysym.mod & KMOD_SHIFT) && vr && !ti.active) {
+                    vr_set_aspect_ratio_mode(vr, UINT_MAX, UINT_MAX);
+                    #if SAVE_FILE
+                    if (video_file) { fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent); write_save_state(SAVE_FILE_PATH, &save_state); }
+                    #endif
+                    snprintf(flash_text, sizeof(flash_text), "Aspect Ratio: Stretch to Window");
+                    flash_until = SDL_GetTicks() + 900;
                 }
                 if (key == SDLK_HOME && vr) {
                     double bt_home = vr_get_time(vr);

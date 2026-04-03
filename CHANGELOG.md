@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.1
+
+- Changed in Windows HMENU to show <kbd>Shift+Alt+A</kbd> and <kbd>Shift+Alt+R</kbd> for resetting aspect ratio and resolution to original/video values
+- Added <kbd>Shift+Alt+S</kbd> for aspect ratio stretch to window
+- Fixed AV logging errors when checking if a file is supported
+- Moved `TextInput` from [main.c](source/main.c) to [text.c](source/text.c)
+- Fixed `seek_and_preview_if_paused` to actually do what it says, was broken since [1.2.0](#120), because of the deinterlacing filter
+
 ## 1.4.0
 
 - Added <kbd>[</kbd> and <kbd>]</kbd> for jumping to the previous and next bookmark/chapter.
