@@ -374,20 +374,22 @@ static char* vr_dup_stream_name(const AVStream* stream, const char* kind) {
 
 static void vr_add_track(VideoRenderer* vr, int is_audio, int stream_index, const char* name) {
     if (is_audio) {
-        int*   s = (int*)  realloc(vr->audio_streams, sizeof(int)    * (vr->audio_count + 1));
-        char** n = (char**)realloc(vr->audio_names,   sizeof(char*)  * (vr->audio_count + 1));
-        if (!s || !n) return;
+        int*   s = (int*)  realloc(vr->audio_streams, sizeof(int)   * (vr->audio_count + 1));
+        if (!s) return;
         vr->audio_streams = s;
-        vr->audio_names   = n;
+        char** n = (char**)realloc(vr->audio_names,   sizeof(char*) * (vr->audio_count + 1));
+        if (!n) return;
+        vr->audio_names = n;
         vr->audio_streams[vr->audio_count] = stream_index;
         vr->audio_names[vr->audio_count]   = strdup(name);
         vr->audio_count++;
     } else {
         int*   s = (int*)  realloc(vr->subtitle_streams, sizeof(int)   * (vr->subtitle_count + 1));
-        char** n = (char**)realloc(vr->subtitle_names,   sizeof(char*) * (vr->subtitle_count + 1));
-        if (!s || !n) return;
+        if (!s) return;
         vr->subtitle_streams = s;
-        vr->subtitle_names   = n;
+        char** n = (char**)realloc(vr->subtitle_names,   sizeof(char*) * (vr->subtitle_count + 1));
+        if (!n) return;
+        vr->subtitle_names = n;
         vr->subtitle_streams[vr->subtitle_count] = stream_index;
         vr->subtitle_names[vr->subtitle_count]   = strdup(name);
         vr->subtitle_count++;
@@ -1685,6 +1687,13 @@ void vr_select_audio_track(VideoRenderer* vr, int idx) {
         if (vr->subtitle_ctx) avcodec_flush_buffers(vr->subtitle_ctx);
         if (vr->audio_dev)    SDL_ClearQueuedAudio(vr->audio_dev);
 
+        if (vr->filter_graph) {
+            avfilter_graph_free(&vr->filter_graph);
+            vr->filter_graph = NULL;
+            vr->buffersrc_ctx = NULL;
+            vr->buffersink_ctx = NULL;
+        }
+
         if (vr->ass_track && vr->ass_lib) {
             ass_free_track(vr->ass_track);
             vr->ass_track = ass_new_track(vr->ass_lib);
@@ -1779,6 +1788,13 @@ void vr_select_subtitle_track(VideoRenderer* vr, int idx) {
         if (vr->audio_ctx)    avcodec_flush_buffers(vr->audio_ctx);
         if (vr->subtitle_ctx) avcodec_flush_buffers(vr->subtitle_ctx);
         if (vr->audio_dev)    SDL_ClearQueuedAudio(vr->audio_dev);
+
+        if (vr->filter_graph) {
+            avfilter_graph_free(&vr->filter_graph);
+            vr->filter_graph = NULL;
+            vr->buffersrc_ctx = NULL;
+            vr->buffersink_ctx = NULL;
+        }
 
         if (vr->pending_valid) {
             av_packet_unref(&vr->pending_pkt);

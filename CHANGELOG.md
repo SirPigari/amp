@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.2
+
+- Updated volume so `200%` sounds closer to 2x of `100%`
+- Fixed subtitles not updating while the Windows HMENU is open
+- Fixed a bunch of memory leaks
+
 ## 1.4.1
 
 - Changed in Windows HMENU to show <kbd>Shift+Alt+A</kbd> and <kbd>Shift+Alt+R</kbd> for resetting aspect ratio and resolution to original/video values

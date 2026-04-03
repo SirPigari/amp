@@ -874,30 +874,27 @@ static void apply_save_state_to_vr(VideoRenderer* vr,
                                     SaveState* state,
                                     const char* video_path,
                                     float* out_volume_percent) {
-    if (!vr || !state) return;
-    for (uint64_t i = 0; i < state->remembered_count; i++) {
-        if (state->remembered_files[i].video_path && video_path &&
-            strcmp(state->remembered_files[i].video_path, video_path) == 0) {
-            if (state->remembered_files[i].audio_track >= 0)
-                vr_select_audio_track(vr, state->remembered_files[i].audio_track);
-            if (state->remembered_files[i].subtitle_track >= -1)
-                vr_select_subtitle_track(vr, state->remembered_files[i].subtitle_track);
-            vr_set_speed(vr, state->remembered_files[i].playback_speed);
-            if (out_volume_percent) *out_volume_percent = (float)state->remembered_files[i].volume_percent;
-            vr->ar_x = state->remembered_files[i].ar_x;
-            vr->ar_y = state->remembered_files[i].ar_y;
-            vr->desired_win_w = (int)state->remembered_files[i].win_w;
-            vr->desired_win_h = (int)state->remembered_files[i].win_h;
-            double target_pos = state->remembered_files[i].last_position;
-            vr_seek(vr, target_pos);
-            for (int j = 0; j < 128 && vr->current_time < target_pos - 0.05; j++) {
-                vr_demux_packets(vr);
-                vr_render_frame(vr);
-            }
-            vr->last_time = target_pos;
-            break;
-        }
+    if (!vr || !state || !video_path) return;
+    int64_t idx = get_remembered_file_index(state, video_path, NULL);
+    if (idx < 0) return;
+    FileConfig* c = &state->remembered_files[idx];
+    if (c->audio_track >= 0)
+        vr_select_audio_track(vr, c->audio_track);
+    if (c->subtitle_track >= -1)
+        vr_select_subtitle_track(vr, c->subtitle_track);
+    vr_set_speed(vr, c->playback_speed);
+    if (out_volume_percent) *out_volume_percent = (float)c->volume_percent;
+    vr->ar_x = c->ar_x;
+    vr->ar_y = c->ar_y;
+    vr->desired_win_w = (int)c->win_w;
+    vr->desired_win_h = (int)c->win_h;
+    double target_pos = c->last_position;
+    vr_seek(vr, target_pos);
+    for (int j = 0; j < 128 && vr->current_time < target_pos - 0.05; j++) {
+        vr_demux_packets(vr);
+        vr_render_frame(vr);
     }
+    vr->last_time = target_pos;
 }
 
 static void free_save_state(SaveState* state) {

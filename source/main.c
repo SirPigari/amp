@@ -391,9 +391,18 @@ static void apply_window_size_for_video(SDL_Window* win, SDL_Texture* texture, i
 }
 
 static float volume_percent_to_gain(float percent) {
+    if (percent <= 0.0f) return 0.0f;
+
     float db;
-    float t = percent / 100.0f;
-    db = -50.0f * (1.0f - t);
+
+    if (percent <= 100.0f) {
+        float t = percent / 100.0f;
+        db = -50.0f * (1.0f - t);
+    } else {
+        float t = (percent - 100.0f) / 100.0f;
+        db = t * 69.0f;
+    }
+
     return powf(10.0f, db / 20.0f);
 }
 
@@ -515,20 +524,9 @@ void usage(FILE* out, const char* prog_name) {
 
 void add_recent_file(const char* file) {
     nob_log(NOB_INFO, "Adding to recent files: %s", file);
-    char* new_file = strdup(file);
 
-    if (recent_count == MAX_RECENT) {
-        free(recent_files[MAX_RECENT - 1]);
-        recent_count--;
-    }
-    for (int i = recent_count; i > 0; i--) {
-        recent_files[i] = recent_files[i-1];
-    }
-    recent_files[0] = new_file;
-    recent_count++;
-
-    for (int i = 1; i < recent_count; i++) {
-        if (strcmp(recent_files[i], file) == 0) {
+    for (int i = 0; i < recent_count; i++) {
+        if (recent_files[i] && strcmp(recent_files[i], file) == 0) {
             free(recent_files[i]);
             for (int j = i; j < recent_count - 1; j++) recent_files[j] = recent_files[j+1];
             recent_files[recent_count - 1] = NULL;
@@ -536,6 +534,17 @@ void add_recent_file(const char* file) {
             break;
         }
     }
+
+    if (recent_count == MAX_RECENT) {
+        free(recent_files[MAX_RECENT - 1]);
+        recent_files[MAX_RECENT - 1] = NULL;
+        recent_count--;
+    }
+    for (int i = recent_count; i > 0; i--) {
+        recent_files[i] = recent_files[i-1];
+    }
+    recent_files[0] = strdup(file);
+    recent_count++;
 
     sanitize_recent_files();
 
@@ -782,6 +791,8 @@ static void seek_and_preview_if_paused(VideoRenderer* vr, double seconds, int pa
             vr_demux_packets(vr);
             rendered = vr_render_frame(vr);
         }
+    } else {
+        vr_demux_packets(vr);
     }
 }
 
@@ -1143,8 +1154,10 @@ static void menu_pump_playback_tick(void) {
         SDL_QueryTexture(tex, NULL, NULL, &src_w, &src_h);
         video_dst = compute_video_dst_rect(window_w, window_h, src_w, src_h, vr->ar_x, vr->ar_y);
         SDL_RenderCopy(g_menu_ren, tex, NULL, &video_dst);
-        SDL_Texture* sub = vr_get_subtitle_texture(vr);
-        if (sub) SDL_RenderCopy(g_menu_ren, sub, NULL, &video_dst);
+        if (vr_render_subtitles(vr, vr_get_video_time(vr))) {
+            SDL_Texture* sub = vr_get_subtitle_texture(vr);
+            if (sub) SDL_RenderCopy(g_menu_ren, sub, NULL, &video_dst);
+        }
     }
 
     SDL_RenderPresent(g_menu_ren);
