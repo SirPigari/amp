@@ -1525,20 +1525,18 @@ void vr_next_frame(VideoRenderer* vr, int count) {
                 tries++;
             }
         } else {
-            int prev_pos = vr->frame_history_pos - 1;
-            if (prev_pos < 0) prev_pos = 0;
-            double t = vr->frame_history_size > 0 ? vr->frame_history[prev_pos] : (vr_get_time(vr) - frame_duration);
-            if (t < 0.0) t = 0.0;
-            vr_seek(vr, t);
+            double target_time = vr->current_time - frame_duration;
+            if (target_time < 0.0) target_time = 0.0;
+            vr_seek(vr, target_time);
 
-            int rendered = 0;
             int tries = 0;
-            while (!rendered && tries < 32) {
+            while (tries < 128) {
                 vr_demux_packets(vr);
-                rendered = vr_render_frame(vr);
+                if (vr_render_frame(vr)) {
+                    if (vr->current_time >= target_time - 0.001) break;
+                }
                 tries++;
             }
-            vr->frame_history_pos = prev_pos;
         }
 
         vr->last_time = vr->current_time;

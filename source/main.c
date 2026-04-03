@@ -1965,6 +1965,10 @@ int main(int argc, char** argv) {
                                 } else {
                                     nob_log(NOB_ERROR, "Failed to load %s", f);
                                 }
+                            } else {
+                                nob_log(NOB_ERROR, "No file selected or unsupported file type.");
+                                snprintf(flash_text, sizeof(flash_text), "No file selected or unsupported file type.");
+                                flash_until = SDL_GetTicks() + 900;
                             }
                         } else if (id >= MENU_RECENT_BASE && id < MENU_RECENT_BASE + MAX_RECENT) {
                             int idx = id - MENU_RECENT_BASE;
@@ -2455,7 +2459,9 @@ int main(int argc, char** argv) {
                             nob_log(NOB_ERROR, "Failed to load %s", f);
                         }
                     } else {
-                        nob_log(NOB_INFO, "No file selected");
+                        nob_log(NOB_ERROR, "No file selected or unsupported file type.");
+                        snprintf(flash_text, sizeof(flash_text), "No file selected or unsupported file type.");
+                        flash_until = SDL_GetTicks() + 900;
                     }
                 } else if ((key == SDLK_r) && (e.key.keysym.mod & KMOD_CTRL) && vr && video_file) {
                     double rl_time     = vr_get_time(vr);

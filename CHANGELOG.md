@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.3
+
+- Added flash text for unsupported file type when file is opened
+- Fixed the old prev frame implementation and made it work repeatedly for any amount of frames
+
 ## 1.4.2
 
 - Updated volume so `200%` sounds closer to 2x of `100%`

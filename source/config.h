@@ -2,7 +2,7 @@
 #define CONFIG_H
 
 /* Build config */
-#define AMP_VERSION 0x010402 /* 1.4.2 */
+#define AMP_VERSION 0x010403 /* 1.4.3 */
 
 #define THEMES_DIR "assets/themes/"
 #define USE_THEMES 0
