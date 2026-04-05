@@ -111,6 +111,7 @@ typedef struct {
     uint32_t subtitle_override_color_rgb;
     int subtitle_override_size;
     int subtitle_override_margin_bottom;
+    int64_t subtitle_offset_ms;
 
     AVBufferRef* hw_device_ctx;
     enum AVPixelFormat hw_pix_fmt;
@@ -127,6 +128,7 @@ typedef struct {
     AVFrame* filtered_frame;
 
     unsigned int ar_x, ar_y;
+    int zoom_percent;
     int desired_win_w, desired_win_h;
 } VideoRenderer;
 
@@ -350,6 +352,8 @@ static void vr_reset_stream(VideoRenderer* vr) {
     vr->video_ready = 0;
     vr->current_time = 0.0;
     vr->last_time = 0.0;
+    vr->subtitle_offset_ms = 0;
+    vr->zoom_percent = 100;
     vr->clock_start_ticks = SDL_GetTicks();
     vr->clock_pause_ticks = 0;
     vr->clock_pause_accum = 0;
@@ -638,6 +642,7 @@ VideoRenderer* vr_create(SDL_Window* window, SDL_Renderer* renderer) {
     vr->subtitle_override_color_rgb = 0xFFFFFF;
     vr->subtitle_override_size = 30;
     vr->subtitle_override_margin_bottom = 64;
+    vr->subtitle_offset_ms = 0;
     vr->hw_device_ctx = NULL;
     vr->hw_pix_fmt = AV_PIX_FMT_NONE;
     vr->hw_device_type = AV_HWDEVICE_TYPE_NONE;
@@ -647,6 +652,7 @@ VideoRenderer* vr_create(SDL_Window* window, SDL_Renderer* renderer) {
     vr->hw_disabled = 0;
     vr->ar_x = 0;
     vr->ar_y = 0;
+    vr->zoom_percent = 100;
     vr->desired_win_w = 0;
     vr->desired_win_h = 0;
     return vr;
@@ -1350,7 +1356,7 @@ int vr_render_subtitles(VideoRenderer* vr, double seconds) {
 
     int changed = 0;
     ASS_Image* img = ass_render_frame(vr->ass_renderer, vr->ass_track,
-                                      (long long)(seconds * 1000.0), &changed);
+                                      (long long)(seconds * 1000.0 + vr->subtitle_offset_ms), &changed);
     if (!img) return 0;
 
     if (!vr->subtitle_texture) {
@@ -1589,6 +1595,16 @@ void vr_set_aspect_ratio_mode(VideoRenderer* vr, unsigned int x, unsigned int y)
     if (!vr) return;
     vr->ar_x = x;
     vr->ar_y = y;
+}
+
+void vr_set_zoom(VideoRenderer* vr, int zoom) {
+    if (!vr) return;
+    if (zoom < 1) zoom = 1;
+    vr->zoom_percent = zoom;
+}
+
+int vr_get_zoom(VideoRenderer* vr) {
+    return vr ? vr->zoom_percent : 100;
 }
 
 float vr_get_volume(VideoRenderer* vr) {
@@ -1834,8 +1850,10 @@ void vr_select_subtitle_track(VideoRenderer* vr, int idx) {
 }
 
 void vr_set_paused(VideoRenderer* vr, int paused) {
-    if (!vr || !vr->audio_dev) return;
-    SDL_PauseAudioDevice(vr->audio_dev, paused ? 1 : 0);
+    if (!vr) return;
+    if (vr->audio_dev) {
+        SDL_PauseAudioDevice(vr->audio_dev, paused ? 1 : 0);
+    }
     if (paused && !vr->clock_paused) {
         vr->clock_pause_ticks = SDL_GetTicks();
         vr->clock_paused = 1;

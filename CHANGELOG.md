@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.5.0
+
+- Added more encodings to the `subtitle_normalize_to_utf8` function
+- Added <kbd>+</kbd> and <kbd>-</kbd> for shifting subtitles by 1 millisecond
+- Added <kbd>Shift+Plus</kbd> and <kbd>Shift+Minus</kbd> for shifting subtitles by 100 milliseconds
+- Fixed double free in `load_media_file`
+- Fixed a bug where pausing a file with no audio stream would not do anything
+- Added `Zoom` submenu to `View`
+- Added <kbd>Ctrl+Plus</kbd> and <kbd>Ctrl+Minus</kbd> for zooming in and out
+- Added <kbd>Ctrl+Alt+Z</kbd> to reset zoom
+- Added <kbd>Ctrl+0</kbd> to reset zoom, aspect ratio and resolution
+
 ## 1.4.3
 
 - Added flash text for unsupported file type when file is opened

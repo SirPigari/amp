@@ -87,6 +87,11 @@ const char* subtitle_normalize_to_utf8(
 
     const unsigned char* t = (const unsigned char*)text;
 
+    if (t[0] == 0xEF && t[1] == 0xBB && t[2] == 0xBF) {
+        if (detected_encoding) *detected_encoding = "UTF-8 (BOM)";
+        return text + 3;
+    }
+
     bool is_utf16le = (t[0] == 0xFF && t[1] == 0xFE);
     bool is_utf16be = (t[0] == 0xFE && t[1] == 0xFF);
 
@@ -94,6 +99,8 @@ const char* subtitle_normalize_to_utf8(
     for (size_t i = 0; text[i]; ++i){
         if ((unsigned char)text[i] >= 0x80){ is_ascii = false; break; }
     }
+
+    bool likely_cyrillic = false;
 
     if (is_utf16le) {
         if (detected_encoding) *detected_encoding = "UTF-16LE";
@@ -107,7 +114,13 @@ const char* subtitle_normalize_to_utf8(
             if (detected_encoding) *detected_encoding = "UTF-8";
             return text;
         }
-        if (detected_encoding) *detected_encoding = "unknown/legacy";
+        int high = 0, cyrillic_range = 0;
+        for (size_t i = 0; text[i]; i++) {
+            unsigned char c = (unsigned char)text[i];
+            if (c >= 0x80) { high++; if (c >= 0xC0) cyrillic_range++; }
+        }
+        likely_cyrillic = (high >= 4) && (cyrillic_range * 100 / high >= 55);
+        if (detected_encoding) *detected_encoding = likely_cyrillic ? "CP1251 (heuristic)" : "unknown/legacy";
     }
 
 #ifdef _WIN32
@@ -135,18 +148,27 @@ const char* subtitle_normalize_to_utf8(
         return text;
     }
 
-    UINT encodings[] = { 1250, 28592, 850 };
+    static const UINT enc_western[] = { 1250, 1252, 28592, 1251, 850 };
+    static const UINT enc_cyrillic[] = { 1251, 1250, 1252, 28592, 850 };
+    static const char* name_western[] = { "Windows-1250", "Windows-1252", "ISO-8859-2", "CP1251", "CP850" };
+    static const char* name_cyrillic[] = { "CP1251", "Windows-1250", "Windows-1252", "ISO-8859-2", "CP850" };
+    const UINT* encodings = likely_cyrillic ? enc_cyrillic : enc_western;
+    const char** enc_names = (const char**)(likely_cyrillic ? name_cyrillic : name_western);
+
     wchar_t tmpw[1024];
-
-    for (int i = 0; i < 3; i++) {
-        int needed = MultiByteToWideChar(encodings[i], 0, text, -1, tmpw, 1024);
+    for (int i = 0; i < 5; i++) {
+        int needed = MultiByteToWideChar(encodings[i], MB_ERR_INVALID_CHARS, text, -1, tmpw, 1024);
         if (needed > 0) {
-            if (detected_encoding) {
-                if (i == 0) *detected_encoding = "Windows-1250";
-                else if (i == 1) *detected_encoding = "ISO-8859-2";
-                else *detected_encoding = "CP850";
-            }
+            if (detected_encoding) *detected_encoding = enc_names[i];
+            int utf8_needed = WideCharToMultiByte(CP_UTF8, 0, tmpw, -1, outbuf, (int)outbuf_size, NULL, NULL);
+            if (utf8_needed > 0) return outbuf;
+        }
+    }
 
+    {
+        int needed = MultiByteToWideChar(1252, 0, text, -1, tmpw, 1024);
+        if (needed > 0) {
+            if (detected_encoding) *detected_encoding = "Windows-1252 (fallback)";
             int utf8_needed = WideCharToMultiByte(CP_UTF8, 0, tmpw, -1, outbuf, (int)outbuf_size, NULL, NULL);
             if (utf8_needed > 0) return outbuf;
         }
@@ -156,22 +178,45 @@ const char* subtitle_normalize_to_utf8(
 
 #else
 
-    const char* encodings[] = {
-        "UTF-16LE", "UTF-16BE", "WINDOWS-1250", "ISO-8859-2", "CP850"
-    };
+    if (is_utf16le || is_utf16be) {
+        const char* enc = is_utf16le ? "UTF-16LE" : "UTF-16BE";
+        iconv_t cd = iconv_open("UTF-8", enc);
+        if (cd != (iconv_t)(-1)) {
+            char* inbuf = (char*)text;
+            size_t inbytes = strlen(text);
+            char* out = outbuf;
+            size_t outbytes = outbuf_size - 1;
+            if (iconv(cd, &inbuf, &inbytes, &out, &outbytes) != (size_t)(-1)) {
+                *out = 0;
+                if (detected_encoding) *detected_encoding = enc;
+                iconv_close(cd);
+                return outbuf;
+            }
+            iconv_close(cd);
+        }
+        return text;
+    }
 
-    for(int i=0;i<5;i++){
+    static const char* enc_western_lx[] = {
+        "WINDOWS-1250", "WINDOWS-1252", "ISO-8859-2", "WINDOWS-1251", "CP850", "ISO-8859-1"
+    };
+    static const char* enc_cyrillic_lx[] = {
+        "WINDOWS-1251", "KOI8-R", "WINDOWS-1250", "WINDOWS-1252", "ISO-8859-5", "ISO-8859-1"
+    };
+    const char** encodings = (const char**)(likely_cyrillic ? enc_cyrillic_lx : enc_western_lx);
+
+    for (int i = 0; i < 6; i++) {
         iconv_t cd = iconv_open("UTF-8", encodings[i]);
-        if(cd == (iconv_t)(-1)) continue;
+        if (cd == (iconv_t)(-1)) continue;
 
         char* inbuf = (char*)text;
         size_t inbytes = strlen(text);
         char* out = outbuf;
         size_t outbytes = outbuf_size - 1;
 
-        if(iconv(cd, &inbuf, &inbytes, &out, &outbytes) != (size_t)(-1)) {
+        if (iconv(cd, &inbuf, &inbytes, &out, &outbytes) != (size_t)(-1)) {
             *out = 0;
-            if(detected_encoding) *detected_encoding = encodings[i];
+            if (detected_encoding) *detected_encoding = encodings[i];
             iconv_close(cd);
             return outbuf;
         }

@@ -72,6 +72,7 @@ typedef struct {
     float playback_speed;
     int32_t audio_track;
     int32_t subtitle_track;
+    int32_t subtitle_offset_ms;
     int audio_track_index;
     int subtitle_track_index;
     int bookmark_count;
@@ -320,7 +321,7 @@ static int write_save_state(const char* path, SaveState* state) {
         FileConfig* c = &state->remembered_files[i];
         total += sizeof(c->last_position) + sizeof(c->volume_percent)
                + sizeof(c->playback_speed) + sizeof(c->audio_track)
-               + sizeof(c->subtitle_track)
+               + sizeof(c->subtitle_track) + sizeof(c->subtitle_offset_ms)
                + sizeof(c->audio_track_index) + sizeof(c->subtitle_track_index)
                + HASH_SIZE
                + sizeof(uint64_t)
@@ -376,6 +377,7 @@ static int write_save_state(const char* path, SaveState* state) {
         memcpy(ptr, &c->playback_speed,      sizeof(c->playback_speed));      ptr += sizeof(c->playback_speed);
         memcpy(ptr, &c->audio_track,         sizeof(c->audio_track));         ptr += sizeof(c->audio_track);
         memcpy(ptr, &c->subtitle_track,      sizeof(c->subtitle_track));      ptr += sizeof(c->subtitle_track);
+        memcpy(ptr, &c->subtitle_offset_ms,  sizeof(c->subtitle_offset_ms));  ptr += sizeof(c->subtitle_offset_ms);
         memcpy(ptr, &c->audio_track_index,   sizeof(c->audio_track_index));   ptr += sizeof(c->audio_track_index);
         memcpy(ptr, &c->subtitle_track_index,sizeof(c->subtitle_track_index));ptr += sizeof(c->subtitle_track_index);
         memcpy(ptr, c->file_hash, HASH_SIZE); ptr += HASH_SIZE;
@@ -548,6 +550,7 @@ static int parse_payload(const uint8_t* ptr, const uint8_t* buf_end,
                 READ_FIELD(&c->playback_speed,       float);
                 READ_FIELD(&c->audio_track,          int32_t);
                 READ_FIELD(&c->subtitle_track,       int32_t);
+                READ_FIELD(&c->subtitle_offset_ms,   int32_t);
                 READ_FIELD(&c->audio_track_index,    int);
                 READ_FIELD(&c->subtitle_track_index, int);
                 #undef READ_FIELD
@@ -819,6 +822,7 @@ static void fill_save_state_from_vr_idx(VideoRenderer* vr,
     existing->playback_speed       = vr->playback_speed;
     existing->audio_track          = vr->current_audio;
     existing->subtitle_track       = vr->current_subtitle;
+    existing->subtitle_offset_ms   = vr->subtitle_offset_ms;
     existing->audio_track_index    = vr->audio_stream_index;
     existing->subtitle_track_index = vr->subtitle_stream_index;
     existing->ar_x           = vr->ar_x;
@@ -851,6 +855,7 @@ static void fill_save_state_from_vr(VideoRenderer* vr,
         config.playback_speed      = vr->playback_speed;
         config.audio_track         = vr->current_audio;
         config.subtitle_track      = vr->current_subtitle;
+        config.subtitle_offset_ms  = vr->subtitle_offset_ms;
         config.audio_track_index   = vr->audio_stream_index;
         config.subtitle_track_index= vr->subtitle_stream_index;
         config.ar_x          = vr->ar_x;
@@ -886,6 +891,7 @@ static void apply_save_state_to_vr(VideoRenderer* vr,
     if (out_volume_percent) *out_volume_percent = (float)c->volume_percent;
     vr->ar_x = c->ar_x;
     vr->ar_y = c->ar_y;
+    vr->subtitle_offset_ms = c->subtitle_offset_ms;
     vr->desired_win_w = (int)c->win_w;
     vr->desired_win_h = (int)c->win_h;
     double target_pos = c->last_position;
@@ -940,6 +946,7 @@ static void debug_save_state(const SaveState* state) {
         printf("      Subtitle Track: %d\n",   cfg->subtitle_track);
         printf("      Audio Track Index: %d\n",   cfg->audio_track_index);
         printf("      Subtitle Track Index: %d\n",cfg->subtitle_track_index);
+        printf("      Subtitle Offset: %dms\n", cfg->subtitle_offset_ms);
         printf("      Aspect Ratio: %u:%u\n", cfg->ar_x, cfg->ar_y);
         printf("      Window Size: %dx%d\n", cfg->win_w, cfg->win_h);
         printf("      Bookmarks (%u):\n", cfg->bookmark_count);

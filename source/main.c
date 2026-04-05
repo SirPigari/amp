@@ -759,7 +759,7 @@ static int load_media_file(
 ) {
     if (!vr || !win || !ren || !video_file || !path) return 0;
 
-    char* abs_path = abspath_temp_safe(path);
+    char* abs_path = strdup(abspath_temp_safe(path));
     if (!abs_path) return 0;
     if (!is_supported_video_file(abs_path)) {
         free(abs_path);
@@ -1132,6 +1132,8 @@ static bool* g_menu_paused_ptr = NULL;
 static float* g_menu_playback_speed_ptr = NULL;
 static HMENU g_current_win_menu = NULL;
 
+static SDL_Rect apply_zoom_to_rect(SDL_Rect r, int win_w, int win_h, int zoom_percent);
+
 static void menu_pump_playback_tick(void) {
     if (!g_menu_vr_ptr || !*g_menu_vr_ptr || !g_menu_win || !g_menu_ren || !g_menu_paused_ptr || !g_menu_playback_speed_ptr) return;
 
@@ -1153,6 +1155,7 @@ static void menu_pump_playback_tick(void) {
         int src_h = 0;
         SDL_QueryTexture(tex, NULL, NULL, &src_w, &src_h);
         video_dst = compute_video_dst_rect(window_w, window_h, src_w, src_h, vr->ar_x, vr->ar_y);
+        video_dst = apply_zoom_to_rect(video_dst, window_w, window_h, vr->zoom_percent);
         SDL_RenderCopy(g_menu_ren, tex, NULL, &video_dst);
         if (vr_render_subtitles(vr, vr_get_video_time(vr))) {
             SDL_Texture* sub = vr_get_subtitle_texture(vr);
@@ -1205,6 +1208,10 @@ enum {
     MENU_ASPECT_RATIO_STRETCH,
     MENU_ASPECT_RATIO_ORIGINAL,
     MENU_ASPECT_RATIO_CUSTOM,
+    MENU_ZOOM_IN,
+    MENU_ZOOM_OUT,
+    MENU_ZOOM_RESET,
+    MENU_ZOOM_CUSTOM,
     MENU_PLAY_PAUSE,
     MENU_NEXT_FRAME,
     MENU_PREV_FRAME,
@@ -1249,6 +1256,7 @@ HMENU create_windows_menu(SDL_Window* window) {
     HMENU hViewMenu = CreatePopupMenu();
     HMENU hResolutionMenu = CreatePopupMenu();
     HMENU hAspectRatioMenu = CreatePopupMenu();
+    HMENU hZoomMenu = CreatePopupMenu();
     HMENU hPlaybackMenu = CreatePopupMenu();
     HMENU hVolumeMenu = CreatePopupMenu();
     HMENU hBookmarksMenu = CreatePopupMenu();
@@ -1270,6 +1278,7 @@ HMENU create_windows_menu(SDL_Window* window) {
     AppendMenu(hViewMenu, MF_STRING, MENU_FULLSCREEN, "Fullscreen\tF11");
     AppendMenu(hViewMenu, MF_STRING, MENU_MAXIMIZE, "Maximize\tF10");
     AppendMenu(hViewMenu, MF_STRING, MENU_MINIMIZE, "Minimize\tAlt+M");
+    AppendMenu(hViewMenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(hResolutionMenu, MF_STRING, MENU_RESOLUTION_NATIVE, "Native (Video)\tShift+Alt+R");
     AppendMenu(hResolutionMenu, MF_STRING, MENU_RESOLUTION_CUSTOM, "Custom\tAlt+R");
     AppendMenu(hResolutionMenu, MF_SEPARATOR, 0, NULL);
@@ -1287,9 +1296,14 @@ HMENU create_windows_menu(SDL_Window* window) {
     AppendMenu(hAspectRatioMenu, MF_STRING, MENU_ASPECT_RATIO_16_9, "16:9");
     AppendMenu(hAspectRatioMenu, MF_STRING, MENU_ASPECT_RATIO_21_9, "21:9");
     AppendMenu(hViewMenu, MF_POPUP, (UINT_PTR)hAspectRatioMenu, "Aspect Ratio");
+    AppendMenu(hZoomMenu, MF_STRING, MENU_ZOOM_RESET, "Reset Zoom\tCtrl+Alt+Z");
+    AppendMenu(hZoomMenu, MF_STRING, MENU_ZOOM_CUSTOM, "Custom Zoom\tAlt+Z");
+    AppendMenu(hZoomMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hZoomMenu, MF_STRING, MENU_ZOOM_IN, "Zoom In\tCtrl+Plus");
+    AppendMenu(hZoomMenu, MF_STRING, MENU_ZOOM_OUT, "Zoom Out\tCtrl+Minus");
+    AppendMenu(hViewMenu, MF_POPUP, (UINT_PTR)hZoomMenu, "Zoom");
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hViewMenu, "View");
 
-    
     AppendMenu(hVolumeMenu, MF_STRING, MENU_VOLUME_UP, "Volume Up (by 5%)\tUp");
     AppendMenu(hVolumeMenu, MF_STRING, MENU_VOLUME_DOWN, "Volume Down (by 5%)\tDown");
     AppendMenu(hVolumeMenu, MF_STRING, MENU_VOLUME_UP_FINE, "Volume Up (by 1%)\tAlt+Up");
@@ -1409,6 +1423,68 @@ static int parse_custom_resolution(const char* s, int* out_w, int* out_h) {
     return 0;
 }
 
+static int parse_zoom_input(const char* s, int* out_zoom) {
+    if (!s || !out_zoom) return 0;
+    char buf[64] = {0};
+    int j = 0;
+    for (int i = 0; s[i] && j < 63; i++) {
+        buf[j++] = (char)(s[i] >= 'A' && s[i] <= 'Z' ? s[i] + 32 : s[i]);
+    }
+    buf[j] = '\0';
+
+    char* p = buf;
+    while (*p == ' ' || *p == '\t') p++;
+    int len = (int)strlen(p);
+    while (len > 0 && (p[len-1] == ' ' || p[len-1] == '\t')) p[--len] = '\0';
+    if (len == 0) return 0;
+
+    float mult = 0.0f;
+    if (p[len-1] == 'x') {
+        p[len-1] = '\0';
+        len = (int)strlen(p);
+        while (len > 0 && (p[len-1] == ' ' || p[len-1] == '\t')) p[--len] = '\0';
+        if (sscanf(p, "%f", &mult) == 1 && mult > 0.0f) {
+            *out_zoom = (int)(mult * 100.0f + 0.5f);
+            return 1;
+        }
+        return 0;
+    }
+
+    if (len > 5 && strcmp(p + len - 5, "times") == 0) {
+        p[len - 5] = '\0';
+        len = (int)strlen(p);
+        while (len > 0 && (p[len-1] == ' ' || p[len-1] == '\t')) p[--len] = '\0';
+        if (sscanf(p, "%f", &mult) == 1 && mult > 0.0f) {
+            *out_zoom = (int)(mult * 100.0f + 0.5f);
+            return 1;
+        }
+        return 0;
+    }
+
+    if (p[len-1] == '%') {
+        p[len-1] = '\0';
+        len = (int)strlen(p);
+        while (len > 0 && (p[len-1] == ' ' || p[len-1] == '\t')) p[--len] = '\0';
+    }
+
+    int val = 0;
+    if (sscanf(p, "%d", &val) == 1 && val > 0) {
+        *out_zoom = val;
+        return 1;
+    }
+    return 0;
+}
+
+static SDL_Rect apply_zoom_to_rect(SDL_Rect r, int win_w, int win_h, int zoom_percent) {
+    if (zoom_percent == 100) return r;
+    float scale = (float)zoom_percent / 100.0f;
+    int new_w = (int)((float)r.w * scale);
+    int new_h = (int)((float)r.h * scale);
+    int new_x = (win_w - new_w) / 2;
+    int new_y = (win_h - new_h) / 2;
+    return (SDL_Rect){new_x, new_y, new_w, new_h};
+}
+
 static int parse_custom_aspect_ratio(const char* s, unsigned int* out_x, unsigned int* out_y) {
     if (!s || !out_x || !out_y) return 0;
     unsigned int x = 0, y = 0;
@@ -1479,7 +1555,7 @@ int main(int argc, char** argv) {
     int history_pos   = -1;
 
     TextInputState ti = {0};
-    typedef enum { TI_NONE = 0, TI_BOOKMARK_RENAME, TI_GOTO_TIME, TI_SET_RESOLUTION, TI_SET_ASPECT_RATIO } TIPurpose;
+    typedef enum { TI_NONE = 0, TI_BOOKMARK_RENAME, TI_GOTO_TIME, TI_SET_RESOLUTION, TI_SET_ASPECT_RATIO, TI_SET_ZOOM } TIPurpose;
     TIPurpose ti_purpose = TI_NONE;
     int ti_bm_idx = -1;
     char ti_bm_old_name[BOOKMARK_NAME_MAX] = {0};
@@ -1907,6 +1983,23 @@ int main(int argc, char** argv) {
                             snprintf(flash_text, sizeof(flash_text), "Invalid aspect ratio (use X:Y, X Y, X,Y or X-Y)");
                         }
                         flash_until = SDL_GetTicks() + 900;
+                    } else if (ti_purpose == TI_SET_ZOOM) {
+                        int new_zoom = 0;
+                        if (parse_zoom_input(ti.value, &new_zoom)) {
+                            if (vr) {
+                                vr_set_zoom(vr, new_zoom);
+#if SAVE_FILE
+                                if (video_file) {
+                                    fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
+                                    write_save_state(SAVE_FILE_PATH, &save_state);
+                                }
+#endif
+                            }
+                            snprintf(flash_text, sizeof(flash_text), "Zoom: %d%%", vr ? vr->zoom_percent : new_zoom);
+                        } else {
+                            snprintf(flash_text, sizeof(flash_text), "Invalid zoom (use 150, 150%%, 2x, 2 times)");
+                        }
+                        flash_until = SDL_GetTicks() + 900;
                     }
                     ti_purpose = TI_NONE;
                     ti_bm_idx = -1;
@@ -2123,6 +2216,35 @@ int main(int argc, char** argv) {
                         } else if (id == MENU_ASPECT_RATIO_CUSTOM) {
                             text_input_open(&ti, "Aspect Ratio (X:Y):", "", 16);
                             ti_purpose = TI_SET_ASPECT_RATIO;
+                        } else if (id == MENU_ZOOM_RESET) {
+                            if (vr) {
+                                vr_set_zoom(vr, 100);
+                                vr_set_aspect_ratio_mode(vr, 0, 0);
+                                requested_window_w = 0;
+                                requested_window_h = 0;
+                                vr->desired_win_w = 0;
+                                vr->desired_win_h = 0;
+                                apply_window_size_for_video(win, vr_get_texture(vr), 0, 0);
+                                snprintf(flash_text, sizeof(flash_text), "Reset: zoom, aspect ratio, resolution");
+                                flash_until = SDL_GetTicks() + 1200;
+                            }
+                        } else if (id == MENU_ZOOM_CUSTOM) {
+                            char zoom_hint[16] = {0};
+                            if (vr) snprintf(zoom_hint, sizeof(zoom_hint), "%d%%", vr->zoom_percent);
+                            text_input_open(&ti, "Zoom (e.g. 150%, 2x):", zoom_hint[0] ? zoom_hint : "", 16);
+                            ti_purpose = TI_SET_ZOOM;
+                        } else if (id == MENU_ZOOM_IN) {
+                            if (vr) {
+                                vr_set_zoom(vr, vr->zoom_percent + 25);
+                                snprintf(flash_text, sizeof(flash_text), "Zoom: %d%%", vr->zoom_percent);
+                                flash_until = SDL_GetTicks() + 900;
+                            }
+                        } else if (id == MENU_ZOOM_OUT) {
+                            if (vr) {
+                                vr_set_zoom(vr, vr->zoom_percent - 25);
+                                snprintf(flash_text, sizeof(flash_text), "Zoom: %d%%", vr->zoom_percent);
+                                flash_until = SDL_GetTicks() + 900;
+                            }
                         } else if (id == MENU_PLAY_PAUSE) {
                             paused = !paused;
                             if (vr) vr_set_paused(vr, paused);
@@ -2719,7 +2841,7 @@ int main(int argc, char** argv) {
                     snprintf(flash_text, sizeof(flash_text), "VOL %d", (int)volume_percent);
                     flash_until = SDL_GetTicks() + 900;
                 }
-                if (key == SDLK_z && (e.key.keysym.mod & KMOD_CTRL) && vr) {
+                if (key == SDLK_z && (e.key.keysym.mod & KMOD_CTRL) && !(e.key.keysym.mod & KMOD_SHIFT) && vr) {
                     if (!hist_undo(history, &history_count, &history_pos,
                             &vr, win, ren, &video_file, paused, &volume_percent,
                             subtitle_override_colors[subtitle_color_idx],
@@ -2921,6 +3043,50 @@ int main(int argc, char** argv) {
                         snprintf(flash_text, sizeof(flash_text), "End");
                         flash_until = SDL_GetTicks() + 900;
                     }
+                }
+                if ((key == SDLK_MINUS || key == SDLK_KP_MINUS) && !(e.key.keysym.mod & KMOD_CTRL) && vr) {
+                    int offset = (e.key.keysym.mod & KMOD_SHIFT) ? -100 : -1;
+                    vr->subtitle_offset_ms += offset;
+                    snprintf(flash_text, sizeof(flash_text), "Shifted subtitles %dms (%+"PRId64")", offset, vr->subtitle_offset_ms);
+                    flash_until = SDL_GetTicks() + 900;
+                }
+                if ((key == SDLK_PLUS || key == SDLK_KP_PLUS) && !(e.key.keysym.mod & KMOD_CTRL) && vr) {
+                    int offset = (e.key.keysym.mod & KMOD_SHIFT) ? 100 : 1;
+                    vr->subtitle_offset_ms += offset;
+                    snprintf(flash_text, sizeof(flash_text), "Shifted subtitles %dms (%+"PRId64")", offset, vr->subtitle_offset_ms);
+                    flash_until = SDL_GetTicks() + 900;
+                }
+                if (key == SDLK_0 && (e.key.keysym.mod & KMOD_CTRL) && !(e.key.keysym.mod & KMOD_ALT) && vr) {
+                    vr_set_zoom(vr, 100);
+                    vr_set_aspect_ratio_mode(vr, 0, 0);
+                    requested_window_w = 0;
+                    requested_window_h = 0;
+                    vr->desired_win_w = 0;
+                    vr->desired_win_h = 0;
+                    apply_window_size_for_video(win, vr_get_texture(vr), 0, 0);
+                    snprintf(flash_text, sizeof(flash_text), "Reset: zoom, aspect ratio, resolution");
+                    flash_until = SDL_GetTicks() + 1200;
+                }
+                if (key == SDLK_z && (e.key.keysym.mod & KMOD_CTRL) && (e.key.keysym.mod & KMOD_ALT) && !(e.key.keysym.mod & KMOD_SHIFT) && vr) {
+                    vr_set_zoom(vr, 100);
+                    snprintf(flash_text, sizeof(flash_text), "Zoom: 100%%");
+                    flash_until = SDL_GetTicks() + 900;
+                }
+                if (key == SDLK_z && !((e.key.keysym.mod & KMOD_CTRL) && (e.key.keysym.mod & KMOD_SHIFT)) && (e.key.keysym.mod & KMOD_ALT) && !ti.active) {
+                    char zoom_hint[16] = {0};
+                    if (vr) snprintf(zoom_hint, sizeof(zoom_hint), "%d%%", vr->zoom_percent);
+                    text_input_open(&ti, "Zoom (e.g. 150%, 2x):", zoom_hint[0] ? zoom_hint : "", 16);
+                    ti_purpose = TI_SET_ZOOM;
+                }
+                if ((key == SDLK_EQUALS || key == SDLK_PLUS || key == SDLK_KP_PLUS) && (e.key.keysym.mod & KMOD_CTRL) && vr) {
+                    vr_set_zoom(vr, vr->zoom_percent + 25);
+                    snprintf(flash_text, sizeof(flash_text), "Zoom: %d%%", vr->zoom_percent);
+                    flash_until = SDL_GetTicks() + 900;
+                }
+                if ((key == SDLK_MINUS || key == SDLK_KP_MINUS) && (e.key.keysym.mod & KMOD_CTRL) && vr) {
+                    vr_set_zoom(vr, vr->zoom_percent - 25);
+                    snprintf(flash_text, sizeof(flash_text), "Zoom: %d%%", vr->zoom_percent);
+                    flash_until = SDL_GetTicks() + 900;
                 }
             }
 
@@ -3430,6 +3596,7 @@ int main(int argc, char** argv) {
                 int src_h = 0;
                 SDL_QueryTexture(tex, NULL, NULL, &src_w, &src_h);
                 video_dst = compute_video_dst_rect(window_w, window_h, src_w, src_h, vr->ar_x, vr->ar_y);
+                video_dst = apply_zoom_to_rect(video_dst, window_w, window_h, vr->zoom_percent);
                 SDL_RenderCopy(ren, tex, NULL, &video_dst);
             }
             if (vr_render_subtitles(vr, vr_get_video_time(vr))) {
