@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.2
+
+- Fixed bug with audio not playing on linux
+- Fixed not compiling on linux
+
 ## 1.5.1
 
 - Fixed a bug with next and prev media not working sometimes (path issues)

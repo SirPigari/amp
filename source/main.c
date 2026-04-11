@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <math.h>
 #ifdef _WIN32
+#include <limits.h>
 #include <io.h>
 #else
 #include <unistd.h>
@@ -315,8 +316,8 @@ static int find_nearest_chapter(
 static void set_window_title_for_media(SDL_Window* win, VideoRenderer* vr, const char* path) {
     if (!win || !path) return;
     const char* title = get_media_title(vr);
-    if (title && title[0]) {
-        char buf[MAX_PATH];
+    if (title && title[0]) { 
+        char buf[PATH_MAX];
         snprintf(buf, sizeof(buf), "%s - %s", title, path);
         SDL_SetWindowTitle(win, buf);
     } else {
@@ -666,7 +667,7 @@ static int get_adjacent_supported_media(const char* current_media_path, int dire
     size_t dir_len = (size_t)(slash - current_media_path);
     if (dir_len == 0) return 0;
 
-    char dir_path[MAX_PATH];
+    char dir_path[PATH_MAX];
     if (dir_len >= sizeof(dir_path)) return 0;
     memcpy(dir_path, current_media_path, dir_len);
     dir_path[dir_len] = '\0';
@@ -675,7 +676,7 @@ static int get_adjacent_supported_media(const char* current_media_path, int dire
     int count = 0;
 
 #ifdef _WIN32
-    char pattern[MAX_PATH];
+    char pattern[PATH_MAX];
     if (dir_len + 3 >= sizeof(pattern)) return 0;
     memcpy(pattern, dir_path, dir_len);
     pattern[dir_len] = '\\';
@@ -688,7 +689,7 @@ static int get_adjacent_supported_media(const char* current_media_path, int dire
 
     do {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        char full[MAX_PATH];
+        char full[PATH_MAX];
         size_t name_len = strlen(fd.cFileName);
         if (dir_len + 1 + name_len + 1 >= sizeof(full)) continue;
         memcpy(full, dir_path, dir_len);
@@ -708,7 +709,7 @@ static int get_adjacent_supported_media(const char* current_media_path, int dire
     struct dirent* ent;
     while ((ent = readdir(d)) != NULL) {
         if (ent->d_name[0] == '.') continue;
-        char full[MAX_PATH];
+        char full[PATH_MAX];
 
         size_t n = sizeof(full);
         int written = snprintf(full, n, "%s/%s", dir_path, ent->d_name);
@@ -1693,6 +1694,9 @@ int main(int argc, char** argv) {
     }
     
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+#ifndef _WIN32
+    SDL_SetHint(SDL_HINT_AUDIODRIVER, "pulseaudio,alsa");
+#endif
     
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         nob_log(NOB_ERROR, "SDL_Init Error: %s", SDL_GetError());

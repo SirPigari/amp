@@ -933,6 +933,7 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
 
         if (vr->audio_ctx) {
             vr->audio_time_base = stream->time_base;
+            
             SDL_AudioSpec want;
             SDL_zero(want);
             want.freq = vr->audio_ctx->sample_rate;
@@ -942,7 +943,6 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
             want.callback = NULL;
             if (vr->audio_dev && vr->audio_spec.freq == want.freq) {
                 SDL_ClearQueuedAudio(vr->audio_dev);
-                SDL_PauseAudioDevice(vr->audio_dev, 1);
             } else {
                 if (vr->audio_dev) {
                     SDL_PauseAudioDevice(vr->audio_dev, 1);
@@ -951,7 +951,11 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
                 }
                 vr->audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &vr->audio_spec,
                                                      SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
+                if (!vr->audio_dev) {
+                    nob_log(NOB_ERROR, "SDL_OpenAudioDevice failed: %s", SDL_GetError());
+                }
             }
+            if (vr->audio_dev) SDL_PauseAudioDevice(vr->audio_dev, 0);
 
             AVChannelLayout in_layout = vr->audio_ctx->ch_layout;
             AVChannelLayout out_layout;
@@ -1679,7 +1683,11 @@ void vr_select_audio_track(VideoRenderer* vr, int idx) {
     want.callback = NULL;
     vr->audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &vr->audio_spec,
                                          SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
-    if (vr->audio_dev) SDL_PauseAudioDevice(vr->audio_dev, 0);
+    if (!vr->audio_dev) {
+        nob_log(NOB_ERROR, "SDL_OpenAudioDevice failed: %s", SDL_GetError());
+        return;
+    }
+    SDL_PauseAudioDevice(vr->audio_dev, 0);
 
     AVChannelLayout in_layout = vr->audio_ctx->ch_layout;
     AVChannelLayout out_layout;
