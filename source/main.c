@@ -30,6 +30,10 @@
 #endif
 #undef NOB_IMPLEMENTATION
 
+#if !defined(PATH_MAX) && defined(MAX_PATH)
+#define PATH_MAX MAX_PATH
+#endif
+
 #include "config.h"
 #include "text.c"
 #include "renderer.c"
@@ -158,9 +162,9 @@ static bool abspath(const char* path, char* out, size_t out_size) {
 }
 
 static char* abspath_temp(const char* path) {
-    static char buf[4096];
+    static char buf[PATH_MAX];
     if (!path) return NULL;
-    if (!abspath(path, buf, 4096)) {
+    if (!abspath(path, buf, PATH_MAX) || !buf[0]) {
         return NULL;
     }
     return buf;
@@ -173,10 +177,10 @@ static size_t _abspath_cap = 0;
 static char* abspath_temp_safe(const char* path) {
     if (!path) return NULL;
 
-    char* buf = malloc(4096);
+    char* buf = malloc(PATH_MAX);
     if (!buf) return NULL;
 
-    if (!abspath(path, buf, 4096) || !buf[0]) {
+    if (!abspath(path, buf, PATH_MAX) || !buf[0]) {
         free(buf);
         return NULL;
     }
@@ -312,7 +316,7 @@ static void set_window_title_for_media(SDL_Window* win, VideoRenderer* vr, const
     if (!win || !path) return;
     const char* title = get_media_title(vr);
     if (title && title[0]) {
-        char buf[4096];
+        char buf[MAX_PATH];
         snprintf(buf, sizeof(buf), "%s - %s", title, path);
         SDL_SetWindowTitle(win, buf);
     } else {
@@ -570,10 +574,28 @@ char* open_file_dialog(const char* filters[], int filter_count, const char* filt
 
 static int path_equals(const char* a, const char* b) {
     if (!a || !b) return 0;
+
+    char pa[PATH_MAX];
+    char pb[PATH_MAX];
+
+    if (!abspath(a, pa, PATH_MAX)) {
+        strncpy(pa, a, PATH_MAX - 1);
+        pa[PATH_MAX - 1] = 0;
+    }
+    if (!abspath(b, pb, PATH_MAX)) {
+        strncpy(pb, b, PATH_MAX - 1);
+        pb[PATH_MAX - 1] = 0;
+    }
+
+    for (char* p = pa; *p; ++p)
+        if (*p == '\\') *p = '/';
+    for (char* p = pb; *p; ++p)
+        if (*p == '\\') *p = '/';
+
 #ifdef _WIN32
-    return _stricmp(a, b) == 0;
+    return _stricmp(pa, pb) == 0;
 #else
-    return strcmp(a, b) == 0;
+    return strcmp(pa, pb) == 0;
 #endif
 }
 
@@ -644,7 +666,7 @@ static int get_adjacent_supported_media(const char* current_media_path, int dire
     size_t dir_len = (size_t)(slash - current_media_path);
     if (dir_len == 0) return 0;
 
-    char dir_path[4096];
+    char dir_path[MAX_PATH];
     if (dir_len >= sizeof(dir_path)) return 0;
     memcpy(dir_path, current_media_path, dir_len);
     dir_path[dir_len] = '\0';
@@ -653,7 +675,7 @@ static int get_adjacent_supported_media(const char* current_media_path, int dire
     int count = 0;
 
 #ifdef _WIN32
-    char pattern[4096];
+    char pattern[MAX_PATH];
     if (dir_len + 3 >= sizeof(pattern)) return 0;
     memcpy(pattern, dir_path, dir_len);
     pattern[dir_len] = '\\';
@@ -666,7 +688,7 @@ static int get_adjacent_supported_media(const char* current_media_path, int dire
 
     do {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        char full[4096];
+        char full[MAX_PATH];
         size_t name_len = strlen(fd.cFileName);
         if (dir_len + 1 + name_len + 1 >= sizeof(full)) continue;
         memcpy(full, dir_path, dir_len);
@@ -686,7 +708,7 @@ static int get_adjacent_supported_media(const char* current_media_path, int dire
     struct dirent* ent;
     while ((ent = readdir(d)) != NULL) {
         if (ent->d_name[0] == '.') continue;
-        char full[4096];
+        char full[MAX_PATH];
 
         size_t n = sizeof(full);
         int written = snprintf(full, n, "%s/%s", dir_path, ent->d_name);
@@ -1868,6 +1890,12 @@ int main(int argc, char** argv) {
             subtitle_settings_value_menu_row = -1;
         }
 
+        if (overlay_target == 0.0) {
+            SDL_ShowCursor(SDL_DISABLE);
+        } else {
+            SDL_ShowCursor(SDL_ENABLE);
+        }
+
         {
             SDL_GetWindowSize(win, &w, &h);
             overlay_rect = (SDL_Rect){ 0, h - overlay_h, w, overlay_h };
@@ -2699,27 +2727,27 @@ int main(int argc, char** argv) {
                             &bookmark_count
                         );
                     } else {
-                    navigate_media(
-                        &vr,
-                        win,
-                        ren,
-                        &video_file,
-                        1,
-                        paused,
-                        &volume_percent,
-                        subtitle_override_colors[subtitle_color_idx],
-                        subtitle_override_sizes[subtitle_size_idx],
-                        subtitle_override_margins[subtitle_move_idx],
-                        0,
-                        requested_window_w,
-                        requested_window_h,
-                        history,
-                        &history_count,
-                        &history_pos,
-                        &save_state,
-                        bookmarks,
-                        &bookmark_count
-                    );
+                        navigate_media(
+                            &vr,
+                            win,
+                            ren,
+                            &video_file,
+                            1,
+                            paused,
+                            &volume_percent,
+                            subtitle_override_colors[subtitle_color_idx],
+                            subtitle_override_sizes[subtitle_size_idx],
+                            subtitle_override_margins[subtitle_move_idx],
+                            0,
+                            requested_window_w,
+                            requested_window_h,
+                            history,
+                            &history_count,
+                            &history_pos,
+                            &save_state,
+                            bookmarks,
+                            &bookmark_count
+                        );
                     }
                 }
                 if (key == SDLK_LEFT && (e.key.keysym.mod & KMOD_SHIFT) && vr) {

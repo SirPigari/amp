@@ -3,8 +3,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
+#include <inttypes.h>
 #include "config.h"
 #include "../thirdparty/tinyfd.c"
+#include "../thirdparty/nob.h"
 
 typedef enum {
     /* FontSettings */

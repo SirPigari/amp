@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.1
+
+- Fixed a bug with next and prev media not working sometimes (path issues)
+- Fixed a bug where the cursor would not hide while playing
+
 ## 1.5.0
 
 - Added more encodings to the `subtitle_normalize_to_utf8` function
