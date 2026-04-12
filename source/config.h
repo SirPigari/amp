@@ -5,12 +5,11 @@
 #define AMP_VERSION 0x010600 /* 1.6.0 */
 
 #define THEMES_DIR "assets/themes/"
-#define USE_THEMES 0
-#define THEME "DEFAULT_THEME"
+#define USE_THEMES 1
 
 #define CC "gcc"
-#define CFLAGS         "-Wno-cast-function-type", "-Wall", "-Wextra", "-D"THEME
-#define RELEASE_CFLAGS "-Wno-cast-function-type", "-Wall", "-Wextra", "-D"THEME, "-O3"
+#define CFLAGS         "-Wno-cast-function-type", "-Wall", "-Wextra"
+#define RELEASE_CFLAGS "-Wno-cast-function-type", "-Wall", "-Wextra", "-O3"
 #define SAVE_FILE_MAGIC 0x414D5056 /* 'AMPV' */
 #define OUT_EXE_NAME   "main"
 
@@ -49,7 +48,7 @@
 
 /* Theme, this is a template and the default theme
    each theme MUST define all of these, even if they are the same as the default */
-#if defined(DEFAULT_THEME) || !USE_THEMES
+#if USE_THEMES
 #define THEME_NAME "AMP"
 #define THEME_FILE "config.h"
 

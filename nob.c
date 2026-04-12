@@ -6,50 +6,6 @@
 #include <stdio.h>
 #include "source/config.h"
 
-#if USE_THEMES
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <dirent.h>
-#endif
-
-static void add_theme_includes(Nob_Cmd* cmd) {
-#ifdef _WIN32
-    char pattern[1024];
-    snprintf(pattern, sizeof(pattern), "%s\\*.h", THEMES_DIR);
-
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            char path[1024];
-            snprintf(path, sizeof(path), "%s/%s", THEMES_DIR, fd.cFileName);
-            nob_cmd_append(cmd, "-include", nob_temp_strdup(path));
-        } while (FindNextFileA(h, &fd));
-        FindClose(h);
-    }
-
-#else
-    DIR* d = opendir(THEMES_DIR);
-    if (!d) return;
-
-    struct dirent* ent;
-    while ((ent = readdir(d))) {
-        const char* name = ent->d_name;
-
-        size_t len = strlen(name);
-        if (len > 2 && strcmp(name + len - 2, ".h") == 0) {
-            char path[1024];
-            snprintf(path, sizeof(path), "%s/%s", THEMES_DIR, name);
-            nob_cmd_append(cmd, "-include", nob_temp_strdup(path));
-        }
-    }
-
-    closedir(d);
-#endif
-}
-#endif
-
 #ifdef _WIN32
 static int is_system_dll(const char* name) {
     const char* sys[] = {
@@ -183,14 +139,17 @@ static void write_readme(const char* out_dir) {
 
     fprintf(f,
 "%s\n"
-"=============================\n"
+"====================================\n"
 "\n"
 "     1. Locate \"amp.exe\" in this folder\n"
-"     2. Open (double click) the amp.exe (can take about 10 seconds the first time, windows security)\n"
-"     3. It should open a file dialog, select a mp4 or mkv file that you want to watch\n"
-"     4. It should open and play!\n"
+"     2. Open (double click) the amp.exe, if it opens a security prompt, allow it\n"
+"     3. The first time you run it, it creates a file association for .mp4 and .mkv files,\n"
+"        and creates an 'amp_save.dat' file in this folder.\n"
+"        If you want to open any file with amp, right click the file, choose 'Open with', and select 'amp'\n"
+"     4. It should open a file dialog, select a mp4 or mkv file that you want to watch\n"
+"     5. It should open and play!\n"
 "\n"
-"=============================\n"
+"====================================\n"
 "\n"
 "%s\n",
         ascii_art,
@@ -253,11 +212,26 @@ int main(int argc, char** argv) {
     }
 
 #ifdef _WIN32
+    char maj[32], min[32], pat[32];
+    snprintf(maj, sizeof(maj), "-DAMP_VER_MAJOR=%d", (AMP_VERSION >> 16) & 0xFF);
+    snprintf(min, sizeof(min), "-DAMP_VER_MINOR=%d", (AMP_VERSION >> 8) & 0xFF);
+    snprintf(pat, sizeof(pat), "-DAMP_VER_PATCH=%d", AMP_VERSION & 0xFF);
+    nob_cmd_append(
+        &cmd,
+        "windres", "assets/amp.rc", "-O", "coff", "-o", "assets/amp.res",
+        maj, min, pat
+    );
+    if (!nob_cmd_run(&cmd)) {
+        fprintf(stderr, "Resource compilation failed!\n");
+        return 1;
+    }
+
     nob_cmd_append(&cmd, CC);
     if (opt) nob_cmd_append(&cmd, RELEASE_CFLAGS);
     else nob_cmd_append(&cmd, CFLAGS);
     nob_cmd_append(&cmd,
                     "source/main.c",
+                    "assets/amp.res",
                     "-DSDL_MAIN_HANDLED",
                     "-L", sdl_lib,
                     "-L", ffmpeg_lib,
@@ -279,6 +253,7 @@ int main(int argc, char** argv) {
                     "-lfreetype",
                     "-lharfbuzz",
                     "-lfribidi",
+                    "-luuid",
                     "-mwindows",
                     "-o", OUT_EXE_NAME".exe");
 #else
@@ -305,11 +280,6 @@ int main(int argc, char** argv) {
                     "-lm",
                     "-o", OUT_EXE_NAME);
 #endif
-
-    #if USE_THEMES
-    add_theme_includes(&cmd);
-    #endif
-
     if (!nob_cmd_run(&cmd)) {
         fprintf(stderr, "Compilation failed!\n");
         return 1;

@@ -68,23 +68,24 @@ typedef struct {
     int pan_y;
 } DrawingState;
 
-static const SDL_Color draw_palette[] = {
-    {DRAW_PALETTE_COLOR_1, DRAW_PALETTE_COLOR_ALPHA},
-    {DRAW_PALETTE_COLOR_2, DRAW_PALETTE_COLOR_ALPHA},
-    {DRAW_PALETTE_COLOR_3, DRAW_PALETTE_COLOR_ALPHA},
-    {DRAW_PALETTE_COLOR_4, DRAW_PALETTE_COLOR_ALPHA},
-    {DRAW_PALETTE_COLOR_5, DRAW_PALETTE_COLOR_ALPHA},
-    {DRAW_PALETTE_COLOR_6, DRAW_PALETTE_COLOR_ALPHA},
-    {DRAW_PALETTE_COLOR_7, DRAW_PALETTE_COLOR_ALPHA},
-};
-static const int draw_palette_count = sizeof(draw_palette) / sizeof(draw_palette[0]);
+static SDL_Color draw_palette[7];
+static const int draw_palette_count = 7;
 
 static void draw_init(DrawingState* ds) {
     if (!ds) return;
+    
+    draw_palette[0] = (SDL_Color){THEME_DRAW_PALETTE_COLOR_1[0], THEME_DRAW_PALETTE_COLOR_1[1], THEME_DRAW_PALETTE_COLOR_1[2], THEME_DRAW_PALETTE_COLOR_ALPHA};
+    draw_palette[1] = (SDL_Color){THEME_DRAW_PALETTE_COLOR_2[0], THEME_DRAW_PALETTE_COLOR_2[1], THEME_DRAW_PALETTE_COLOR_2[2], THEME_DRAW_PALETTE_COLOR_ALPHA};
+    draw_palette[2] = (SDL_Color){THEME_DRAW_PALETTE_COLOR_3[0], THEME_DRAW_PALETTE_COLOR_3[1], THEME_DRAW_PALETTE_COLOR_3[2], THEME_DRAW_PALETTE_COLOR_ALPHA};
+    draw_palette[3] = (SDL_Color){THEME_DRAW_PALETTE_COLOR_4[0], THEME_DRAW_PALETTE_COLOR_4[1], THEME_DRAW_PALETTE_COLOR_4[2], THEME_DRAW_PALETTE_COLOR_ALPHA};
+    draw_palette[4] = (SDL_Color){THEME_DRAW_PALETTE_COLOR_5[0], THEME_DRAW_PALETTE_COLOR_5[1], THEME_DRAW_PALETTE_COLOR_5[2], THEME_DRAW_PALETTE_COLOR_ALPHA};
+    draw_palette[5] = (SDL_Color){THEME_DRAW_PALETTE_COLOR_6[0], THEME_DRAW_PALETTE_COLOR_6[1], THEME_DRAW_PALETTE_COLOR_6[2], THEME_DRAW_PALETTE_COLOR_ALPHA};
+    draw_palette[6] = (SDL_Color){THEME_DRAW_PALETTE_COLOR_7[0], THEME_DRAW_PALETTE_COLOR_7[1], THEME_DRAW_PALETTE_COLOR_7[2], THEME_DRAW_PALETTE_COLOR_ALPHA};
+    
     memset(ds, 0, sizeof(DrawingState));
     ds->current_tool = TOOL_PEN;
-    ds->current_color = (SDL_Color){DRAW_PALETTE_COLOR_1, DRAW_PALETTE_COLOR_ALPHA};
-    ds->custom_color = (SDL_Color){DRAW_PALETTE_COLOR_1, DRAW_PALETTE_COLOR_ALPHA};
+    ds->current_color = (SDL_Color){THEME_DRAW_PALETTE_COLOR_1[0], THEME_DRAW_PALETTE_COLOR_1[1], THEME_DRAW_PALETTE_COLOR_1[2], THEME_DRAW_PALETTE_COLOR_ALPHA};
+    ds->custom_color = (SDL_Color){THEME_DRAW_PALETTE_COLOR_1[0], THEME_DRAW_PALETTE_COLOR_1[1], THEME_DRAW_PALETTE_COLOR_1[2], THEME_DRAW_PALETTE_COLOR_ALPHA};
     ds->brush_size = DRAW_BRUSH_SIZE_DEFAULT;
     ds->zoom_percent = 100;
     ds->show_palette = 1;
@@ -522,7 +523,7 @@ static void draw_render_all(SDL_Renderer* ren, SDL_Texture* canvas_tex, DrawingS
     SDL_SetRenderTarget(ren, canvas_tex);
     
     if (ds->needs_full_redraw) {
-        SDL_SetRenderDrawColor(ren, DRAW_CANVAS_CLEAR_COLOR, 0);
+        SDL_SetRenderDrawColor(ren, THEME_DRAW_CANVAS_CLEAR_COLOR[0], THEME_DRAW_CANVAS_CLEAR_COLOR[1], THEME_DRAW_CANVAS_CLEAR_COLOR[2], 0);
         SDL_RenderClear(ren);
         
         for (int i = 0; i < ds->stroke_count; i++) {
@@ -567,7 +568,7 @@ static void draw_render_palette(SDL_Renderer* ren, DrawingState* ds, int win_w, 
     
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
     SDL_Rect bg = {palette_x, palette_y, palette_w, palette_h};
-    SDL_SetRenderDrawColor(ren, TEXT_INPUT_BG_COLOR, 200);
+    SDL_SetRenderDrawColor(ren, THEME_TEXT_INPUT_BG_COLOR[0], THEME_TEXT_INPUT_BG_COLOR[1], THEME_TEXT_INPUT_BG_COLOR[2], 200);
     SDL_RenderFillRect(ren, &bg);
     
     for (int i = 0; i < 7; i++) {
@@ -686,7 +687,7 @@ static int draw_palette_click(DrawingState* ds, int mouse_x, int mouse_y, int wi
 
 static int export_save_dialog(char* out_path, size_t out_size, char* out_ext, char* default_filename) {
 #ifdef _WIN32
-    char filebuf[MAX_PATH];
+    char filebuf[PATH_MAX];
     snprintf(filebuf, sizeof(filebuf), "%s.png", default_filename);
 
     const char filter[] =
@@ -730,13 +731,16 @@ static int export_save_dialog(char* out_path, size_t out_size, char* out_ext, ch
     return 1;
 
 #else
-    const char *filters[] = {
+    char filename[PATH_MAX];
+    snprintf(filename, sizeof(filename), "%s.png", default_filename);
+
+    const char* filters[] = {
         "*.png", "*.jpg", "*.bmp", "*.tga"
     };
 
     const char* path = tinyfd_saveFileDialog(
         "Export Drawing",
-        "drawing.png",
+        filename,
         4,
         filters,
         "PNG, JPG, BMP, TGA"
@@ -803,7 +807,7 @@ static void draw_export(SDL_Renderer* ren,
     }
 
     SDL_SetRenderTarget(ren, export_tex);
-    SDL_SetRenderDrawColor(ren, LETTERBOX_COLOR, 0);
+    SDL_SetRenderDrawColor(ren, THEME_LETTERBOX_COLOR[0], THEME_LETTERBOX_COLOR[1], THEME_LETTERBOX_COLOR[2], 0);
     SDL_RenderClear(ren);
 
     if (include_video && video_tex) {

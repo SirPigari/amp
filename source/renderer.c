@@ -658,11 +658,11 @@ VideoRenderer* vr_create(SDL_Window* window, SDL_Renderer* renderer) {
     return vr;
 }
 
-static enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts) {
+static enum AVPixelFormat get_hw_format(AVCodecContext* ctx, const enum AVPixelFormat* pix_fmts) {
     if (!ctx || !pix_fmts) return AV_PIX_FMT_NONE;
     VideoRenderer* vr = (VideoRenderer*)ctx->opaque;
     if (!vr) return AV_PIX_FMT_NONE;
-    for (const enum AVPixelFormat *p = pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
+    for (const enum AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
         if (*p == vr->hw_pix_fmt) return *p;
     }
     return AV_PIX_FMT_NONE;
@@ -732,7 +732,7 @@ static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVC
 
         enum AVPixelFormat pix = AV_PIX_FMT_NONE;
         for (int i = 0; ; i++) {
-            const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+            const AVCodecHWConfig* config = avcodec_get_hw_config(codec, i);
             if (!config) break;
             if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) && config->device_type == type) {
                 pix = config->pix_fmt;

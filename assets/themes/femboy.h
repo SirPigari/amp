@@ -1,10 +1,6 @@
-#ifdef FEMBOY_THEME
-#ifndef FEMBOY_THEME_DEFINED
-#define FEMBOY_THEME_DEFINED
-
 /*
 Femboy theme for amp
-One of defaulty shipped themes with amp, 
+One of defaultly shipped themes with amp, 
 colors were chosen by markofwitch.
 */
 
@@ -106,6 +102,3 @@ colors were chosen by markofwitch.
     { "Iosevka (bundled)", "assets/Iosevka-Regular.ttc" }, \
     PLATFORM_FONTS \
 }
-
-#endif /* FEMBOY_THEME_DEFINED */
-#endif /* FEMBOY_THEME */

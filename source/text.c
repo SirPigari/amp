@@ -1,4 +1,4 @@
-#include <string.h>
+﻿#include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -47,8 +47,8 @@ static void draw_text(SDL_Renderer* ren, int x, int y, const char* text, SDL_Col
 }
 
 static void draw_text_shadow(SDL_Renderer* ren, int x, int y, const char* text, SDL_Color color) {
-    SDL_Color shadow = { SHADOW_COLOR, (Uint8)(color.a * 0.8f) };
-    draw_text(ren, x + SHADOW_OFFSET, y + SHADOW_OFFSET, text, shadow);
+    SDL_Color shadow = { THEME_SHADOW_COLOR[0], THEME_SHADOW_COLOR[1], THEME_SHADOW_COLOR[2], (Uint8)(color.a * 0.8f) };
+    draw_text(ren, x + THEME_SHADOW_OFFSET, y + THEME_SHADOW_OFFSET, text, shadow);
     draw_text(ren, x, y, text, color);
 }
 
@@ -308,14 +308,14 @@ static void text_input_draw(SDL_Renderer* r, TextInputState* ti) {
     
     SDL_Rect bg = { px, py, total_w, total_h };
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
-    draw_rect(r, bg, (SDL_Color){ TEXT_INPUT_BG_COLOR, 200 });
+    draw_rect(r, bg, (SDL_Color){ THEME_TEXT_INPUT_BG_COLOR[0], THEME_TEXT_INPUT_BG_COLOR[1], THEME_TEXT_INPUT_BG_COLOR[2], 200 });
     
     draw_text_shadow(r, px + padding, py + padding / 2, ti->prompt,
-                      (SDL_Color){ TEXT_INPUT_PROMPT_COLOR, 255 });
+                      (SDL_Color){ THEME_TEXT_INPUT_PROMPT_COLOR[0], THEME_TEXT_INPUT_PROMPT_COLOR[1], THEME_TEXT_INPUT_PROMPT_COLOR[2], 255 });
     
     SDL_Color content_color = ti->has_typed 
-        ? (SDL_Color){ TEXT_COLOR, 255 }
-        : (SDL_Color){ MUTED_COLOR, 200 };
+        ? (SDL_Color){ THEME_TEXT_COLOR[0], THEME_TEXT_COLOR[1], THEME_TEXT_COLOR[2], 255 }
+        : (SDL_Color){ THEME_MUTED_COLOR[0], THEME_MUTED_COLOR[1], THEME_MUTED_COLOR[2], 200 };
     draw_text_shadow(r, px + padding + prompt_w + padding, py + padding / 2, 
                       content, content_color);
 }

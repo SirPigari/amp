@@ -5,3 +5,5 @@
 *.dat
 /template.*
 /dist*
+/assets/amp.res
+*.lnk

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.7.0
+
+- Added runtime themes ([theme.c](source/theme.c))
+  - `--theme <name|path>` uses the theme
+  - `--themes` lists the avaible themes
+  - The theme files are in the style of header files
+- Added that on windows amp now registers itself for `.mkv` and `.mp4` files as a player
+- On first start it also creates an `amp.lnk`
+- Added `--reregister` and `--unregister` flags for windows
+- Added [amp.rc](assets/amp.rc) for windows properties
+- Added [ht.h](thirdparty/ht.h)
+- Added `--audio-driver <driver>` for setting the audio driver
+- Fixed:
+  - Added `--log-file` to help, was missing before
+  - Fixed an issue when sometimes it would not focus the window after `tinyfd_openFileDialog` (again, but it was less often)
+
 ## 1.6.0
 
 - Added drawing mode, toggle with <kbd>P</kbd> ([drawing.c](source/drawing.c)) 

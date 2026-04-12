@@ -1,7 +1,10 @@
 #define NOB_IMPLEMENTATION
 #define NOB_UNSTRIP_PREFIX
 #ifdef _WIN32
+#define _WIN32_WINNT 0x0601
 #include <windows.h>
+#include <shobjidl.h>
+#include <objbase.h>
 #include <commdlg.h>
 #include <commctrl.h>
 #include <shellapi.h>
@@ -38,6 +41,7 @@
 #endif
 
 #include "config.h"
+#include "theme.c"
 #include "text.c"
 #include "renderer.c"
 #include "../thirdparty/ascii.h"
@@ -522,6 +526,8 @@ void usage(FILE* out, const char* prog_name) {
     fprintf(out, "  -p, --paused                 Start playback in paused state\n");
     fprintf(out, "  -f, --fullscreen             Start in fullscreen mode\n");
     fprintf(out, "  -m, --maximized              Start with window maximized\n");
+    fprintf(out, "  --theme THEME_NAME           Load a theme from the assets/themes folder (e.g. --theme femboy)\n");
+    fprintf(out, "  --themes                     List available themes in the assets/themes folder\n");
     fprintf(out, "  --resolution [WxH|native]    Set window resolution (e.g. 1280x720 or native)\n");
     fprintf(out, "  --volume [0-200]             Set initial audio volume (default: 100)\n");
     fprintf(out, "  --speed [SPEED > 0]          Set initial playback speed (e.g. 0.5, 1.0, 1.5)\n");
@@ -529,6 +535,12 @@ void usage(FILE* out, const char* prog_name) {
     fprintf(out, "  --no-flash-debug             Disable on-screen flash for log messages\n");
     fprintf(out, "  --flash-debug-level [LEVEL]  Show log messages as on-screen flash (LEVEL: 0 - NO LOGS, 1 - INFO, 2 - WARNING, 3 - ERROR)\n");
     fprintf(out, "  --hw [auto|none|accel|TYPE]  Hardware decode backend (TYPE: vaapi [unix only], dxva2 [win only], d3d11va [win only])\n");
+    fprintf(out, "  --log-file FILE              Log to a file in addition to stderr\n");
+    fprintf(out, "  --audio-driver DRIVER        Set audio driver (e.g. pulseaudio, alsa, wasapi, directsound)\n");
+    #ifdef _WIN32
+    fprintf(out, "  --reregister                 Re-run Windows file association and shortcut setup\n");
+    fprintf(out, "  --unregister                 Remove Windows file association\n");
+    #endif
 }
 
 #ifdef _WIN32
@@ -538,6 +550,262 @@ static void attach_console_if_present(void) {
         freopen("CONOUT$", "w", stderr);
         freopen("CONIN$", "r", stdin);
     }
+}
+
+static void get_self_path(char* buf, size_t size) {
+    GetModuleFileNameA(NULL, buf, (DWORD)size);
+}
+
+static void get_self_dir(char* buf, size_t size) {
+    get_self_path(buf, size);
+    char* last = strrchr(buf, '\\');
+    if (last) *last = '\0';
+}
+
+static void create_shortcut(const char* target) {
+    char dir[PATH_MAX];
+    get_self_dir(dir, sizeof(dir));
+
+    char path[PATH_MAX+8];
+    snprintf(path, sizeof(path), "%s\\amp.lnk", dir);
+
+    CoInitialize(NULL);
+
+    IShellLinkA* link;
+
+    if (SUCCEEDED(CoCreateInstance(&CLSID_ShellLink, NULL,
+        CLSCTX_INPROC_SERVER,
+        &IID_IShellLinkA, (void**)&link))) {
+
+        link->lpVtbl->SetPath(link, target);
+        link->lpVtbl->SetDescription(link, "amp");
+
+        IPersistFile* file;
+
+        if (SUCCEEDED(link->lpVtbl->QueryInterface(link,
+            &IID_IPersistFile, (void**)&file))) {
+
+            wchar_t wpath[PATH_MAX];
+            MultiByteToWideChar(CP_ACP, 0, path, -1, wpath, PATH_MAX);
+            file->lpVtbl->Save(file, wpath, TRUE);
+            file->lpVtbl->Release(file);
+        }
+
+        link->lpVtbl->Release(link);
+    }
+
+    CoUninitialize();
+}
+
+static void create_startmenu_shortcut(const char* exe) {
+    char path[PATH_MAX];
+
+    snprintf(path, sizeof(path),
+        "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\amp.lnk");
+
+    CoInitialize(NULL);
+
+    IShellLinkA* link;
+
+    if (SUCCEEDED(CoCreateInstance(&CLSID_ShellLink, NULL,
+        CLSCTX_INPROC_SERVER,
+        &IID_IShellLinkA, (void**)&link))) {
+
+        link->lpVtbl->SetPath(link, exe);
+        link->lpVtbl->SetDescription(link, "amp");
+
+        IPersistFile* file;
+
+        if (SUCCEEDED(link->lpVtbl->QueryInterface(link,
+            &IID_IPersistFile, (void**)&file))) {
+
+            wchar_t wpath[PATH_MAX];
+            MultiByteToWideChar(CP_ACP, 0, path, -1, wpath, PATH_MAX);
+            file->lpVtbl->Save(file, wpath, TRUE);
+            file->lpVtbl->Release(file);
+        }
+
+        link->lpVtbl->Release(link);
+    }
+
+    CoUninitialize();
+}
+
+static void reg_set(HKEY root, const char* subkey,
+    const char* name, const char* value) {
+
+    HKEY key;
+
+    if (RegCreateKeyExA(root, subkey, 0, NULL, 0,
+        KEY_WRITE, NULL, &key, NULL) == ERROR_SUCCESS) {
+
+        if (value) {
+            RegSetValueExA(key, name, 0, REG_SZ,
+                (const BYTE*)value,
+                (DWORD)(strlen(value) + 1));
+        }
+
+        RegCloseKey(key);
+    }
+}
+
+static void reg_delete_value(HKEY root, const char* subkey, const char* name) {
+    HKEY key;
+
+    if (RegOpenKeyExA(root, subkey, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+        RegDeleteValueA(key, name);
+        RegCloseKey(key);
+    }
+}
+
+static int reg_get_bool(HKEY root, const char* subkey, const char* name) {
+    HKEY key;
+
+    if (RegOpenKeyExA(root, subkey, 0, KEY_READ, &key) != ERROR_SUCCESS)
+        return 0;
+
+    char buf[8];
+    DWORD size = sizeof(buf);
+    int result = 0;
+
+    if (RegQueryValueExA(key, name, NULL, NULL,
+        (BYTE*)buf, &size) == ERROR_SUCCESS) {
+        if (strcmp(buf, "1") == 0)
+            result = 1;
+    }
+
+    RegCloseKey(key);
+    return result;
+}
+
+static void register_progid_for_ext(const char* exe, const char* ext) {
+    char progid[32];
+    char label[64];
+
+    if (strcmp(ext, ".mp4") == 0) {
+        snprintf(progid, sizeof(progid), "amp.mp4");
+        snprintf(label, sizeof(label), "MP4 File");
+    } else {
+        snprintf(progid, sizeof(progid), "amp.mkv");
+        snprintf(label, sizeof(label), "MKV File");
+    }
+
+    char dir[PATH_MAX];
+    snprintf(dir, PATH_MAX, "%s", exe);
+    char* last = strrchr(dir, '\\');
+    if (last) *last = '\0';
+
+    char ico[PATH_MAX+16];
+    snprintf(ico, sizeof(ico), "%s\\assets\\file.ico", dir);
+
+    char key[256];
+    char cmd[512];
+
+    snprintf(key, sizeof(key), "Software\\Classes\\%s", progid);
+    reg_set(HKEY_CURRENT_USER, key, NULL, label);
+
+    snprintf(cmd, sizeof(cmd), "\"%s\" \"%%1\"", exe);
+    snprintf(key, sizeof(key), "Software\\Classes\\%s\\shell\\open\\command", progid);
+    reg_set(HKEY_CURRENT_USER, key, NULL, cmd);
+
+    snprintf(key, sizeof(key), "Software\\Classes\\%s\\DefaultIcon", progid);
+    reg_set(HKEY_CURRENT_USER, key, NULL, ico);
+}
+
+static void register_openwith(const char* ext) {
+    char progid[32];
+    snprintf(progid, sizeof(progid),
+        strcmp(ext, ".mp4") == 0 ? "amp.mp4" : "amp.mkv");
+
+    char key[256];
+    snprintf(key, sizeof(key), "Software\\Classes\\%s\\OpenWithProgids", ext);
+    reg_set(HKEY_CURRENT_USER, key, progid, "");
+}
+
+static void register_ext(const char* ext) {
+    char progid[32];
+    snprintf(progid, sizeof(progid),
+        strcmp(ext, ".mp4") == 0 ? "amp.mp4" : "amp.mkv");
+
+    char key[256];
+
+    snprintf(key, sizeof(key), "Software\\Classes\\%s", ext);
+    reg_set(HKEY_CURRENT_USER, key, NULL, progid);
+
+    snprintf(key, sizeof(key), "Software\\Classes\\%s\\OpenWithProgids", ext);
+    reg_set(HKEY_CURRENT_USER, key, progid, "");
+}
+
+static void clear_fileext_cache(const char* ext) {
+    char key[256];
+
+    snprintf(key, sizeof(key),
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\%s",
+        ext);
+
+    RegDeleteTreeA(HKEY_CURRENT_USER, key);
+}
+
+void amp_register(bool reregister) {
+    const char* flag_key = "Software\\amp";
+
+    if (reg_get_bool(HKEY_CURRENT_USER, flag_key, "installed") && !reregister)
+        return;
+
+    char exe[PATH_MAX];
+    get_self_path(exe, sizeof(exe));
+
+    clear_fileext_cache(".mp4");
+    clear_fileext_cache(".mkv");
+
+    create_shortcut(exe);
+    create_startmenu_shortcut(exe);
+
+    register_progid_for_ext(exe, ".mp4");
+    register_progid_for_ext(exe, ".mkv");
+
+    register_openwith(".mp4");
+    register_openwith(".mkv");
+
+    register_ext(".mp4");
+    register_ext(".mkv");
+
+    reg_set(HKEY_CURRENT_USER,
+        "Software\\Classes\\Applications\\main.exe",
+        "FriendlyAppName", "amp");
+
+    reg_set(HKEY_CURRENT_USER, flag_key, "installed", "1");
+
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);
+
+    nob_log(NOB_INFO, "amp registered as handler for .mp4 and .mkv files");
+}
+
+void amp_unregister(void) {
+    RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\Classes\\amp.mp4");
+    RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\Classes\\amp.mkv");
+
+    reg_delete_value(HKEY_CURRENT_USER,
+        "Software\\Classes\\.mp4\\OpenWithProgids", "amp.mp4");
+    reg_delete_value(HKEY_CURRENT_USER,
+        "Software\\Classes\\.mkv\\OpenWithProgids", "amp.mkv");
+
+    reg_delete_value(HKEY_CURRENT_USER,
+        "Software\\Classes\\Applications\\main.exe", "FriendlyAppName");
+
+    RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\amp");
+
+    RegDeleteTreeA(HKEY_CURRENT_USER,
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.mp4");
+    RegDeleteTreeA(HKEY_CURRENT_USER,
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.mkv");
+
+    DeleteFileA(
+        "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\amp.lnk");
+
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);
+
+    nob_log(NOB_INFO, "amp unregistered as handler for .mp4 and .mkv files");
 }
 #endif
 
@@ -584,6 +852,7 @@ char* open_file_dialog(const char* filters[], int filter_count, const char* filt
     if (!filename) return NULL;
     if (validator && !validator(filename)) return NULL;
     char* abs_path = abspath_temp_safe(filename);
+    SDL_PumpEvents();
     return abs_path;
 }
 
@@ -1179,7 +1448,7 @@ static void menu_pump_playback_tick(void) {
 
     run_playback_tick(vr, *g_menu_playback_speed_ptr);
 
-    SDL_SetRenderDrawColor(g_menu_ren, LETTERBOX_COLOR, 255);
+    SDL_SetRenderDrawColor(g_menu_ren, THEME_LETTERBOX_COLOR[0], THEME_LETTERBOX_COLOR[1], THEME_LETTERBOX_COLOR[2], 255);
     SDL_RenderClear(g_menu_ren);
 
     SDL_Texture* tex = vr_get_texture(vr);
@@ -1637,7 +1906,7 @@ static void take_screenshot(VideoRenderer* vr,
     }
 
     SDL_SetRenderTarget(ren, temp_tex);
-    SDL_SetRenderDrawColor(ren, LETTERBOX_COLOR, 255);
+    SDL_SetRenderDrawColor(ren, THEME_LETTERBOX_COLOR[0], THEME_LETTERBOX_COLOR[1], THEME_LETTERBOX_COLOR[2], 255);
     SDL_RenderClear(ren);
 
     SDL_RenderCopy(ren, frame_tex, NULL, &video_dst);
@@ -1688,6 +1957,8 @@ static void take_screenshot(VideoRenderer* vr,
 }
 
 int main(int argc, char** argv) {
+    nob_set_log_handler(amp_log_handler);
+    
     #ifdef _WIN32
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     AddDllDirectory(L"./dll");
@@ -1699,9 +1970,8 @@ int main(int argc, char** argv) {
 
     InitCommonControlsEx(&icc);
     attach_console_if_present();
+    SetCurrentProcessExplicitAppUserModelID(L"amp");
     #endif
-
-    nob_set_log_handler(amp_log_handler);
 
     VideoRenderer* vr = NULL;
     char* video_file = NULL;
@@ -1766,8 +2036,16 @@ int main(int argc, char** argv) {
     int draw_mode_active = 0;
     bool draw_mode_was_paused = false;
 
+    #ifndef _WIN32
+    char audio_driver[64] = "pulseaudio,alsa";
+    #else
+    char audio_driver[64] = "";
+    #endif
+
 #ifndef _WIN32
     setenv("LIBVA_DRIVER_NAME", "", 1);
+#else
+    int reregister = false;
 #endif
 
     for (int i = 1; i < argc; ++i) {
@@ -1848,6 +2126,12 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
             fprintf(stdout, "amp version %d.%d.%d\n", (AMP_VERSION >> 16) & 0xFF, (AMP_VERSION >> 8) & 0xFF, AMP_VERSION & 0xFF);
             return 0;
+        #ifdef _WIN32
+        } else if (strcmp(argv[i], "--reregister") == 0) {
+            reregister = true;
+        } else if (strcmp(argv[i], "--unregister") == 0) {
+            reregister = -1;
+        #endif
         } else if (strcmp(argv[i], "--info") == 0 || strcmp(argv[i], "-i") == 0) {
             fprintf(stdout, "amp - A simple video player\n");
             fprintf(stdout, "version: %d.%d.%d\n", (AMP_VERSION >> 16) & 0xFF, (AMP_VERSION >> 8) & 0xFF, AMP_VERSION & 0xFF);
@@ -1858,6 +2142,7 @@ int main(int argc, char** argv) {
             fprintf(stdout, "  TTF version: %d.%d.%d\n", TTF_MAJOR_VERSION, TTF_MINOR_VERSION, TTF_PATCHLEVEL);
             fprintf(stdout, "  FFmpeg version: %d.%d.%d\n", LIBAVFORMAT_VERSION_MAJOR, LIBAVFORMAT_VERSION_MINOR, LIBAVFORMAT_VERSION_MICRO);
             fprintf(stdout, "  LibAss version: %d.%d.%d\n", (LIBASS_VERSION >> 24) & 0xFF, (LIBASS_VERSION >> 16) & 0xFF, (LIBASS_VERSION >> 8) & 0xFF);
+            fprintf(stdout, "  SIMD: %s\n", USE_SSE2_SIMD ? "SSE2" : "None");
             fprintf(stdout, "  Compiler: %s ", CC);
             const char* flags[] = { CFLAGS, NULL };
             for (int j = 0; flags[j]; j++) fprintf(stdout, "%s ", flags[j]);
@@ -1867,6 +2152,37 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "--ascii") == 0) {
             print_ascii_art();
             return 0;
+        } else if (strcmp(argv[i], "--theme") == 0) {
+            if (i + 1 < argc) {
+                const char* theme_name = argv[i + 1];
+                if (is_valid_theme_name(theme_name)) {
+                    load_theme(theme_name);
+                    if (THEME_DEFAULT_FONTS_COUNT > 0) {
+                        for (int j = 0; j < THEME_DEFAULT_FONTS_COUNT && j < default_font_count; j++) {
+                            default_fonts[j].name = THEME_DEFAULT_FONTS_MAP[j].name;
+                            default_fonts[j].path = THEME_DEFAULT_FONTS_MAP[j].path;
+                        }
+                    }
+                    draw_init(&draw_state);
+                } else {
+                    nob_log(NOB_WARNING, "Invalid theme name: %s. Using default theme.", theme_name);
+                }
+            } else {
+                nob_log(NOB_WARNING, "No theme name specified after --theme");
+            }
+            i++;
+        } else if (strcmp(argv[i], "--themes") == 0) {
+            list_themes(stdout);
+            return 0;
+        } else if (strcmp(argv[i], "--audio-driver") == 0 && i + 1 < argc) {
+            const char* driver_name = argv[i + 1];
+            if (driver_name && strlen(driver_name) < sizeof(audio_driver)) {
+                strncpy(audio_driver, driver_name, sizeof(audio_driver) - 1);
+                audio_driver[sizeof(audio_driver) - 1] = '\0';
+            } else {
+                nob_log(NOB_WARNING, "Invalid audio driver name: %s", driver_name);
+            }
+            i++;
         } else if (argv[i][0] != '-') {
             video_file = abspath_temp_safe(argv[i]);
         } else {
@@ -1875,8 +2191,11 @@ int main(int argc, char** argv) {
     }
     
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
-#ifndef _WIN32
-    SDL_SetHint(SDL_HINT_AUDIODRIVER, "pulseaudio,alsa");
+    if (audio_driver[0]) SDL_SetHint(SDL_HINT_AUDIODRIVER, audio_driver);
+#ifdef _WIN32
+    if (reregister == -1) amp_unregister();
+    else amp_register((bool)reregister);
+    SDL_PumpEvents();
 #endif
     
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
@@ -1888,7 +2207,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     nob_log(NOB_INFO, "SDL initialized successfully");
-    nob_log(NOB_INFO, "Using '"THEME_NAME"' theme");
+    nob_log(NOB_INFO, "Using '%s' theme", THEME_NAME);
     nob_log(NOB_INFO, "HW option: %s", hw_option);
     
     bool font_loaded = false;
@@ -1922,7 +2241,6 @@ int main(int argc, char** argv) {
             (const char*[]){"*.mkv", "*.mp4"}, 2, "Video Files (*.mkv, *.mp4)", false,
             "Select Video File", NULL, &is_supported_video_file
         );
-        SDL_PumpEvents();
         if (!video_file || !is_supported_video_file(video_file)) {
             nob_log(NOB_ERROR, "No file selected or unsupported file type. Exiting.");
             return 1;
@@ -1930,6 +2248,8 @@ int main(int argc, char** argv) {
     } else {
         nob_log(NOB_INFO, "Video file specified: %s", video_file);
     }
+
+    SDL_PumpEvents();
 
     SDL_Window* win = SDL_CreateWindow(
         "(no file selected)",
@@ -2093,8 +2413,8 @@ int main(int argc, char** argv) {
         {
             SDL_GetWindowSize(win, &w, &h);
             overlay_rect = (SDL_Rect){ 0, h - overlay_h, w, overlay_h };
-            timeline_rect = (SDL_Rect){ margin, h - overlay_h + 12, w - margin * 2 - 40, TIMELINE_HEIGHT };
-            timeline_hitbox = (SDL_Rect){ timeline_rect.x, timeline_rect.y - TIMELINE_HITBOX_PADDING, timeline_rect.w, TIMELINE_HEIGHT + TIMELINE_HITBOX_PADDING * 2 };
+            timeline_rect = (SDL_Rect){ margin, h - overlay_h + 12, w - margin * 2 - 40, THEME_TIMELINE_HEIGHT };
+            timeline_hitbox = (SDL_Rect){ timeline_rect.x, timeline_rect.y - THEME_TIMELINE_HITBOX_PADDING, timeline_rect.w, THEME_TIMELINE_HEIGHT + THEME_TIMELINE_HITBOX_PADDING * 2 };
             volume_rect = (SDL_Rect){ w - margin - 32, h - overlay_h + 40, 6, 50 };
             hamburger = (SDL_Rect){ w - margin - 28, h - overlay_h + 12, 24, 20 };
             
@@ -2613,7 +2933,7 @@ int main(int argc, char** argv) {
                                 bm->time      = vr_get_time(vr);
                                 snprintf(bm->name, BOOKMARK_NAME_MAX, "%s",
                                         format_time_temp(bm->time));
-                                bm->color_rgb = DEFAULT_BOOKMARK_COLOR;
+                                bm->color_rgb = THEME_DEFAULT_BOOKMARK_COLOR;
                                 bm->is_default_color = true;
                                 bookmark_count++;
                                 sort_bookmarks_by_time(bookmarks, bookmark_count);
@@ -3237,7 +3557,7 @@ int main(int argc, char** argv) {
                         bm->time      = vr_get_time(vr);
                         snprintf(bm->name, BOOKMARK_NAME_MAX, "%s",
                                  format_time_temp(bm->time));
-                        bm->color_rgb = DEFAULT_BOOKMARK_COLOR;
+                        bm->color_rgb = THEME_DEFAULT_BOOKMARK_COLOR;
                         bm->is_default_color = true;
                         bookmark_count++;
                         sort_bookmarks_by_time(bookmarks, bookmark_count);
@@ -3517,7 +3837,7 @@ int main(int argc, char** argv) {
                     if (dur > 0.0 && vr) {
                         int bm_idx = -1;
                         double bm_time = 0.0;
-                        if (find_nearest_bookmark(bookmarks, bookmark_count, dur, timeline_rect, mx, TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH, &bm_idx, &bm_time)) {
+                        if (find_nearest_bookmark(bookmarks, bookmark_count, dur, timeline_rect, mx, THEME_TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH, &bm_idx, &bm_time)) {
                             bm_ctx_open = 1;
                             bm_ctx_x = mx;
                             bm_ctx_y = my;
@@ -3619,10 +3939,10 @@ int main(int argc, char** argv) {
                     
                     if (audio_menu_open && !handled) {
                         int count = vr ? vr_get_audio_track_count(vr) : 0;
-                        int max_items = MENU_MAX_VISIBLE_ITEMS;
+                        int max_items = THEME_MENU_MAX_VISIBLE_ITEMS;
                         int display_count = count > max_items ? max_items : count;
-                        int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
-                        SDL_Rect list = { menu_panel.x - MENU_DROPDOWN_WIDTH, audio_box.y, MENU_DROPDOWN_WIDTH - (count > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h * display_count };
+                        int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
+                        SDL_Rect list = { menu_panel.x - THEME_MENU_DROPDOWN_WIDTH, audio_box.y, THEME_MENU_DROPDOWN_WIDTH - (count > max_items ? THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h * display_count };
                         if (list.x < margin) list.x = margin;
                         if (point_in_rect(mx, my, list)) {
                             int item_y = (my - list.y) / item_h;
@@ -3637,14 +3957,14 @@ int main(int argc, char** argv) {
                     
                     if (subtitle_menu_open && !handled) {
                         int count = vr ? vr_get_subtitle_track_count(vr) : 0;
-                        int max_items = MENU_MAX_VISIBLE_ITEMS;
+                        int max_items = THEME_MENU_MAX_VISIBLE_ITEMS;
                         int total = count + 1;
                         int display_count = total > max_items ? max_items : total;
-                        int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
+                        int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
                         SDL_Rect list = {
-                            menu_panel.x - MENU_DROPDOWN_WIDTH,
+                            menu_panel.x - THEME_MENU_DROPDOWN_WIDTH,
                             subtitle_box.y,
-                            MENU_DROPDOWN_WIDTH - (total > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0),
+                            THEME_MENU_DROPDOWN_WIDTH - (total > max_items ? THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH : 0),
                             item_h * display_count
                         };
                         if (list.x < margin) list.x = margin;
@@ -3667,13 +3987,13 @@ int main(int argc, char** argv) {
                     
                     if (font_menu_open && !handled) {
 
-                        int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
+                        int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
                         int count = default_font_count + 1;
 
                         SDL_Rect list = {
-                            menu_panel.x - MENU_DROPDOWN_WIDTH,
+                            menu_panel.x - THEME_MENU_DROPDOWN_WIDTH,
                             font_box.y,
-                            MENU_DROPDOWN_WIDTH,
+                            THEME_MENU_DROPDOWN_WIDTH,
                             item_h * count
                         };
 
@@ -3711,8 +4031,8 @@ int main(int argc, char** argv) {
                     }
 
                     if (playback_menu_open && !handled) {
-                        int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
-                        SDL_Rect list = { menu_panel.x - MENU_DROPDOWN_WIDTH, playback_box.y, MENU_DROPDOWN_WIDTH, item_h * 8 };
+                        int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
+                        SDL_Rect list = { menu_panel.x - THEME_MENU_DROPDOWN_WIDTH, playback_box.y, THEME_MENU_DROPDOWN_WIDTH, item_h * 8 };
                         if (list.x < margin) list.x = margin;
                         int win_w, win_h;
                         SDL_GetWindowSize(win, &win_w, &win_h);
@@ -3739,8 +4059,8 @@ int main(int argc, char** argv) {
                     }
 
                     if (subtitle_settings_menu_open && !handled) {
-                        int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
-                        SDL_Rect list = { menu_panel.x - MENU_DROPDOWN_WIDTH, subtitle_settings_box.y, MENU_DROPDOWN_WIDTH, item_h * subtitle_settings_row_count };
+                        int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
+                        SDL_Rect list = { menu_panel.x - THEME_MENU_DROPDOWN_WIDTH, subtitle_settings_box.y, THEME_MENU_DROPDOWN_WIDTH, item_h * subtitle_settings_row_count };
                         if (list.x < margin) list.x = margin;
                         int win_w, win_h;
                         SDL_GetWindowSize(win, &win_w, &win_h);
@@ -3754,7 +4074,7 @@ int main(int argc, char** argv) {
                         if (subtitle_settings_value_menu_row == 1) value_count = subtitle_size_count;
                         if (subtitle_settings_value_menu_row == 2) value_count = subtitle_move_count;
 
-                        SDL_Rect value_list = { list.x - MENU_DROPDOWN_WIDTH - 8, list.y, MENU_DROPDOWN_WIDTH, item_h * value_count };
+                        SDL_Rect value_list = { list.x - THEME_MENU_DROPDOWN_WIDTH - 8, list.y, THEME_MENU_DROPDOWN_WIDTH, item_h * value_count };
                         if (value_list.x < margin) value_list.x = margin;
                         if (value_list.y + value_list.h > win_h) {
                             value_list.y = win_h - value_list.h;
@@ -3843,7 +4163,7 @@ int main(int argc, char** argv) {
                                         ((uint32_t)out_rgb[0] << 16) |
                                         ((uint32_t)out_rgb[1] << 8) |
                                         (uint32_t)out_rgb[2];
-                                    if (bookmarks[bm_ctx_idx].color_rgb != DEFAULT_BOOKMARK_COLOR) {
+                                    if (bookmarks[bm_ctx_idx].color_rgb != (uint32_t)THEME_DEFAULT_BOOKMARK_COLOR) {
                                         bookmarks[bm_ctx_idx].is_default_color = false;
                                     } else {
                                         bookmarks[bm_ctx_idx].is_default_color = true;
@@ -3891,7 +4211,7 @@ int main(int argc, char** argv) {
                         if (dur > 0.0 && vr) {
                             int bm_idx = -1;
                             double bm_time = 0.0;
-                            if (find_nearest_bookmark(bookmarks, bookmark_count, dur, timeline_rect, mx, TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH, &bm_idx, &bm_time)) {
+                            if (find_nearest_bookmark(bookmarks, bookmark_count, dur, timeline_rect, mx, THEME_TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH, &bm_idx, &bm_time)) {
                                 if (video_file) {
                                     double bt_bm = vr_get_time(vr);
                                     seek_and_preview_if_paused(vr, bm_time, paused);
@@ -4003,7 +4323,7 @@ int main(int argc, char** argv) {
         
         overlay_alpha = lerpf(overlay_alpha, overlay_target, clampf(dt * 6.0f, 0.0f, 1.0f));
 
-        SDL_SetRenderDrawColor(ren, LETTERBOX_COLOR, 255);
+        SDL_SetRenderDrawColor(ren, THEME_LETTERBOX_COLOR[0], THEME_LETTERBOX_COLOR[1], THEME_LETTERBOX_COLOR[2], 255);
         SDL_RenderClear(ren);
 
         int window_w = 0;
@@ -4043,10 +4363,10 @@ int main(int argc, char** argv) {
             int w, h;
             SDL_GetWindowSize(win, &w, &h);
 
-            SDL_Color panel =  { PANEL_COLOR,  (Uint8)(200 * overlay_alpha) };
-            SDL_Color text =   { TEXT_COLOR,   (Uint8)(255 * overlay_alpha) };
-            SDL_Color accent = { ACCENT_COLOR, (Uint8)(230 * overlay_alpha) };
-            SDL_Color muted =  { MUTED_COLOR,  (Uint8)(200 * overlay_alpha) };
+            SDL_Color panel =  { THEME_PANEL_COLOR[0],  THEME_PANEL_COLOR[1],  THEME_PANEL_COLOR[2],  (Uint8)(200 * overlay_alpha) };
+            SDL_Color text =   { THEME_TEXT_COLOR[0],   THEME_TEXT_COLOR[1],   THEME_TEXT_COLOR[2],   (Uint8)(255 * overlay_alpha) };
+            SDL_Color accent = { THEME_ACCENT_COLOR[0], THEME_ACCENT_COLOR[1], THEME_ACCENT_COLOR[2], (Uint8)(230 * overlay_alpha) };
+            SDL_Color muted =  { THEME_MUTED_COLOR[0],  THEME_MUTED_COLOR[1],  THEME_MUTED_COLOR[2],  (Uint8)(200 * overlay_alpha) };
 
             draw_rect(ren, overlay_rect, panel);
 
@@ -4057,25 +4377,25 @@ int main(int argc, char** argv) {
 
             SDL_Rect base = timeline_rect;
             base.h = 6;
-            draw_rect(ren, base, (SDL_Color){ OVERLAY_COLOR, (Uint8)(180 * overlay_alpha) });
+            draw_rect(ren, base, (SDL_Color){ THEME_OVERLAY_COLOR[0], THEME_OVERLAY_COLOR[1], THEME_OVERLAY_COLOR[2], (Uint8)(180 * overlay_alpha) });
             if (vr && dur > 0.0) {
                 int chapter_count = get_media_chapter_count(vr);
                 for (int i = 0; i < chapter_count; i++) {
                     double chapter_time = get_media_chapter_time(vr, i);
                     if (chapter_time < 0.0 || chapter_time > dur) continue;
                     int chapter_x = base.x + (int)((chapter_time / dur) * base.w);
-                    SDL_Rect chapter_line = { chapter_x, base.y, TIMELINE_CHAPTER_MARKER_WIDTH, base.h };
-                    draw_rect(ren, chapter_line, (SDL_Color){ CHAPTER_MARKER_COLOR, (Uint8)(190 * overlay_alpha) });
+                    SDL_Rect chapter_line = { chapter_x, base.y, THEME_TIMELINE_CHAPTER_MARKER_WIDTH, base.h };
+                    draw_rect(ren, chapter_line, (SDL_Color){ THEME_CHAPTER_MARKER_COLOR[0], THEME_CHAPTER_MARKER_COLOR[1], THEME_CHAPTER_MARKER_COLOR[2], (Uint8)(190 * overlay_alpha) });
                 }
                 for (int i = 0; i < bookmark_count; i++) {
                     double bm_time = bookmarks[i].time;
                     if (bm_time < 0.0 || bm_time > dur) continue;
                     int bm_x = base.x + (int)((bm_time / dur) * base.w);
-                    SDL_Rect bm_line = { bm_x, base.y, TIMELINE_BOOKMARK_MARKER_WIDTH, base.h };
+                    SDL_Rect bm_line = { bm_x, base.y, THEME_TIMELINE_BOOKMARK_MARKER_WIDTH, base.h };
                     uint32_t col_rgb;
                     #if !BM_OVERRIDE_DEFAULT_COLOR
                     if (bookmarks[i].is_default_color) {
-                        col_rgb = DEFAULT_BOOKMARK_COLOR;
+                        col_rgb = THEME_DEFAULT_BOOKMARK_COLOR;
                     } else {
                         col_rgb = bookmarks[i].color_rgb;
                     }
@@ -4090,13 +4410,13 @@ int main(int argc, char** argv) {
             }
             SDL_Rect fill = { base.x, base.y, (int)(base.w * t), base.h };
             draw_rect(ren, fill, accent);
-            SDL_Rect handle = { base.x + (int)(base.w * t) - ( TIMELINE_THUMB_SIZE / 2), base.y - (TIMELINE_THUMB_SIZE / 3), TIMELINE_THUMB_SIZE, TIMELINE_THUMB_SIZE };
-            draw_rect(ren, handle, (SDL_Color){ TIMELINE_THUMB_COLOR, (Uint8)(220 * overlay_alpha) });
+            SDL_Rect handle = { base.x + (int)(base.w * t) - ( THEME_TIMELINE_THUMB_SIZE / 2), base.y - (THEME_TIMELINE_THUMB_SIZE / 3), THEME_TIMELINE_THUMB_SIZE, THEME_TIMELINE_THUMB_SIZE };
+            draw_rect(ren, handle, (SDL_Color){ THEME_TIMELINE_THUMB_COLOR[0], THEME_TIMELINE_THUMB_COLOR[1], THEME_TIMELINE_THUMB_COLOR[2], (Uint8)(220 * overlay_alpha) });
 
             if (vr) {
                 const char* media_title = get_media_title(vr);
                 if (!media_title) media_title = "";
-                draw_text_shadow(ren, margin, base.y - 45, media_title, (SDL_Color){ MEDIA_TITLE_COLOR, (Uint8)(220 * overlay_alpha) });
+                draw_text_shadow(ren, margin, base.y - 45, media_title, (SDL_Color){ THEME_MEDIA_TITLE_COLOR[0], THEME_MEDIA_TITLE_COLOR[1], THEME_MEDIA_TITLE_COLOR[2], (Uint8)(220 * overlay_alpha) });
             }
 
             if (vr && dur > 0.0) {
@@ -4106,7 +4426,7 @@ int main(int argc, char** argv) {
                 if (point_in_rect(mouse_x, mouse_y, timeline_hitbox)) {
                     int bm_idx = -1;
                     double bm_time = 0.0;
-                    if (find_nearest_bookmark(bookmarks, bookmark_count, dur, timeline_rect, mouse_x, TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH, &bm_idx, &bm_time)) {
+                    if (find_nearest_bookmark(bookmarks, bookmark_count, dur, timeline_rect, mouse_x, THEME_TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH, &bm_idx, &bm_time)) {
                         char bm_ts[32];
                         char hover_text[224];
                         format_time(bm_time, bm_ts, sizeof(bm_ts));
@@ -4118,12 +4438,12 @@ int main(int argc, char** argv) {
                         if (hover_x < margin) hover_x = margin;
                         if (hover_y < margin) hover_y = margin;
                         SDL_Rect hover_bg = { hover_x - 4, hover_y - 2, hover_w + 8, hover_h + 4 };
-                        draw_rect(ren, hover_bg, (SDL_Color){ BOOKMARK_HOVER_BG_COLOR, (Uint8)(220 * overlay_alpha) });
+                        draw_rect(ren, hover_bg, (SDL_Color){ THEME_BOOKMARK_HOVER_BG_COLOR[0], THEME_BOOKMARK_HOVER_BG_COLOR[1], THEME_BOOKMARK_HOVER_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
                         draw_text_shadow(ren, hover_x, hover_y, hover_text, text);
                     } else {
                         int chapter_idx = -1;
                         double chapter_time = 0.0;
-                        if (find_nearest_chapter(vr, dur, timeline_rect, mouse_x, TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH, &chapter_idx, &chapter_time)) {
+                        if (find_nearest_chapter(vr, dur, timeline_rect, mouse_x, THEME_TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH, &chapter_idx, &chapter_time)) {
                             char chapter_name[160];
                             char chapter_ts[32];
                             char hover_text[224];
@@ -4141,7 +4461,7 @@ int main(int argc, char** argv) {
                             if (hover_y < margin) hover_y = margin;
 
                             SDL_Rect hover_bg = { hover_x - 4, hover_y - 2, hover_w + 8, hover_h + 4 };
-                            draw_rect(ren, hover_bg, (SDL_Color){ CHAPTER_HOVER_BG_COLOR, (Uint8)(220 * overlay_alpha) });
+                            draw_rect(ren, hover_bg, (SDL_Color){ THEME_CHAPTER_HOVER_BG_COLOR[0], THEME_CHAPTER_HOVER_BG_COLOR[1], THEME_CHAPTER_HOVER_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
                             draw_text_shadow(ren, hover_x, hover_y, hover_text, text);
                         }
                     }
@@ -4157,7 +4477,7 @@ int main(int argc, char** argv) {
             TTF_SizeUTF8(ui_font, right_time, &right_w, &right_h);
             draw_text_shadow(ren, w - margin - right_w - 40, h - overlay_h + 24, right_time, text);
 
-            draw_rect(ren, volume_rect, (SDL_Color){ OVERLAY_COLOR, (Uint8)(180 * overlay_alpha) });
+            draw_rect(ren, volume_rect, (SDL_Color){ THEME_OVERLAY_COLOR[0], THEME_OVERLAY_COLOR[1], THEME_OVERLAY_COLOR[2], (Uint8)(180 * overlay_alpha) });
             float vol_t = clampf(volume_percent / 200.0f, 0.0f, 1.0f);
             SDL_Rect vol_fill = { volume_rect.x, volume_rect.y + (int)(volume_rect.h * (1.0f - vol_t)), volume_rect.w, (int)(volume_rect.h * vol_t) };
             draw_rect(ren, vol_fill, accent);
@@ -4165,40 +4485,40 @@ int main(int argc, char** argv) {
             snprintf(vol_text, sizeof(vol_text), "%d%%", (int)volume_percent);
             draw_text_shadow(ren, volume_rect.x - 28, volume_rect.y + volume_rect.h + 6, vol_text, muted);
 
-            draw_rect(ren, hamburger, (SDL_Color){ HAMBURGER_BG_COLOR, (Uint8)(200 * overlay_alpha) });
+            draw_rect(ren, hamburger, (SDL_Color){ THEME_HAMBURGER_BG_COLOR[0], THEME_HAMBURGER_BG_COLOR[1], THEME_HAMBURGER_BG_COLOR[2], (Uint8)(200 * overlay_alpha) });
 
-            int line_width  = hamburger.w - HAMBURGER_LINE_MARGIN * 2;
+            int line_width  = hamburger.w - THEME_HAMBURGER_LINE_MARGIN * 2;
 
             float first_center_y  = hamburger.y + hamburger.h / 4.0f;
             float second_center_y = hamburger.y + hamburger.h / 2.0f;
             float third_center_y  = hamburger.y + 3 * hamburger.h / 4.0f;
 
-            SDL_Color shadow_color = { SHADOW_COLOR, (Uint8)(100 * overlay_alpha)};
+            SDL_Color shadow_color = { THEME_SHADOW_COLOR[0], THEME_SHADOW_COLOR[1], THEME_SHADOW_COLOR[2], (Uint8)(100 * overlay_alpha)};
 
             float centers[3] = { first_center_y, second_center_y, third_center_y };
             for (int i = 0; i < 3; i++) {
                 SDL_Rect line = {
-                    hamburger.x + HAMBURGER_LINE_MARGIN,
-                    (int)(centers[i] - HAMBURGER_LINE_HEIGHT / 2.0f),
+                    hamburger.x + THEME_HAMBURGER_LINE_MARGIN,
+                    (int)(centers[i] - THEME_HAMBURGER_LINE_HEIGHT / 2.0f),
                     line_width,
-                    HAMBURGER_LINE_HEIGHT
+                    THEME_HAMBURGER_LINE_HEIGHT
                 };
                 SDL_Rect shadow = line;
-                shadow.x += SHADOW_OFFSET;
-                shadow.y += SHADOW_OFFSET;
+                shadow.x += THEME_SHADOW_OFFSET;
+                shadow.y += THEME_SHADOW_OFFSET;
                 draw_rect(ren, shadow, shadow_color);
 
                 draw_rect(ren, line, text);
             }
 
             if (menu_open) {
-                draw_rect(ren, menu_panel, (SDL_Color){ MENU_PANEL_BG_COLOR, (Uint8)(220 * overlay_alpha) });
-                draw_rect(ren, audio_box, (SDL_Color){ MENU_PANEL_ITEM_BG_COLOR, (Uint8)(200 * overlay_alpha) });
-                draw_rect(ren, subtitle_box, (SDL_Color){ MENU_PANEL_ITEM_BG_COLOR, (Uint8)(200 * overlay_alpha) });
-                draw_rect(ren, font_box, (SDL_Color){ MENU_PANEL_ITEM_BG_COLOR, (Uint8)(200 * overlay_alpha) });
-                draw_rect(ren, playback_box, (SDL_Color){ MENU_PANEL_ITEM_BG_COLOR, (Uint8)(200 * overlay_alpha) });
+                draw_rect(ren, menu_panel, (SDL_Color){ THEME_MENU_PANEL_BG_COLOR[0], THEME_MENU_PANEL_BG_COLOR[1], THEME_MENU_PANEL_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
+                draw_rect(ren, audio_box, (SDL_Color){ THEME_MENU_PANEL_ITEM_BG_COLOR[0], THEME_MENU_PANEL_ITEM_BG_COLOR[1], THEME_MENU_PANEL_ITEM_BG_COLOR[2], (Uint8)(200 * overlay_alpha) });
+                draw_rect(ren, subtitle_box, (SDL_Color){ THEME_MENU_PANEL_ITEM_BG_COLOR[0], THEME_MENU_PANEL_ITEM_BG_COLOR[1], THEME_MENU_PANEL_ITEM_BG_COLOR[2], (Uint8)(200 * overlay_alpha) });
+                draw_rect(ren, font_box, (SDL_Color){ THEME_MENU_PANEL_ITEM_BG_COLOR[0], THEME_MENU_PANEL_ITEM_BG_COLOR[1], THEME_MENU_PANEL_ITEM_BG_COLOR[2], (Uint8)(200 * overlay_alpha) });
+                draw_rect(ren, playback_box, (SDL_Color){ THEME_MENU_PANEL_ITEM_BG_COLOR[0], THEME_MENU_PANEL_ITEM_BG_COLOR[1], THEME_MENU_PANEL_ITEM_BG_COLOR[2], (Uint8)(200 * overlay_alpha) });
                 if (subtitle_settings_applicable) {
-                    draw_rect(ren, subtitle_settings_box, (SDL_Color){ MENU_PANEL_ITEM_BG_COLOR, (Uint8)(200 * overlay_alpha) });
+                    draw_rect(ren, subtitle_settings_box, (SDL_Color){ THEME_MENU_PANEL_ITEM_BG_COLOR[0], THEME_MENU_PANEL_ITEM_BG_COLOR[1], THEME_MENU_PANEL_ITEM_BG_COLOR[2], (Uint8)(200 * overlay_alpha) });
                 }
 
                 char audio_label[160];
@@ -4229,40 +4549,40 @@ int main(int argc, char** argv) {
 
                 if (audio_menu_open && vr) {
                     int count = vr_get_audio_track_count(vr);
-                    int max_items = MENU_MAX_VISIBLE_ITEMS;
-                    int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
+                    int max_items = THEME_MENU_MAX_VISIBLE_ITEMS;
+                    int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
                     int display_count = count > max_items ? max_items : count;
-                    SDL_Rect list = { menu_panel.x - MENU_DROPDOWN_WIDTH, audio_box.y, MENU_DROPDOWN_WIDTH, item_h * display_count };
+                    SDL_Rect list = { menu_panel.x - THEME_MENU_DROPDOWN_WIDTH, audio_box.y, THEME_MENU_DROPDOWN_WIDTH, item_h * display_count };
                     if (list.x < margin) list.x = margin;
                     
                     int max_scroll = count > max_items ? count - max_items : 0;
                     if (audio_scroll > max_scroll) audio_scroll = max_scroll;
                     if (audio_scroll < 0) audio_scroll = 0;
                     
-                    draw_rect(ren, list, (SDL_Color){ LIST_BG_COLOR, (Uint8)(220 * overlay_alpha) });
+                    draw_rect(ren, list, (SDL_Color){ THEME_LIST_BG_COLOR[0], THEME_LIST_BG_COLOR[1], THEME_LIST_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
                     for (int i = 0; i < display_count; i++) {
                         int idx = audio_scroll + i;
-                        SDL_Rect item = { list.x, list.y + i * item_h, list.w - (count > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
-                        if (vr->current_audio == idx) draw_rect(ren, item, (SDL_Color){ LIST_ITEM_BG_COLOR, (Uint8)(180 * overlay_alpha) });
-                        draw_text_shadow(ren, item.x + MENU_DROPDOWN_TEXT_PADDING_X, item.y + MENU_DROPDOWN_TEXT_PADDING_Y, vr_get_audio_track_name(vr, idx), text);
+                        SDL_Rect item = { list.x, list.y + i * item_h, list.w - (count > max_items ? THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
+                        if (vr->current_audio == idx) draw_rect(ren, item, (SDL_Color){ THEME_LIST_ITEM_BG_COLOR[0], THEME_LIST_ITEM_BG_COLOR[1], THEME_LIST_ITEM_BG_COLOR[2], (Uint8)(180 * overlay_alpha) });
+                        draw_text_shadow(ren, item.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, item.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y, vr_get_audio_track_name(vr, idx), text);
                     }
                     
                     if (count > max_items) {
-                        SDL_Rect scrollbar_bg = { list.x + list.w - MENU_DROPDOWN_SCROLLBAR_WIDTH, list.y, MENU_DROPDOWN_SCROLLBAR_WIDTH, list.h };
-                        draw_rect(ren, scrollbar_bg, (SDL_Color){ SCROLLBAR_BG_COLOR, (Uint8)(200 * overlay_alpha) });
+                        SDL_Rect scrollbar_bg = { list.x + list.w - THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH, list.y, THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH, list.h };
+                        draw_rect(ren, scrollbar_bg, (SDL_Color){ THEME_SCROLLBAR_BG_COLOR[0], THEME_SCROLLBAR_BG_COLOR[1], THEME_SCROLLBAR_BG_COLOR[2], (Uint8)(200 * overlay_alpha) });
                         int scroll_h = (max_items * list.h) / count;
                         int scroll_y = list.y + (audio_scroll * list.h) / count;
-                        SDL_Rect scrollbar = { list.x + list.w - MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_y, MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_h };
-                        draw_rect(ren, scrollbar, (SDL_Color){ SCROLLBAR_THUMB_COLOR, (Uint8)(220 * overlay_alpha) });
+                        SDL_Rect scrollbar = { list.x + list.w - THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_y, THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_h };
+                        draw_rect(ren, scrollbar, (SDL_Color){ THEME_SCROLLBAR_THUMB_COLOR[0], THEME_SCROLLBAR_THUMB_COLOR[1], THEME_SCROLLBAR_THUMB_COLOR[2], (Uint8)(220 * overlay_alpha) });
                     }
                 }
 
                 if (subtitle_menu_open && vr) {
                     int count = vr_get_subtitle_track_count(vr);
-                    int max_items = MENU_MAX_VISIBLE_ITEMS;
-                    int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
+                    int max_items = THEME_MENU_MAX_VISIBLE_ITEMS;
+                    int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
                     int display_count = (count + 1) > max_items ? max_items : (count + 1);
-                    SDL_Rect list = { menu_panel.x - MENU_DROPDOWN_WIDTH, subtitle_box.y, MENU_DROPDOWN_WIDTH, item_h * display_count };
+                    SDL_Rect list = { menu_panel.x - THEME_MENU_DROPDOWN_WIDTH, subtitle_box.y, THEME_MENU_DROPDOWN_WIDTH, item_h * display_count };
                     if (list.x < margin) list.x = margin;
                     int max_scroll = (count + 1) > max_items ? (count + 1) - max_items : 0;
                     if (subtitle_scroll > max_scroll) subtitle_scroll = max_scroll;
@@ -4273,59 +4593,59 @@ int main(int argc, char** argv) {
                         list.y = win_h - list.h;
                         if (list.y < margin) list.y = margin;
                     }
-                    draw_rect(ren, list, (SDL_Color){ LIST_BG_COLOR, (Uint8)(220 * overlay_alpha) });
+                    draw_rect(ren, list, (SDL_Color){ THEME_LIST_BG_COLOR[0], THEME_LIST_BG_COLOR[1], THEME_LIST_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
                     if (subtitle_scroll == 0) {
-                        SDL_Rect off_item = { list.x, list.y, list.w - ((count + 1) > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
-                        if (vr->current_subtitle < 0) draw_rect(ren, off_item, (SDL_Color){ LIST_ITEM_BG_COLOR, (Uint8)(180 * overlay_alpha) });
-                        draw_text_shadow(ren, off_item.x + MENU_DROPDOWN_TEXT_PADDING_X, off_item.y + MENU_DROPDOWN_TEXT_PADDING_Y, "Subtitles: Off", text);
+                        SDL_Rect off_item = { list.x, list.y, list.w - ((count + 1) > max_items ? THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
+                        if (vr->current_subtitle < 0) draw_rect(ren, off_item, (SDL_Color){ THEME_LIST_ITEM_BG_COLOR[0], THEME_LIST_ITEM_BG_COLOR[1], THEME_LIST_ITEM_BG_COLOR[2], (Uint8)(180 * overlay_alpha) });
+                        draw_text_shadow(ren, off_item.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, off_item.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y, "Subtitles: Off", text);
                         for (int i = 1; i < display_count; i++) {
                             int idx = (subtitle_scroll + i) - 1;
                             if (idx >= 0 && idx < count) {
-                                SDL_Rect item = { list.x, list.y + i * item_h, list.w - ((count + 1) > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
-                                if (vr->current_subtitle == idx) draw_rect(ren, item, (SDL_Color){ LIST_ITEM_BG_COLOR, (Uint8)(180 * overlay_alpha) });
-                                draw_text_shadow(ren, item.x + MENU_DROPDOWN_TEXT_PADDING_X, item.y + MENU_DROPDOWN_TEXT_PADDING_Y, vr_get_subtitle_track_name(vr, idx), text);
+                                SDL_Rect item = { list.x, list.y + i * item_h, list.w - ((count + 1) > max_items ? THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
+                                if (vr->current_subtitle == idx) draw_rect(ren, item, (SDL_Color){ THEME_LIST_ITEM_BG_COLOR[0], THEME_LIST_ITEM_BG_COLOR[1], THEME_LIST_ITEM_BG_COLOR[2], (Uint8)(180 * overlay_alpha) });
+                                draw_text_shadow(ren, item.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, item.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y, vr_get_subtitle_track_name(vr, idx), text);
                             }
                         }
                     } else {
                         for (int i = 0; i < display_count; i++) {
                             int idx = (subtitle_scroll + i) - 1;
                             if (idx >= 0 && idx < count) {
-                                SDL_Rect item = { list.x, list.y + i * item_h, list.w - ((count + 1) > max_items ? MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
-                                if (vr->current_subtitle == idx) draw_rect(ren, item, (SDL_Color){ LIST_ITEM_BG_COLOR, (Uint8)(180 * overlay_alpha) });
-                                draw_text_shadow(ren, item.x + MENU_DROPDOWN_TEXT_PADDING_X, item.y + MENU_DROPDOWN_TEXT_PADDING_Y, vr_get_subtitle_track_name(vr, idx), text);
+                                SDL_Rect item = { list.x, list.y + i * item_h, list.w - ((count + 1) > max_items ? THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
+                                if (vr->current_subtitle == idx) draw_rect(ren, item, (SDL_Color){ THEME_LIST_ITEM_BG_COLOR[0], THEME_LIST_ITEM_BG_COLOR[1], THEME_LIST_ITEM_BG_COLOR[2], (Uint8)(180 * overlay_alpha) });
+                                draw_text_shadow(ren, item.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, item.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y, vr_get_subtitle_track_name(vr, idx), text);
                             }
                         }
                     }
                     if ((count + 1) > max_items) {
-                        SDL_Rect scrollbar_bg = { list.x + list.w - MENU_DROPDOWN_SCROLLBAR_WIDTH, list.y, MENU_DROPDOWN_SCROLLBAR_WIDTH, list.h };
-                        draw_rect(ren, scrollbar_bg, (SDL_Color){ SCROLLBAR_BG_COLOR, (Uint8)(200 * overlay_alpha) });
+                        SDL_Rect scrollbar_bg = { list.x + list.w - THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH, list.y, THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH, list.h };
+                        draw_rect(ren, scrollbar_bg, (SDL_Color){ THEME_SCROLLBAR_BG_COLOR[0], THEME_SCROLLBAR_BG_COLOR[1], THEME_SCROLLBAR_BG_COLOR[2], (Uint8)(200 * overlay_alpha) });
                         int scroll_h = (max_items * list.h) / (count + 1);
                         int scroll_y = list.y + (subtitle_scroll * list.h) / (count + 1);
-                        SDL_Rect scrollbar = { list.x + list.w - MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_y, MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_h };
-                        draw_rect(ren, scrollbar, (SDL_Color){ SCROLLBAR_THUMB_COLOR, (Uint8)(220 * overlay_alpha) });
+                        SDL_Rect scrollbar = { list.x + list.w - THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_y, THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH, scroll_h };
+                        draw_rect(ren, scrollbar, (SDL_Color){ THEME_SCROLLBAR_THUMB_COLOR[0], THEME_SCROLLBAR_THUMB_COLOR[1], THEME_SCROLLBAR_THUMB_COLOR[2], (Uint8)(220 * overlay_alpha) });
                     }
                 }
 
                 if (font_menu_open) {
                     int count = default_font_count + 1;
-                    int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
+                    int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
 
                     SDL_Rect list = {
-                        menu_panel.x - MENU_DROPDOWN_WIDTH,
+                        menu_panel.x - THEME_MENU_DROPDOWN_WIDTH,
                         font_box.y,
-                        MENU_DROPDOWN_WIDTH,
+                        THEME_MENU_DROPDOWN_WIDTH,
                         item_h * count
                     };
 
                     if (list.x < margin) list.x = margin;
 
-                    draw_rect(ren, list, (SDL_Color){ LIST_BG_COLOR, (Uint8)(220 * overlay_alpha) });
+                    draw_rect(ren, list, (SDL_Color){ THEME_LIST_BG_COLOR[0], THEME_LIST_BG_COLOR[1], THEME_LIST_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
 
                     for (int i = 0; i < default_font_count; ++i) {
                         draw_text_shadow(
                             ren,
-                            list.x + MENU_DROPDOWN_TEXT_PADDING_X,
-                            list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * i,
+                            list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X,
+                            list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h * i,
                             default_fonts[i].name,
                             text
                         );
@@ -4333,8 +4653,8 @@ int main(int argc, char** argv) {
 
                     draw_text_shadow(
                         ren,
-                        list.x + MENU_DROPDOWN_TEXT_PADDING_X,
-                        list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * default_font_count,
+                        list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X,
+                        list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h * default_font_count,
                         "Custom...",
                         text
                     );
@@ -4342,33 +4662,33 @@ int main(int argc, char** argv) {
 
                 if (playback_menu_open) {
                     int count = 8;
-                    int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
-                    SDL_Rect list = { menu_panel.x - MENU_DROPDOWN_WIDTH, playback_box.y, MENU_DROPDOWN_WIDTH, item_h * count };
+                    int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
+                    SDL_Rect list = { menu_panel.x - THEME_MENU_DROPDOWN_WIDTH, playback_box.y, THEME_MENU_DROPDOWN_WIDTH, item_h * count };
                     if (list.x < margin) list.x = margin;
                     if (list.y + list.h > h) {
                         list.y = h - list.h;
                         if (list.y < 0) list.y = 0;
                     }
-                    draw_rect(ren, list, (SDL_Color){ LIST_BG_COLOR, (Uint8)(220 * overlay_alpha) });
-                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y, "0.5x", text);
-                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h, "0.75x", text);
-                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 2, "1.0x (Normal)", text);
-                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 3, "1.25x", text);
-                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 4, "1.5x", text);
-                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 5, "2.0x", text);
-                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 6, "3.0x", text);
-                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 7, "5.0x", text);
+                    draw_rect(ren, list, (SDL_Color){ THEME_LIST_BG_COLOR[0], THEME_LIST_BG_COLOR[1], THEME_LIST_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
+                    draw_text_shadow(ren, list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y, "0.5x", text);
+                    draw_text_shadow(ren, list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h, "0.75x", text);
+                    draw_text_shadow(ren, list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 2, "1.0x (Normal)", text);
+                    draw_text_shadow(ren, list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 3, "1.25x", text);
+                    draw_text_shadow(ren, list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 4, "1.5x", text);
+                    draw_text_shadow(ren, list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 5, "2.0x", text);
+                    draw_text_shadow(ren, list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 6, "3.0x", text);
+                    draw_text_shadow(ren, list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 7, "5.0x", text);
                 }
 
                 if (subtitle_settings_menu_open && subtitle_settings_applicable) {
-                    int item_h = MENU_DROPDOWN_ITEM_HEIGHT;
-                    SDL_Rect list = { menu_panel.x - MENU_DROPDOWN_WIDTH, subtitle_settings_box.y, MENU_DROPDOWN_WIDTH, item_h * subtitle_settings_row_count };
+                    int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
+                    SDL_Rect list = { menu_panel.x - THEME_MENU_DROPDOWN_WIDTH, subtitle_settings_box.y, THEME_MENU_DROPDOWN_WIDTH, item_h * subtitle_settings_row_count };
                     if (list.x < margin) list.x = margin;
                     if (list.y + list.h > h) {
                         list.y = h - list.h;
                         if (list.y < 0) list.y = 0;
                     }
-                    draw_rect(ren, list, (SDL_Color){ LIST_BG_COLOR, (Uint8)(220 * overlay_alpha) });
+                    draw_rect(ren, list, (SDL_Color){ THEME_LIST_BG_COLOR[0], THEME_LIST_BG_COLOR[1], THEME_LIST_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
 
                     char row0[128];
                     char row1[128];
@@ -4376,9 +4696,9 @@ int main(int argc, char** argv) {
                     snprintf(row0, sizeof(row0), "Color: %s", subtitle_override_color_labels[subtitle_color_idx]);
                     snprintf(row1, sizeof(row1), "Size: %s", subtitle_override_size_labels[subtitle_size_idx]);
                     snprintf(row2, sizeof(row2), "Position: %s", subtitle_override_move_labels[subtitle_move_idx]);
-                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y, row0, text);
-                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h, row1, text);
-                    draw_text_shadow(ren, list.x + MENU_DROPDOWN_TEXT_PADDING_X, list.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 2, row2, text);
+                    draw_text_shadow(ren, list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y, row0, text);
+                    draw_text_shadow(ren, list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h, row1, text);
+                    draw_text_shadow(ren, list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h * 2, row2, text);
 
                     if (subtitle_settings_value_menu_open && subtitle_settings_value_menu_row >= 0) {
                         int value_count = 0;
@@ -4387,20 +4707,20 @@ int main(int argc, char** argv) {
                         if (subtitle_settings_value_menu_row == 2) value_count = subtitle_move_count;
 
                         if (value_count > 0) {
-                            SDL_Rect vlist = { list.x - MENU_DROPDOWN_WIDTH - 8, list.y, MENU_DROPDOWN_WIDTH, item_h * value_count };
+                            SDL_Rect vlist = { list.x - THEME_MENU_DROPDOWN_WIDTH - 8, list.y, THEME_MENU_DROPDOWN_WIDTH, item_h * value_count };
                             if (vlist.x < margin) vlist.x = margin;
                             if (vlist.y + vlist.h > h) {
                                 vlist.y = h - vlist.h;
                                 if (vlist.y < 0) vlist.y = 0;
                             }
-                            draw_rect(ren, vlist, (SDL_Color){ SUBTITLE_VLIST_BG_COLOR, (Uint8)(220 * overlay_alpha) });
+                            draw_rect(ren, vlist, (SDL_Color){ THEME_SUBTITLE_VLIST_BG_COLOR[0], THEME_SUBTITLE_VLIST_BG_COLOR[1], THEME_SUBTITLE_VLIST_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
 
                             for (int i = 0; i < value_count; i++) {
                                 const char* label = "";
                                 if (subtitle_settings_value_menu_row == 0) label = subtitle_override_color_labels[i];
                                 if (subtitle_settings_value_menu_row == 1) label = subtitle_override_size_labels[i];
                                 if (subtitle_settings_value_menu_row == 2) label = subtitle_override_move_labels[i];
-                                draw_text_shadow(ren, vlist.x + MENU_DROPDOWN_TEXT_PADDING_X, vlist.y + MENU_DROPDOWN_TEXT_PADDING_Y + item_h * i, label, text);
+                                draw_text_shadow(ren, vlist.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, vlist.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h * i, label, text);
                             }
                         }
                     }
@@ -4410,7 +4730,7 @@ int main(int argc, char** argv) {
 
         pause_alpha = lerpf(pause_alpha, paused ? 1.0f : 0.0f, clampf(dt * 6.0f, 0.0f, 1.0f));
         if (pause_alpha > 0.01f && !ti.active) {
-            SDL_Color pcol = { PAUSED_TEXT_COLOR, (Uint8)(255 * pause_alpha) };
+            SDL_Color pcol = { THEME_PAUSED_TEXT_COLOR[0], THEME_PAUSED_TEXT_COLOR[1], THEME_PAUSED_TEXT_COLOR[2], (Uint8)(255 * pause_alpha) };
             draw_text_shadow(ren, 20, 20, "PAUSED", pcol);
         }
 
@@ -4423,13 +4743,13 @@ int main(int argc, char** argv) {
                 if (flash_alpha < 0.01f) flash_text[0] = 0;
             }
             if (flash_alpha > 0.01f) {
-                SDL_Color fcol = { FLASH_TEXT_COLOR, (Uint8)(220 * flash_alpha) };
+                SDL_Color fcol = { THEME_FLASH_TEXT_COLOR[0], THEME_FLASH_TEXT_COLOR[1], THEME_FLASH_TEXT_COLOR[2], (Uint8)(220 * flash_alpha) };
                 draw_text_shadow(ren, 20, 56, flash_text, fcol);
             }
         }
 
         if (vr && playback_speed > 2.0f) {
-            SDL_Color acol = { ACOL_TEXT_COLOR, ACOL_TEXT_ALPHA };
+            SDL_Color acol = { THEME_ACOL_TEXT_COLOR[0], THEME_ACOL_TEXT_COLOR[1], THEME_ACOL_TEXT_COLOR[2], THEME_ACOL_TEXT_ALPHA };
             draw_text_shadow(ren, 20, 92, "Audio disabled at high speed", acol);
         }
 
@@ -4442,26 +4762,26 @@ int main(int argc, char** argv) {
             if (cy + total_h > h) cy = h - total_h;
             SDL_Rect ctxbg = { cx, cy, CTX_W, total_h };
             SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-            draw_rect(ren, ctxbg, (SDL_Color){ CONTEXT_MENU_BG_COLOR, 240 });
+            draw_rect(ren, ctxbg, (SDL_Color){ THEME_CONTEXT_MENU_BG_COLOR[0], THEME_CONTEXT_MENU_BG_COLOR[1], THEME_CONTEXT_MENU_BG_COLOR[2], 240 });
             SDL_Rect r0 = { cx, cy, CTX_W, CTX_ITEM_H };
             SDL_Rect r1 = { cx, cy + CTX_ITEM_H, CTX_W, CTX_ITEM_H };
             SDL_Rect r2 = { cx, cy + CTX_ITEM_H * 2 + 8, CTX_W, CTX_ITEM_H };
-            SDL_Color text_col = { TEXT_COLOR, 255 };
+            SDL_Color text_col = { THEME_TEXT_COLOR[0], THEME_TEXT_COLOR[1], THEME_TEXT_COLOR[2], 255 };
             int mx2 = 0, my2 = 0;
             SDL_GetMouseState(&mx2, &my2);
             if (point_in_rect(mx2, my2, ctxbg)) {
                 if (my2 < cy + CTX_ITEM_H) {
-                    draw_rect(ren, r0, (SDL_Color){ CONTEXT_MENU_ITEM_HL, 200 });
+                    draw_rect(ren, r0, (SDL_Color){ THEME_CONTEXT_MENU_ITEM_HL[0], THEME_CONTEXT_MENU_ITEM_HL[1], THEME_CONTEXT_MENU_ITEM_HL[2], 200 });
                 } else if (my2 < cy + CTX_ITEM_H * 2) {
-                    draw_rect(ren, r1, (SDL_Color){ CONTEXT_MENU_ITEM_HL, 200 });
+                    draw_rect(ren, r1, (SDL_Color){ THEME_CONTEXT_MENU_ITEM_HL[0], THEME_CONTEXT_MENU_ITEM_HL[1], THEME_CONTEXT_MENU_ITEM_HL[2], 200 });
                 } else if (my2 >= cy + CTX_ITEM_H * 2 + 8) {
-                    draw_rect(ren, r2, (SDL_Color){ CONTEXT_MENU_ITEM_HL, 200 });
+                    draw_rect(ren, r2, (SDL_Color){ THEME_CONTEXT_MENU_ITEM_HL[0], THEME_CONTEXT_MENU_ITEM_HL[1], THEME_CONTEXT_MENU_ITEM_HL[2], 200 });
                 }
             }
             draw_text_shadow(ren, cx + 8, cy + 4, "Rename", text_col);
             draw_text_shadow(ren, cx + 8, cy + CTX_ITEM_H + 4, "Change Color", text_col);
             SDL_Rect sep = { cx + 4, cy + CTX_ITEM_H * 2 + 4, CTX_W - 8, 1 };
-            draw_rect(ren, sep, (SDL_Color){ MUTED_COLOR, 160 });
+            draw_rect(ren, sep, (SDL_Color){ THEME_MUTED_COLOR[0], THEME_MUTED_COLOR[1], THEME_MUTED_COLOR[2], 160 });
             draw_text_shadow(ren, cx + 8, cy + CTX_ITEM_H * 2 + 10, "Remove", text_col);
             #undef CTX_ITEM_H
             #undef CTX_W
