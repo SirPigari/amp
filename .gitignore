@@ -4,3 +4,4 @@
 /test*
 *.dat
 /template.*
+/dist*

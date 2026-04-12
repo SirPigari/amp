@@ -61,10 +61,23 @@ colors were chosen by markofwitch.
 #define SCROLLBAR_BG_COLOR        44,  34,  46
 #define SCROLLBAR_THUMB_COLOR     140, 110, 135
 #define SUBTITLE_VLIST_BG_COLOR   28,  22,  30
+#define DRAW_PALETTE_BG_COLOR     30,  30,  38
+#define DRAW_PALETTE_BORDER_COLOR 60,  60,  70
+#define DRAW_CANVAS_CLEAR_COLOR   0,   0,   0
 #define PAUSED_TEXT_COLOR         255, 235, 245
 #define FLASH_TEXT_COLOR          255, 235, 245
 #define ACOL_TEXT_COLOR           255, 185, 215
 #define ACOL_TEXT_ALPHA           200
+
+/* Drawing palette colors (changed just for fun) */
+#define DRAW_PALETTE_COLOR_1     255, 235, 245  /* soft white pink */
+#define DRAW_PALETTE_COLOR_2     24,  20,  26   /* panel dark */
+#define DRAW_PALETTE_COLOR_3     255, 170, 210  /* accent pink */
+#define DRAW_PALETTE_COLOR_4     200, 150, 180  /* muted rose */
+#define DRAW_PALETTE_COLOR_5     150, 130, 145  /* muted purple gray */
+#define DRAW_PALETTE_COLOR_6     255, 200, 225  /* light highlight pink */
+#define DRAW_PALETTE_COLOR_7     255, 185, 215  /* warm pink */
+#define DRAW_PALETTE_COLOR_ALPHA 255
 
 /* Platform-specific fonts (same as default) */
 #ifdef _WIN32

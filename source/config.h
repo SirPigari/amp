@@ -2,7 +2,7 @@
 #define CONFIG_H
 
 /* Build config */
-#define AMP_VERSION 0x010502 /* 1.5.2 */
+#define AMP_VERSION 0x010600 /* 1.6.0 */
 
 #define THEMES_DIR "assets/themes/"
 #define USE_THEMES 0
@@ -12,7 +12,7 @@
 #define CFLAGS         "-Wno-cast-function-type", "-Wall", "-Wextra", "-D"THEME
 #define RELEASE_CFLAGS "-Wno-cast-function-type", "-Wall", "-Wextra", "-D"THEME, "-O3"
 #define SAVE_FILE_MAGIC 0x414D5056 /* 'AMPV' */
-#define OUT_EXE_NAME "main"
+#define OUT_EXE_NAME   "main"
 
 #define AMP_FLASH_DEBUG_DEFAULT 0
 #define AMP_FLASH_DEBUG_LEVEL_DEFAULT NOB_INFO
@@ -31,6 +31,14 @@
 #define BOOKMARK_NAME_MAX 64
 #define TEXT_INPUT_MAX_LEN 256
 #define BM_OVERRIDE_DEFAULT_COLOR 0
+
+/* Drawing mode settings */
+#define MAX_DRAW_STROKES 1024
+#define MAX_DRAW_UNDO_STACK 32
+#define DRAW_BRUSH_SIZE_MIN 1
+#define DRAW_BRUSH_SIZE_MAX 69
+#define DRAW_BRUSH_SIZE_DEFAULT 5
+#define DRAW_SMOOTHING_ALPHA 0.25f
 
 /* Demuxer settings */
 #define DEMUX_MAX_READS_PER_TICK 64
@@ -95,10 +103,23 @@
 #define SCROLLBAR_BG_COLOR        35,  35,  45
 #define SCROLLBAR_THUMB_COLOR     80,  80,  100
 #define SUBTITLE_VLIST_BG_COLOR   22,  22,  30
+#define DRAW_PALETTE_BG_COLOR     30,  30,  38
+#define DRAW_PALETTE_BORDER_COLOR 60,  60,  70
+#define DRAW_CANVAS_CLEAR_COLOR   0,   0,   0
 #define PAUSED_TEXT_COLOR         240, 240, 245
 #define FLASH_TEXT_COLOR          240, 240, 245
 #define ACOL_TEXT_COLOR           255, 180, 100
 #define ACOL_TEXT_ALPHA           200
+
+/* Drawing palette colors (7 colors) */
+#define DRAW_PALETTE_COLOR_1     255, 255, 255  /* White */
+#define DRAW_PALETTE_COLOR_2     0,   0,   0    /* Black */
+#define DRAW_PALETTE_COLOR_3     255, 0,   0    /* Red */
+#define DRAW_PALETTE_COLOR_4     0,   255, 0    /* Green */
+#define DRAW_PALETTE_COLOR_5     0,   0,   255  /* Blue */
+#define DRAW_PALETTE_COLOR_6     255, 255, 0    /* Yellow */
+#define DRAW_PALETTE_COLOR_7     255, 128, 0    /* Orange */
+#define DRAW_PALETTE_COLOR_ALPHA 255
 
 /* Platform-specific fonts */
 #ifdef _WIN32

@@ -13,6 +13,8 @@
 #endif
 #include "../thirdparty/nob.h"
 #include "../thirdparty/tinyfd.c"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "../thirdparty/stb_image_write.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <time.h>
@@ -43,6 +45,8 @@
 #if SAVE_FILE
 #include "save.c"
 #endif
+
+#include "drawing.c"
 
 char* recent_files[MAX_RECENT] = {0};
 int recent_count = 0;
@@ -526,6 +530,16 @@ void usage(FILE* out, const char* prog_name) {
     fprintf(out, "  --flash-debug-level [LEVEL]  Show log messages as on-screen flash (LEVEL: 0 - NO LOGS, 1 - INFO, 2 - WARNING, 3 - ERROR)\n");
     fprintf(out, "  --hw [auto|none|accel|TYPE]  Hardware decode backend (TYPE: vaapi [unix only], dxva2 [win only], d3d11va [win only])\n");
 }
+
+#ifdef _WIN32
+static void attach_console_if_present(void) {
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        freopen("CONOUT$", "w", stdout);
+        freopen("CONOUT$", "w", stderr);
+        freopen("CONIN$", "r", stdin);
+    }
+}
+#endif
 
 void add_recent_file(const char* file) {
     nob_log(NOB_INFO, "Adding to recent files: %s", file);
@@ -1259,7 +1273,21 @@ enum {
     MENU_PREV_BOOKMARK,
     MENU_UNDO,
     MENU_REDO,
-    MENU_RECENT_BASE = 100
+    MENU_DRAW_SCREENSHOT,
+    MENU_DRAW_ENTER,
+    MENU_DRAW_EXIT,
+    MENU_DRAW_EXPORT_WITH_FRAME,
+    MENU_DRAW_EXPORT_ONLY,
+    MENU_DRAW_CLEAR,
+    MENU_DRAW_TOOL_PEN,
+    MENU_DRAW_TOOL_ERASER,
+    MENU_DRAW_TOOL_MARKER,
+    MENU_DRAW_TOOL_LINE,
+    MENU_DRAW_TOOL_RECT,
+    MENU_DRAW_TOOL_CIRCLE,
+    MENU_DRAW_TOOL_FILLED_RECT,
+    MENU_DRAW_TOOL_FILLED_CIRCLE,
+    MENU_RECENT_BASE = 6969
 };
 
 static HWND get_hwnd(SDL_Window* window) {
@@ -1283,6 +1311,8 @@ HMENU create_windows_menu(SDL_Window* window) {
     HMENU hPlaybackMenu = CreatePopupMenu();
     HMENU hVolumeMenu = CreatePopupMenu();
     HMENU hBookmarksMenu = CreatePopupMenu();
+    HMENU hDrawingMenu = CreatePopupMenu();
+    HMENU hDrawToolsMenu = CreatePopupMenu();
 
     AppendMenu(hFileMenu, MF_STRING, MENU_OPEN, "Open File\tCtrl+O");
 
@@ -1358,6 +1388,27 @@ HMENU create_windows_menu(SDL_Window* window) {
     AppendMenu(hPlaybackMenu, MF_STRING, MENU_UNDO, "Undo\tCtrl+Z");
     AppendMenu(hPlaybackMenu, MF_STRING, MENU_REDO, "Redo\tCtrl+Y");
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hPlaybackMenu, "Playback");
+
+    AppendMenu(hDrawToolsMenu, MF_STRING, MENU_DRAW_TOOL_PEN, "Pen (1)");
+    AppendMenu(hDrawToolsMenu, MF_STRING, MENU_DRAW_TOOL_ERASER, "Eraser (2)");
+    AppendMenu(hDrawToolsMenu, MF_STRING, MENU_DRAW_TOOL_MARKER, "Marker (3)");
+    AppendMenu(hDrawToolsMenu, MF_STRING, MENU_DRAW_TOOL_LINE, "Line (4)");
+    AppendMenu(hDrawToolsMenu, MF_STRING, MENU_DRAW_TOOL_RECT, "Rectangle (5)");
+    AppendMenu(hDrawToolsMenu, MF_STRING, MENU_DRAW_TOOL_CIRCLE, "Circle (6)");
+    AppendMenu(hDrawToolsMenu, MF_STRING, MENU_DRAW_TOOL_FILLED_RECT, "Filled Rectangle (7)");
+    AppendMenu(hDrawToolsMenu, MF_STRING, MENU_DRAW_TOOL_FILLED_CIRCLE, "Filled Circle (8)");
+
+    AppendMenu(hDrawingMenu, MF_STRING, MENU_DRAW_SCREENSHOT, "Screenshot\tF2");
+    AppendMenu(hDrawingMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hDrawingMenu, MF_STRING, MENU_DRAW_ENTER, "Enter Draw Mode\tP");
+    AppendMenu(hDrawingMenu, MF_STRING, MENU_DRAW_EXIT, "Exit Draw Mode\tEsc");
+    AppendMenu(hDrawingMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hDrawingMenu, MF_STRING, MENU_DRAW_EXPORT_WITH_FRAME, "Export with Frame\tE");
+    AppendMenu(hDrawingMenu, MF_STRING, MENU_DRAW_EXPORT_ONLY, "Export Drawing Only\tShift+E");
+    AppendMenu(hDrawingMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hDrawingMenu, MF_STRING, MENU_DRAW_CLEAR, "Clear Canvas\tCtrl+N");
+    AppendMenu(hDrawingMenu, MF_POPUP, (UINT_PTR)hDrawToolsMenu, "Tools");
+    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hDrawingMenu, "Drawing");
 
     SetMenu(hwnd, hMenu);
     DrawMenuBar(hwnd);
@@ -1524,9 +1575,133 @@ static int parse_custom_aspect_ratio(const char* s, unsigned int* out_x, unsigne
     return 0;
 }
 
-int main(int argc, char** argv) {
-    nob_set_log_handler(amp_log_handler);
+static void take_screenshot(VideoRenderer* vr,
+                            SDL_Window* win,
+                            SDL_Renderer* ren,
+                            char* flash_text,
+                            Uint32* flash_until)
+{
+    if (!vr || !win || !ren) return;
 
+    int win_w, win_h;
+    SDL_GetWindowSize(win, &win_w, &win_h);
+
+    SDL_Texture* frame_tex = vr_get_texture(vr);
+    if (!frame_tex) {
+        snprintf(flash_text, 256, "No video frame to screenshot");
+        *flash_until = SDL_GetTicks() + 900;
+        return;
+    }
+
+    int src_w = 0, src_h = 0;
+    SDL_QueryTexture(frame_tex, NULL, NULL, &src_w, &src_h);
+
+    SDL_Rect video_dst = compute_video_dst_rect(win_w, win_h, src_w, src_h, vr->ar_x, vr->ar_y);
+    video_dst = apply_zoom_to_rect(video_dst, win_w, win_h, vr->zoom_percent);
+
+    char path[1024];
+    char ext[8];
+
+    if (!export_save_dialog(path, sizeof(path), ext, "screenshot")) {
+        *flash_until = SDL_GetTicks() + 900;
+        return;
+    }
+
+    SDL_Surface* screenshot = SDL_CreateRGBSurface(
+        0, win_w, win_h, 32,
+        0x000000FF,
+        0x0000FF00,
+        0x00FF0000,
+        0xFF000000
+    );
+
+    if (!screenshot) {
+        snprintf(flash_text, 256, "Failed to create surface");
+        *flash_until = SDL_GetTicks() + 900;
+        return;
+    }
+
+    SDL_Texture* temp_tex = SDL_CreateTexture(
+        ren,
+        SDL_PIXELFORMAT_ARGB8888,
+        SDL_TEXTUREACCESS_TARGET,
+        win_w,
+        win_h
+    );
+
+    if (!temp_tex) {
+        SDL_FreeSurface(screenshot);
+        snprintf(flash_text, 256, "Failed to create texture");
+        *flash_until = SDL_GetTicks() + 900;
+        return;
+    }
+
+    SDL_SetRenderTarget(ren, temp_tex);
+    SDL_SetRenderDrawColor(ren, LETTERBOX_COLOR, 255);
+    SDL_RenderClear(ren);
+
+    SDL_RenderCopy(ren, frame_tex, NULL, &video_dst);
+
+    if (vr_render_subtitles(vr, vr_get_video_time(vr))) {
+        SDL_Texture* sub = vr_get_subtitle_texture(vr);
+        if (sub) SDL_RenderCopy(ren, sub, NULL, &video_dst);
+    }
+
+    SDL_RenderReadPixels(
+        ren,
+        NULL,
+        SDL_PIXELFORMAT_RGBA32,
+        screenshot->pixels,
+        screenshot->pitch
+    );
+
+    SDL_SetRenderTarget(ren, NULL);
+
+    int ok = 0;
+
+    if (strcmp(ext, "png") == 0) {
+        ok = stbi_write_png(path, win_w, win_h, 4,
+                            screenshot->pixels, screenshot->pitch);
+
+    } else if (strcmp(ext, "jpg") == 0) {
+        ok = stbi_write_jpg(path, win_w, win_h, 4,
+                            screenshot->pixels, 90);
+
+    } else if (strcmp(ext, "bmp") == 0) {
+        ok = (SDL_SaveBMP(screenshot, path) == 0);
+
+    } else if (strcmp(ext, "tga") == 0) {
+        ok = stbi_write_tga(path, win_w, win_h, 4,
+                            screenshot->pixels);
+    }
+
+    if (ok) {
+        snprintf(flash_text, 256, "Screenshot saved");
+    } else {
+        snprintf(flash_text, 256, "Failed to save image");
+    }
+
+    SDL_DestroyTexture(temp_tex);
+    SDL_FreeSurface(screenshot);
+
+    *flash_until = SDL_GetTicks() + 900;
+}
+
+int main(int argc, char** argv) {
+    #ifdef _WIN32
+    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    AddDllDirectory(L"./dll");
+    SetProcessDPIAware();
+    INITCOMMONCONTROLSEX icc = {
+        sizeof(INITCOMMONCONTROLSEX),
+        ICC_WIN95_CLASSES | ICC_LINK_CLASS | ICC_STANDARD_CLASSES
+    };
+
+    InitCommonControlsEx(&icc);
+    attach_console_if_present();
+    #endif
+
+    nob_set_log_handler(amp_log_handler);
 
     VideoRenderer* vr = NULL;
     char* video_file = NULL;
@@ -1584,6 +1759,12 @@ int main(int argc, char** argv) {
     char ti_bm_old_name[BOOKMARK_NAME_MAX] = {0};
 
     int bm_ctx_open = 0, bm_ctx_x = 0, bm_ctx_y = 0, bm_ctx_idx = -1;
+
+    static DrawingState draw_state = {0};
+    draw_init(&draw_state);
+    SDL_Texture* draw_canvas = NULL;
+    int draw_mode_active = 0;
+    bool draw_mode_was_paused = false;
 
 #ifndef _WIN32
     setenv("LIBVA_DRIVER_NAME", "", 1);
@@ -1741,6 +1922,7 @@ int main(int argc, char** argv) {
             (const char*[]){"*.mkv", "*.mp4"}, 2, "Video Files (*.mkv, *.mp4)", false,
             "Select Video File", NULL, &is_supported_video_file
         );
+        SDL_PumpEvents();
         if (!video_file || !is_supported_video_file(video_file)) {
             nob_log(NOB_ERROR, "No file selected or unsupported file type. Exiting.");
             return 1;
@@ -1763,20 +1945,28 @@ int main(int argc, char** argv) {
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!ren) { SDL_DestroyWindow(win); nob_log(NOB_ERROR, "SDL_CreateRenderer failed: %s", SDL_GetError()); return 1; }
 
-    SDL_RaiseWindow(win);
-#ifdef _WIN32
-    {
-        SDL_SysWMinfo wm_info;
-        SDL_VERSION(&wm_info.version);
-        if (SDL_GetWindowWMInfo(win, &wm_info) && wm_info.subsystem == SDL_SYSWM_WINDOWS) {
-            HWND hwnd = wm_info.info.win.window;
-            if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
-            SetForegroundWindow(hwnd);
-            BringWindowToTop(hwnd);
-            SetActiveWindow(hwnd);
+    #ifdef _WIN32
+    SDL_SysWMinfo wm_info;
+    SDL_VERSION(&wm_info.version);
+
+    if (SDL_GetWindowWMInfo(win, &wm_info) &&
+        wm_info.subsystem == SDL_SYSWM_WINDOWS) {
+
+        HWND hwnd = wm_info.info.win.window;
+
+        if (IsIconic(hwnd)) {
+            ShowWindow(hwnd, SW_SHOW);
         }
+
+        SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+
+        SetForegroundWindow(hwnd);
+        SetActiveWindow(hwnd);
     }
-#endif
+    #endif
+
+    SDL_RaiseWindow(win);
 
     if (requested_window_w > 0 && requested_window_h > 0) {
         int startup_w = requested_window_w;
@@ -2522,6 +2712,86 @@ int main(int argc, char** argv) {
                                 snprintf(flash_text, sizeof(flash_text), "Nothing to redo");
                             }
                             flash_until = SDL_GetTicks() + 900;
+                        } else if (id == MENU_DRAW_SCREENSHOT && vr) {
+                            take_screenshot(vr, win, ren, flash_text, &flash_until);
+                        } else if (id == MENU_DRAW_ENTER && vr) {
+                            if (!draw_mode_active) {
+                                draw_mode_active = 1;
+                                draw_mode_was_paused = paused;
+                                paused = true;
+                                if (vr) vr_set_paused(vr, paused);
+                                int win_w, win_h;
+                                SDL_GetWindowSize(win, &win_w, &win_h);
+                                if (draw_canvas) SDL_DestroyTexture(draw_canvas);
+                                draw_canvas = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, win_w, win_h);
+                                SDL_SetTextureBlendMode(draw_canvas, SDL_BLENDMODE_BLEND);
+                                snprintf(flash_text, sizeof(flash_text), "Draw Mode: ON (Paused)");
+                                flash_until = SDL_GetTicks() + 900;
+                            }
+                        } else if (id == MENU_DRAW_EXIT) {
+                            if (draw_mode_active) {
+                                draw_mode_active = 0;
+                                paused = draw_mode_was_paused;
+                                if (vr) vr_set_paused(vr, paused);
+                                snprintf(flash_text, sizeof(flash_text), "Draw Mode: OFF");
+                                flash_until = SDL_GetTicks() + 900;
+                            }
+                        } else if (id == MENU_DRAW_EXPORT_WITH_FRAME && vr && draw_canvas && draw_mode_active) {
+                            int win_w, win_h;
+                            SDL_GetWindowSize(win, &win_w, &win_h);
+                            SDL_Texture* frame_tex = vr_get_texture(vr);
+                            SDL_Rect video_dst = {0, 0, win_w, win_h};
+                            if (frame_tex) {
+                                int src_w = 0, src_h = 0;
+                                SDL_QueryTexture(frame_tex, NULL, NULL, &src_w, &src_h);
+                                video_dst = compute_video_dst_rect(win_w, win_h, src_w, src_h, vr->ar_x, vr->ar_y);
+                                video_dst = apply_zoom_to_rect(video_dst, win_w, win_h, vr->zoom_percent);
+                            }
+                            draw_export(ren, draw_canvas, frame_tex, video_dst, win_w, win_h, 1);
+                            snprintf(flash_text, sizeof(flash_text), "Drawing exported");
+                            flash_until = SDL_GetTicks() + 900;
+                        } else if (id == MENU_DRAW_EXPORT_ONLY && draw_canvas && draw_mode_active) {
+                            int win_w, win_h;
+                            SDL_GetWindowSize(win, &win_w, &win_h);
+                            draw_export(ren, draw_canvas, NULL, (SDL_Rect){0,0,0,0}, win_w, win_h, 0);
+                            snprintf(flash_text, sizeof(flash_text), "Drawing exported");
+                            flash_until = SDL_GetTicks() + 900;
+                        } else if (id == MENU_DRAW_CLEAR && draw_mode_active) {
+                            draw_clear(&draw_state);
+                            snprintf(flash_text, sizeof(flash_text), "Canvas cleared");
+                            flash_until = SDL_GetTicks() + 900;
+                        } else if (id == MENU_DRAW_TOOL_PEN && draw_mode_active) {
+                            draw_state.current_tool = TOOL_PEN;
+                            snprintf(flash_text, sizeof(flash_text), "Tool: Pen");
+                            flash_until = SDL_GetTicks() + 900;
+                        } else if (id == MENU_DRAW_TOOL_ERASER && draw_mode_active) {
+                            draw_state.current_tool = TOOL_ERASER;
+                            snprintf(flash_text, sizeof(flash_text), "Tool: Eraser");
+                            flash_until = SDL_GetTicks() + 900;
+                        } else if (id == MENU_DRAW_TOOL_MARKER && draw_mode_active) {
+                            draw_state.current_tool = TOOL_MARKER;
+                            snprintf(flash_text, sizeof(flash_text), "Tool: Marker (Contrast)");
+                            flash_until = SDL_GetTicks() + 900;
+                        } else if (id == MENU_DRAW_TOOL_LINE && draw_mode_active) {
+                            draw_state.current_tool = TOOL_LINE;
+                            snprintf(flash_text, sizeof(flash_text), "Tool: Line");
+                            flash_until = SDL_GetTicks() + 900;
+                        } else if (id == MENU_DRAW_TOOL_RECT && draw_mode_active) {
+                            draw_state.current_tool = TOOL_RECT;
+                            snprintf(flash_text, sizeof(flash_text), "Tool: Rectangle");
+                            flash_until = SDL_GetTicks() + 900;
+                        } else if (id == MENU_DRAW_TOOL_CIRCLE && draw_mode_active) {
+                            draw_state.current_tool = TOOL_CIRCLE;
+                            snprintf(flash_text, sizeof(flash_text), "Tool: Circle");
+                            flash_until = SDL_GetTicks() + 900;
+                        } else if (id == MENU_DRAW_TOOL_FILLED_RECT && draw_mode_active) {
+                            draw_state.current_tool = TOOL_FILLED_RECT;
+                            snprintf(flash_text, sizeof(flash_text), "Tool: Filled Rect");
+                            flash_until = SDL_GetTicks() + 900;
+                        } else if (id == MENU_DRAW_TOOL_FILLED_CIRCLE && draw_mode_active) {
+                            draw_state.current_tool = TOOL_FILLED_CIRCLE;
+                            snprintf(flash_text, sizeof(flash_text), "Tool: Filled Circle");
+                            flash_until = SDL_GetTicks() + 900;
                         }
                     }
                 }
@@ -2645,6 +2915,11 @@ int main(int argc, char** argv) {
                     }
                     flash_until = SDL_GetTicks() + 900;
                 } else if (key==SDLK_F4 && (e.key.keysym.mod & KMOD_ALT)) running=0;
+                
+                if (key==SDLK_F2 && vr) {
+                    take_screenshot(vr, win, ren, flash_text, &flash_until);
+                }
+                
                 if (key==SDLK_F11 || (key==SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT))) {
                     fullscreen =! fullscreen;
                     if (fullscreen) {
@@ -2802,7 +3077,13 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (key == SDLK_ESCAPE) {
-                    if (bm_ctx_open) {
+                    if (draw_mode_active) {
+                        draw_mode_active = 0;
+                        paused = draw_mode_was_paused;
+                        if (vr) vr_set_paused(vr, paused);
+                        snprintf(flash_text, sizeof(flash_text), "Draw Mode: OFF");
+                        flash_until = SDL_GetTicks() + 900;
+                    } else if (bm_ctx_open) {
                         bm_ctx_open = 0;
                     } else if (menu_open) {
                         menu_open = false;
@@ -2873,7 +3154,7 @@ int main(int argc, char** argv) {
                     snprintf(flash_text, sizeof(flash_text), "VOL %d", (int)volume_percent);
                     flash_until = SDL_GetTicks() + 900;
                 }
-                if (key == SDLK_z && (e.key.keysym.mod & KMOD_CTRL) && !(e.key.keysym.mod & KMOD_SHIFT) && vr) {
+                if (key == SDLK_z && (e.key.keysym.mod & KMOD_CTRL) && !(e.key.keysym.mod & KMOD_SHIFT) && vr && !draw_mode_active) {
                     if (!hist_undo(history, &history_count, &history_pos,
                             &vr, win, ren, &video_file, paused, &volume_percent,
                             subtitle_override_colors[subtitle_color_idx],
@@ -2885,7 +3166,7 @@ int main(int argc, char** argv) {
                     }
                     flash_until = SDL_GetTicks() + 900;
                 }
-                if (key == SDLK_y && (e.key.keysym.mod & KMOD_CTRL) && vr) {
+                if (key == SDLK_y && (e.key.keysym.mod & KMOD_CTRL) && vr && !draw_mode_active) {
                     if (!hist_redo(history, &history_count, &history_pos,
                             &vr, win, ren, &video_file, paused, &volume_percent,
                             subtitle_override_colors[subtitle_color_idx],
@@ -3120,8 +3401,92 @@ int main(int argc, char** argv) {
                     snprintf(flash_text, sizeof(flash_text), "Zoom: %d%%", vr->zoom_percent);
                     flash_until = SDL_GetTicks() + 900;
                 }
+                
+                if (key == SDLK_p && !(e.key.keysym.mod & KMOD_CTRL) && vr) {
+                    draw_mode_active = !draw_mode_active;
+                    if (draw_mode_active) {
+                        draw_mode_was_paused = paused;
+                        paused = true;
+                        if (vr) vr_set_paused(vr, paused);
+                        
+                        int win_w, win_h;
+                        SDL_GetWindowSize(win, &win_w, &win_h);
+                        if (draw_canvas) SDL_DestroyTexture(draw_canvas);
+                        draw_canvas = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, win_w, win_h);
+                        SDL_SetTextureBlendMode(draw_canvas, SDL_BLENDMODE_BLEND);
+                        snprintf(flash_text, sizeof(flash_text), "Draw Mode: ON (Paused)");
+                    } else {
+                        paused = draw_mode_was_paused;
+                        if (vr) vr_set_paused(vr, paused);
+                        snprintf(flash_text, sizeof(flash_text), "Draw Mode: OFF");
+                    }
+                    flash_until = SDL_GetTicks() + 900;
+                }
+                
+                if (draw_mode_active) {
+                    if ((key == SDLK_e || key == SDLK_F3) && vr && draw_canvas) {
+                        int win_w, win_h;
+                        SDL_GetWindowSize(win, &win_w, &win_h);
+                        SDL_Texture* frame_tex = vr_get_texture(vr);
+                        SDL_Rect video_dst = {0, 0, win_w, win_h};
+                        if (frame_tex) {
+                            int src_w = 0, src_h = 0;
+                            SDL_QueryTexture(frame_tex, NULL, NULL, &src_w, &src_h);
+                            video_dst = compute_video_dst_rect(win_w, win_h, src_w, src_h, vr->ar_x, vr->ar_y);
+                            video_dst = apply_zoom_to_rect(video_dst, win_w, win_h, vr->zoom_percent);
+                        }
+                        int include_video = !(e.key.keysym.mod & KMOD_SHIFT);
+                        draw_export(ren, draw_canvas, frame_tex, video_dst, win_w, win_h, include_video);
+                        snprintf(flash_text, sizeof(flash_text), "Drawing exported");
+                        flash_until = SDL_GetTicks() + 900;
+                    }
+                    
+                    if (key == SDLK_n && (e.key.keysym.mod & KMOD_CTRL)) {
+                        draw_clear(&draw_state);
+                        snprintf(flash_text, sizeof(flash_text), "Canvas cleared");
+                        flash_until = SDL_GetTicks() + 900;
+                    }
+                    
+                    if (key == SDLK_z && (e.key.keysym.mod & KMOD_CTRL) && !(e.key.keysym.mod & KMOD_SHIFT)) {
+                        if (draw_undo(&draw_state)) {
+                            snprintf(flash_text, sizeof(flash_text), "Undo");
+                        } else {
+                            snprintf(flash_text, sizeof(flash_text), "Nothing to undo");
+                        }
+                        flash_until = SDL_GetTicks() + 900;
+                    }
+                    
+                    if (key == SDLK_y && (e.key.keysym.mod & KMOD_CTRL)) {
+                        if (draw_redo(&draw_state)) {
+                            snprintf(flash_text, sizeof(flash_text), "Redo");
+                        } else {
+                            snprintf(flash_text, sizeof(flash_text), "Nothing to redo");
+                        }
+                        flash_until = SDL_GetTicks() + 900;
+                    }
+                    
+                    if (key == SDLK_1) { draw_state.current_tool = TOOL_PEN; snprintf(flash_text, sizeof(flash_text), "Tool: Pen"); flash_until = SDL_GetTicks() + 900; }
+                    if (key == SDLK_2) { draw_state.current_tool = TOOL_ERASER; snprintf(flash_text, sizeof(flash_text), "Tool: Eraser"); flash_until = SDL_GetTicks() + 900; }
+                    if (key == SDLK_3) { draw_state.current_tool = TOOL_MARKER; snprintf(flash_text, sizeof(flash_text), "Tool: Marker (Contrast)"); flash_until = SDL_GetTicks() + 900; }
+                    if (key == SDLK_4) { draw_state.current_tool = TOOL_LINE; snprintf(flash_text, sizeof(flash_text), "Tool: Line"); flash_until = SDL_GetTicks() + 900; }
+                    if (key == SDLK_5) { draw_state.current_tool = TOOL_RECT; snprintf(flash_text, sizeof(flash_text), "Tool: Rectangle"); flash_until = SDL_GetTicks() + 900; }
+                    if (key == SDLK_6) { draw_state.current_tool = TOOL_CIRCLE; snprintf(flash_text, sizeof(flash_text), "Tool: Circle"); flash_until = SDL_GetTicks() + 900; }
+                    if (key == SDLK_7) { draw_state.current_tool = TOOL_FILLED_RECT; snprintf(flash_text, sizeof(flash_text), "Tool: Filled Rect"); flash_until = SDL_GetTicks() + 900; }
+                    if (key == SDLK_8) { draw_state.current_tool = TOOL_FILLED_CIRCLE; snprintf(flash_text, sizeof(flash_text), "Tool: Filled Circle"); flash_until = SDL_GetTicks() + 900; }
+                }
             }
 
+            if (e.type == SDL_MOUSEWHEEL) {
+                if (draw_mode_active && !menu_open) {
+                    int dy = e.wheel.y;
+                    draw_state.brush_size += dy;
+                    if (draw_state.brush_size < DRAW_BRUSH_SIZE_MIN) draw_state.brush_size = DRAW_BRUSH_SIZE_MIN;
+                    if (draw_state.brush_size > DRAW_BRUSH_SIZE_MAX) draw_state.brush_size = DRAW_BRUSH_SIZE_MAX;
+                    snprintf(flash_text, sizeof(flash_text), "Brush Size: %d", draw_state.brush_size);
+                    flash_until = SDL_GetTicks() + 900;
+                }
+            }
+            
             if (e.type == SDL_MOUSEWHEEL && menu_open) {
                 int dy = e.wheel.y;
                 if (audio_menu_open) {
@@ -3141,7 +3506,13 @@ int main(int argc, char** argv) {
             if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) {
                 int mx = e.button.x;
                 int my = e.button.y;
-                if (point_in_rect(mx, my, timeline_hitbox)) {
+                
+                if (draw_mode_active && draw_canvas) {
+                    DrawTool saved_tool = draw_state.current_tool;
+                    draw_state.current_tool = TOOL_ERASER;
+                    draw_begin_stroke(&draw_state, mx, my);
+                    draw_state.current_tool = saved_tool;
+                } else if (point_in_rect(mx, my, timeline_hitbox)) {
                     double dur = vr ? vr_get_duration(vr) : 0.0;
                     if (dur > 0.0 && vr) {
                         int bm_idx = -1;
@@ -3161,7 +3532,14 @@ int main(int argc, char** argv) {
                 int my = e.button.y;
                 bool click_processed = false;
 
-                if (point_in_rect(mx, my, hamburger)) {
+                if (draw_mode_active && draw_canvas) {
+                    if (!draw_palette_click(&draw_state, mx, my, w, h)) {
+                        draw_begin_stroke(&draw_state, mx, my);
+                    }
+                    click_processed = true;
+                }
+
+                if (!click_processed && point_in_rect(mx, my, hamburger)) {
                     menu_open = !menu_open;
                     audio_menu_open = false;
                     subtitle_menu_open = false;
@@ -3565,6 +3943,10 @@ int main(int argc, char** argv) {
             }
 
             if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
+                if (draw_mode_active && draw_canvas && draw_state.is_drawing) {
+                    draw_end_stroke(&draw_state, e.button.x, e.button.y);
+                }
+                
                 if (dragging_timeline && vr) {
                     double dur = vr_get_duration(vr);
                     double bt_drag = vr_get_time(vr);
@@ -3580,8 +3962,18 @@ int main(int argc, char** argv) {
                 dragging_timeline = false;
                 volume_dragging = false;
             }
+            
+            if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT) {
+                if (draw_mode_active && draw_canvas && draw_state.is_drawing) {
+                    draw_end_stroke(&draw_state, e.button.x, e.button.y);
+                }
+            }
 
             if (e.type == SDL_MOUSEMOTION) {
+                if (draw_mode_active && draw_canvas && draw_state.is_drawing) {
+                    draw_continue_stroke(&draw_state, e.motion.x, e.motion.y);
+                }
+                
                 if (dragging_timeline && vr) {
                     int mx = e.motion.x;
                     double dur = vr_get_duration(vr);
@@ -3614,14 +4006,15 @@ int main(int argc, char** argv) {
         SDL_SetRenderDrawColor(ren, LETTERBOX_COLOR, 255);
         SDL_RenderClear(ren);
 
+        int window_w = 0;
+        int window_h = 0;
+        SDL_GetWindowSize(win, &window_w, &window_h);
+
         if (vr) {
             if (!paused) {
                 run_playback_tick(vr, playback_speed);
             }
             SDL_Texture* tex = vr_get_texture(vr);
-            int window_w = 0;
-            int window_h = 0;
-            SDL_GetWindowSize(win, &window_w, &window_h);
             SDL_Rect video_dst = {0, 0, window_w, window_h};
             if (tex) {
                 int src_w = 0;
@@ -3635,6 +4028,14 @@ int main(int argc, char** argv) {
                 SDL_Texture* sub = vr_get_subtitle_texture(vr);
                 if (sub) SDL_RenderCopy(ren, sub, NULL, &video_dst);
             }
+        }
+
+        if (draw_mode_active && draw_canvas) {
+            int mouse_x, mouse_y;
+            SDL_GetMouseState(&mouse_x, &mouse_y);
+            draw_render_all(ren, draw_canvas, &draw_state, (SDL_Rect){0, 0, window_w, window_h});
+            draw_render_preview(ren, &draw_state, mouse_x, mouse_y);
+            draw_render_palette(ren, &draw_state, window_w, window_h);
         }
 
         if (overlay_alpha > 0.01f) {

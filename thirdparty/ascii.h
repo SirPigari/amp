@@ -9,7 +9,8 @@ const char ascii_art[] =
 "       OH     |/-O-\\|       N      \n"
 "              \\____/               \n"
 "               |   |                \n"
-"               OH  OH               \n"
+"               OH  OH               \n";
+const char ascii_art_note[] =
 "                                    \n"
 "     The amp project is licensed    \n"
 "     under the MIT License          \n"
@@ -30,6 +31,7 @@ const char ascii_art[] =
 /// @return void
 void print_ascii_art(void) {
     puts(ascii_art);
+    puts(ascii_art_note);
     return;
 }
 

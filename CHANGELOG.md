@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.6.0
+
+- Added drawing mode, toggle with <kbd>P</kbd> ([drawing.c](source/drawing.c)) 
+  - After entering you can draw on the current frame
+  - Tools: Pen, Eraser, Marker (contrast), Line, Rectangle, Circle, Filled Rectangle, Filled Circle; to select any of these either use HMENU or press the key with the index + 1 of it (for example 1 for Pen, 3 for Marker)
+  - Marker tool draws the contrast color to the pixel underneath (very slow, even with simd+O3)
+  - After pressing <kbd>E</kbd> (or <kbd>F3</kbd>) it asks to export the current frame with he drawings
+  - You can export *only* the drawing with using shift with the export key (<kbd>Shift+E</kbd>)
+  - You can use undo/redo (<kbd>Ctrl+Z</kbd> <kbd>Ctrl+Y</kbd>), different history than the default playback undo/redo
+  - Clear canvas with <kbd>Ctrl+N</kbd>
+- Added screenshot (<kbd>F2</kbd>), you can export as: png, jpg, bmp and tga
+- Replaced `mconsole` with `mwindows` and added `attach_console_if_present` ([stackoverflow question](https://stackoverflow.com/questions/78920322/redirect-standard-output-to-console-in-gui-application))
+- Added [stb_image_write.h](thirdparty/stb_image_write.h) for writing the screenshot/draw export image
+- Added pallete colors to config.h themes
+- Fixed an issue when sometimes it would not focus the window after `tinyfd_openFileDialog`
+- Added `distribute` mode, which creates a `dist.zip` file in root for it to distribute (windows only)
+
 ## 1.5.2
 
 - Fixed bug with audio not playing on linux

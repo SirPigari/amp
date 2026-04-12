@@ -1,5 +1,6 @@
 #define NOB_IMPLEMENTATION
 #include "thirdparty/nob.h"
+#include "thirdparty/ascii.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -12,7 +13,7 @@
 #include <dirent.h>
 #endif
 
-static void add_theme_includes(Nob_Cmd *cmd) {
+static void add_theme_includes(Nob_Cmd* cmd) {
 #ifdef _WIN32
     char pattern[1024];
     snprintf(pattern, sizeof(pattern), "%s\\*.h", THEMES_DIR);
@@ -29,12 +30,12 @@ static void add_theme_includes(Nob_Cmd *cmd) {
     }
 
 #else
-    DIR *d = opendir(THEMES_DIR);
+    DIR* d = opendir(THEMES_DIR);
     if (!d) return;
 
-    struct dirent *ent;
+    struct dirent* ent;
     while ((ent = readdir(d))) {
-        const char *name = ent->d_name;
+        const char* name = ent->d_name;
 
         size_t len = strlen(name);
         if (len > 2 && strcmp(name + len - 2, ".h") == 0) {
@@ -46,6 +47,157 @@ static void add_theme_includes(Nob_Cmd *cmd) {
 
     closedir(d);
 #endif
+}
+#endif
+
+#ifdef _WIN32
+static int is_system_dll(const char* name) {
+    const char* sys[] = {
+        "avrt", "bcd", "bcp47langs", "bcp47mrm", "biwinrt",
+        "browcli", "cabinet", "certca", "certenroll",
+        "chartv", "cldapi", "combase", "coml2",
+        "contactactivation", "coremessaging", "coreuicomponents",
+        "cryptdll", "cryptngc", "crypttpmeksvc", "cscapi",
+        "d3dscache", "davhlpr", "dbgeng", "dbghelp", "dbgmodel",
+        "declaredconfiguration", "dfscli", "diagnosticdatasettings",
+        "dmcmnutils", "dmenterprisediagnostics", "dmpushproxy",
+        "dmxmlhelputils", "dsclient", "dsparse", "dsreg", "dsrole",
+        "dui70", "duser", "edpauditapi", "edpcsp", "edputil",
+        "efscore", "efsutil", "efswrt", "elscore",
+        "enterpriseresourcemanager", "faultrep", "feclient",
+        "firewallapi", "fms", "fveapi", "fvecerts", "fveskybackup",
+        "fwbase", "fwpolicyiomgr", "fwpuclnt", "gmsaclient",
+        "hwreqchk", "iertutil", "iri", "kerb3961", "ktmw32",
+        "linkinfo", "logoncli", "mfc42u",
+        "mpr", "mrmcorer", "msasn1", "msiltcfg", "msimg32",
+        "msvcp110_win", "msvcp_win", "msvcrt",
+        "netutils", "ngcrecovery", "ngcutils", "nsi",
+        "ntasn1", "ntdsapi", "ntshrui",
+        "oledlg", "omadmapi", "policymanager",
+        "policymanagerprecheck", "printui", "propsys",
+        "rmclient", "samsrv", "scecli", "sechost",
+        "setupcl", "spfileq", "spinf", "srpapi", "shell32", 
+        "sspicli", "sspisrv", "tbs",
+        "textinputframework", "textshaping",
+        "twinapi", "umpdc", "urlmon", "user32", "uxtheme",
+        "vaultcli", "vertdisk", "webio", "webservices",
+        "winsta", "wldp", "wtsapi32", "xmllite"
+    };
+
+    char buf[260];
+    strncpy(buf, name, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = 0;
+
+    for (char* s = buf; *s; s++) {
+        *s = (char)tolower((unsigned char)*s);
+    }
+
+    char* dot = strrchr(buf, '.');
+    if (dot) *dot = 0;
+
+    for (int i = 0; i < (int)(sizeof(sys) / sizeof(sys[0])); i++) {
+        if (strcmp(buf, sys[i]) == 0) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int already_copied(const char* name, char copied[][260], int count) {
+    for (int i = 0; i < count; i++) {
+        if (strcmp(copied[i], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void copy_deps_ldd(const char* exe, const char* out_dir) {
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "ntldd -R %s", exe);
+
+    FILE* pipe = _popen(cmd, "r");
+    if (!pipe) return;
+
+    char line[2048];
+
+    char copied[1024][260];
+    int copied_count = 0;
+
+    while (fgets(line, sizeof(line), pipe)) {
+        char* p = strstr(line, "=>");
+        if (!p) continue;
+
+        p += 2;
+        while (*p == ' ') p++;
+
+        char* end = strstr(p, " (");
+        if (!end) continue;
+        *end = 0;
+
+        if (!strstr(p, ".dll")) continue;
+
+        char* name = strrchr(p, '\\');
+        if (!name) continue;
+        name++;
+
+        if (already_copied(name, copied, copied_count)) continue;
+
+        if (is_system_dll(name)) continue;
+
+        strncpy(copied[copied_count++], name, 259);
+        copied[copied_count - 1][259] = 0;
+
+        char out_path[1024];
+        snprintf(out_path, sizeof(out_path), "%s/%s", out_dir, name);
+
+        FILE* src = fopen(p, "rb");
+        if (!src) continue;
+
+        FILE* dst = fopen(out_path, "wb");
+        if (!dst) {
+            fclose(src);
+            continue;
+        }
+
+        char buf[8192];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), src)) > 0) {
+            fwrite(buf, 1, n, dst);
+        }
+
+        fclose(src);
+        fclose(dst);
+    }
+
+    _pclose(pipe);
+}
+
+static void write_readme(const char* out_dir) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s\\README.txt", out_dir);
+
+    FILE* f = fopen(path, "w");
+    if (!f) return;
+
+    fprintf(f,
+"%s\n"
+"=============================\n"
+"\n"
+"     1. Locate \"amp.exe\" in this folder\n"
+"     2. Open (double click) the amp.exe (can take about 10 seconds the first time, windows security)\n"
+"     3. It should open a file dialog, select a mp4 or mkv file that you want to watch\n"
+"     4. It should open and play!\n"
+"\n"
+"=============================\n"
+"\n"
+"%s\n",
+        ascii_art,
+        ascii_art_note
+    );
+
+    fclose(f);
 }
 #endif
 
@@ -83,6 +235,7 @@ int main(int argc, char** argv) {
     char** run_flags = NULL;
     unsigned int run_flags_count = 0;
     bool opt = false;
+    bool dist = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "run") == 0) {
             run = true;
@@ -92,6 +245,10 @@ int main(int argc, char** argv) {
             }
         } else if (strcmp(argv[i], "release") == 0) {
             opt = true;
+        } else if (strcmp(argv[i], "distribute") == 0) {
+            dist = true;
+        } else {
+            nob_log(NOB_WARNING, "Unknown option: %s", argv[i]);
         }
     }
 
@@ -122,7 +279,7 @@ int main(int argc, char** argv) {
                     "-lfreetype",
                     "-lharfbuzz",
                     "-lfribidi",
-                    "-mconsole",
+                    "-mwindows",
                     "-o", OUT_EXE_NAME".exe");
 #else
     nob_cmd_append(&cmd, CC);
@@ -157,6 +314,53 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Compilation failed!\n");
         return 1;
     }
+
+    if (dist) {
+#ifdef _WIN32
+    const char* out_dir = "dist";
+    const char* dll_dir = "dist\\dll";
+
+    system("rmdir /S /Q dist");
+    system("del /f dist.zip");
+    system("mkdir dist");
+    system("mkdir dist\\dll");
+
+    char exe[256];
+    snprintf(exe, sizeof(exe), "%s.exe", OUT_EXE_NAME);
+
+    char out_exe[256];
+    snprintf(out_exe, sizeof(out_exe), "%s/amp.exe", out_dir);
+
+    system("rmdir /S /Q dist\\assets");
+    system("xcopy assets dist\\assets /E /I /Y /Q");
+
+    FILE* src = fopen(exe, "rb");
+    FILE* dst = fopen(out_exe, "wb");
+
+    if (src && dst) {
+        char buf[8192];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), src)) > 0)
+            fwrite(buf, 1, n, dst);
+    }
+
+    if (src) fclose(src);
+    if (dst) fclose(dst);
+
+    copy_deps_ldd(exe, dll_dir);
+
+    system("copy LICENSE dist\\LICENSE.txt /Y");
+    system("copy CHANGELOG.md dist\\CHANGELOG.md /Y");
+    write_readme(out_dir);
+
+    printf("dist created in %s\n", out_dir);
+
+    system("cd dist && 7z a -tzip -mx=9 ..\\dist.zip *");
+    printf("dist.zip created\n");
+#else
+    nob_log(NOB_ERROR, "Distribution is only supported on Windows!\n");
+#endif
+}
 
     if (run) {
         cmd.count = 0;
