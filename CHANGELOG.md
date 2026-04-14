@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.0]
+
+- UNRELEASED (more stuff will be added)
+- Replaced `Font` with `Themes` in the hamburger menu
+- Added [template.h](assets/themes/template.h)
+- Changed how fonts work in themes (now its just a single `FONT` define)
+- Made themes persistent (added them to `Global` in saving)
+
 ## 1.7.0
 
 - Added runtime themes ([theme.c](source/theme.c))

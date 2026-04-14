@@ -29,11 +29,6 @@ static bool load_ui_font(const char* path, const char* label) {
     return true;
 }
 
-static const char* try_load_ui_font(const char* path, const char* label) {
-    if (load_ui_font(path, label)) return NULL;
-    return SDL_GetError();
-}
-
 static void draw_text(SDL_Renderer* ren, int x, int y, const char* text, SDL_Color color) {
     if (!text || !ui_font) return;
     SDL_Surface* surf = TTF_RenderUTF8_Blended(ui_font, text, color);

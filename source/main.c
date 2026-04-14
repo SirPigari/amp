@@ -62,11 +62,6 @@ static char hw_option[32] = "auto";
 static FILE* log_file = NULL;
 
 typedef struct {
-    const char* name;
-    const char* path;
-} FontEntry;
-
-typedef struct {
     Bookmark bms[MAX_BOOKMARKS_PER_FILE];
     int count;
 } BmSnap;
@@ -82,10 +77,6 @@ typedef struct {
     };
     char desc[256];
 } HistoryEntry;
-
-static FontEntry default_fonts[] = DEFAULT_FONTS_MAP;
-static const int default_font_count =
-    sizeof(default_fonts) / sizeof(default_fonts[0]);
 
 static int flash_debug_enabled = AMP_FLASH_DEBUG_DEFAULT;
 static int flash_debug_level = AMP_FLASH_DEBUG_LEVEL_DEFAULT;
@@ -1992,7 +1983,7 @@ int main(int argc, char** argv) {
     bool menu_open = false;
     bool audio_menu_open = false;
     bool subtitle_menu_open = false;
-    bool font_menu_open = false;
+    bool theme_menu_open = false;
     bool playback_menu_open = false;
     bool subtitle_settings_menu_open = false;
     bool subtitle_settings_value_menu_open = false;
@@ -2157,12 +2148,6 @@ int main(int argc, char** argv) {
                 const char* theme_name = argv[i + 1];
                 if (is_valid_theme_name(theme_name)) {
                     load_theme(theme_name);
-                    if (THEME_DEFAULT_FONTS_COUNT > 0) {
-                        for (int j = 0; j < THEME_DEFAULT_FONTS_COUNT && j < default_font_count; j++) {
-                            default_fonts[j].name = THEME_DEFAULT_FONTS_MAP[j].name;
-                            default_fonts[j].path = THEME_DEFAULT_FONTS_MAP[j].path;
-                        }
-                    }
                     draw_init(&draw_state);
                 } else {
                     nob_log(NOB_WARNING, "Invalid theme name: %s. Using default theme.", theme_name);
@@ -2211,13 +2196,20 @@ int main(int argc, char** argv) {
     nob_log(NOB_INFO, "HW option: %s", hw_option);
     
     bool font_loaded = false;
-    for (int i = 0; i < default_font_count; i++) {
-        if (load_ui_font(default_fonts[i].path, default_fonts[i].name)) {
-            nob_log(NOB_INFO, "Loaded UI font: %s from %s", default_fonts[i].name, default_fonts[i].path);
+    if (THEME_FONT.name[0] && THEME_FONT.path[0]) {
+        if (load_ui_font(THEME_FONT.path, THEME_FONT.name[0] ? THEME_FONT.name : THEME_NAME)) {
+            nob_log(NOB_INFO, "Loaded theme font: %s (%s)", THEME_FONT.name[0] ? THEME_FONT.name : THEME_NAME, THEME_FONT.path);
             font_loaded = true;
-            break;
         } else {
-            nob_log(NOB_WARNING, "Failed to load UI font: %s from %s", default_fonts[i].name, default_fonts[i].path);
+            nob_log(NOB_WARNING, "Theme font not available: %s", THEME_FONT.path);
+        }
+    }
+    if (!font_loaded) {
+        if (load_ui_font(THEME_SYSTEM_DEFAULT_FONT.path, THEME_SYSTEM_DEFAULT_FONT.name[0] ? THEME_SYSTEM_DEFAULT_FONT.name : THEME_NAME)) {
+            nob_log(NOB_INFO, "Loaded system default font: %s", THEME_SYSTEM_DEFAULT_FONT.name[0] ? THEME_SYSTEM_DEFAULT_FONT.name : THEME_NAME);
+            font_loaded = true;
+        } else {
+            nob_log(NOB_WARNING, "System default font not available: %s", THEME_SYSTEM_DEFAULT_FONT.path);
         }
     }
     if (!font_loaded) {
@@ -2325,6 +2317,17 @@ int main(int argc, char** argv) {
             for (int i = 0; i < recent_count; i++) {
                 recent_files[i] = save_state.recent_files[i] ? strdup(save_state.recent_files[i]) : NULL;
             }
+            if (save_state.global.theme[0] && strcmp(THEME_FILE, "config.h") == 0) {
+                load_theme(save_state.global.theme);
+                draw_init(&draw_state);
+                if (THEME_FONT.path[0]) {
+                    if (!load_ui_font(THEME_FONT.path, THEME_FONT.name[0] ? THEME_FONT.name : THEME_NAME))
+                        nob_log(NOB_WARNING, "Saved theme font not available: %s", THEME_FONT.path);
+                } else {
+                    if (!load_ui_font(THEME_SYSTEM_DEFAULT_FONT.path, THEME_SYSTEM_DEFAULT_FONT.name[0] ? THEME_SYSTEM_DEFAULT_FONT.name : THEME_NAME))
+                        nob_log(NOB_WARNING, "System default font not available: %s", THEME_SYSTEM_DEFAULT_FONT.path);
+                }
+            }
         }
     #endif
 
@@ -2388,7 +2391,7 @@ int main(int argc, char** argv) {
     }
 #endif
 
-    SDL_Rect timeline_rect, timeline_hitbox, volume_rect, hamburger, menu_panel, audio_box, subtitle_box, font_box, playback_box, subtitle_settings_box, overlay_rect;
+    SDL_Rect timeline_rect, timeline_hitbox, volume_rect, hamburger, menu_panel, audio_box, subtitle_box, theme_box, playback_box, subtitle_settings_box, overlay_rect;
     int overlay_h = 100;
     int margin = 24;
     int w, h;
@@ -2432,7 +2435,7 @@ int main(int argc, char** argv) {
             int row_y0 = menu_panel.y + 12;
             audio_box = (SDL_Rect){ row_x, row_y0 + row_step * 0, row_w, row_h };
             subtitle_box = (SDL_Rect){ row_x, row_y0 + row_step * 1, row_w, row_h };
-            font_box = (SDL_Rect){ row_x, row_y0 + row_step * 2, row_w, row_h };
+            theme_box = (SDL_Rect){ row_x, row_y0 + row_step * 2, row_w, row_h };
             playback_box = (SDL_Rect){ row_x, row_y0 + row_step * 3, row_w, row_h };
             subtitle_settings_box = (SDL_Rect){ row_x, row_y0 + row_step * 4, row_w, row_h };
         }
@@ -3409,7 +3412,7 @@ int main(int argc, char** argv) {
                         menu_open = false;
                         audio_menu_open = false;
                         subtitle_menu_open = false;
-                        font_menu_open = false;
+                        theme_menu_open = false;
                         playback_menu_open = false;
                         subtitle_settings_menu_open = false;
                         subtitle_settings_value_menu_open = false;
@@ -3863,7 +3866,7 @@ int main(int argc, char** argv) {
                     menu_open = !menu_open;
                     audio_menu_open = false;
                     subtitle_menu_open = false;
-                    font_menu_open = false;
+                    theme_menu_open = false;
                     playback_menu_open = false;
                     subtitle_settings_menu_open = false;
                     subtitle_settings_value_menu_open = false;
@@ -3876,7 +3879,7 @@ int main(int argc, char** argv) {
                     if (point_in_rect(mx, my, audio_box)) {
                         audio_menu_open = !audio_menu_open;
                         subtitle_menu_open = false;
-                        font_menu_open = false;
+                        theme_menu_open = false;
                         playback_menu_open = false;
                         subtitle_settings_menu_open = false;
                         subtitle_settings_value_menu_open = false;
@@ -3885,14 +3888,14 @@ int main(int argc, char** argv) {
                     } else if (point_in_rect(mx, my, subtitle_box)) {
                         subtitle_menu_open = !subtitle_menu_open;
                         audio_menu_open = false;
-                        font_menu_open = false;
+                        theme_menu_open = false;
                         playback_menu_open = false;
                         subtitle_settings_menu_open = false;
                         subtitle_settings_value_menu_open = false;
                         subtitle_settings_value_menu_row = -1;
                         handled = true;
-                    } else if (point_in_rect(mx, my, font_box)) {
-                        font_menu_open = !font_menu_open;
+                    } else if (point_in_rect(mx, my, theme_box)) {
+                        theme_menu_open = !theme_menu_open;
                         audio_menu_open = false;
                         subtitle_menu_open = false;
                         playback_menu_open = false;
@@ -3904,7 +3907,7 @@ int main(int argc, char** argv) {
                         playback_menu_open = !playback_menu_open;
                         audio_menu_open = false;
                         subtitle_menu_open = false;
-                        font_menu_open = false;
+                        theme_menu_open = false;
                         subtitle_settings_menu_open = false;
                         subtitle_settings_value_menu_open = false;
                         subtitle_settings_value_menu_row = -1;
@@ -3916,7 +3919,7 @@ int main(int argc, char** argv) {
                             subtitle_settings_value_menu_row = -1;
                             audio_menu_open = false;
                             subtitle_menu_open = false;
-                            font_menu_open = false;
+                            theme_menu_open = false;
                             playback_menu_open = false;
                             handled = true;
                         }
@@ -3926,7 +3929,7 @@ int main(int argc, char** argv) {
                         menu_open = false;
                         audio_menu_open = false;
                         subtitle_menu_open = false;
-                        font_menu_open = false;
+                        theme_menu_open = false;
                         playback_menu_open = false;
                         subtitle_settings_menu_open = false;
                         subtitle_settings_value_menu_open = false;
@@ -3985,47 +3988,109 @@ int main(int argc, char** argv) {
                         }
                     }
                     
-                    if (font_menu_open && !handled) {
-
+                    if (theme_menu_open && !handled) {
+                        char theme_names[32][64];
+                        int theme_count = get_theme_list(theme_names, 32);
                         int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
-                        int count = default_font_count + 1;
-
                         SDL_Rect list = {
                             menu_panel.x - THEME_MENU_DROPDOWN_WIDTH,
-                            font_box.y,
+                            theme_box.y,
                             THEME_MENU_DROPDOWN_WIDTH,
-                            item_h * count
+                            item_h * (theme_count + 1)
                         };
-
                         if (list.x < margin) list.x = margin;
-
                         if (point_in_rect(mx, my, list)) {
-
                             int idx = (my - list.y) / item_h;
+                            if (idx >= 0 && idx < theme_count) {
+                                load_theme(theme_names[idx]);
+                                draw_init(&draw_state);
+                                if (THEME_FONT.path[0]) {
+                                    if (!load_ui_font(THEME_FONT.path, THEME_FONT.name[0] ? THEME_FONT.name : THEME_NAME)) {
+                                        nob_log(NOB_WARNING, "Theme font not available: %s", THEME_FONT.path);
+                                        const char *prefix = "Theme font unavailable: ";
+                                        size_t prefix_len = strlen(prefix);
 
-                            if (idx >= 0 && idx < default_font_count) {
-                                load_ui_font(default_fonts[idx].path,
-                                            default_fonts[idx].name);
-                            }
-                            else if (idx == default_font_count) {
+                                        size_t max_path = sizeof(flash_text) - prefix_len - 1;
 
-                                const char* font_file = open_file_dialog(
-                                    (const char*[]){"*.ttf", "*.ttc", "*.otf"}, 3, "Font Files (*.ttf, *.ttc, *.otf)", false,
-                                    "Select Font File", NULL, NULL
-                                );
-
-                                const char* result = "No font selected";
-                                if (font_file) result = try_load_ui_font(font_file, "Custom");
-                                if (result) {
-                                    nob_log(NOB_ERROR, "Failed to load font: %s", result);
-                                    snprintf(flash_text, sizeof(flash_text), "Failed to load font: %s", result);
-                                    flash_until = SDL_GetTicks() + 1800;
+                                        snprintf(
+                                            flash_text,
+                                            sizeof(flash_text),
+                                            "%s%.*s",
+                                            prefix,
+                                            (int)max_path,
+                                            THEME_FONT.path
+                                        );
+                                        flash_until = SDL_GetTicks() + 2500;
+                                    }
                                 } else {
-                                    nob_log(NOB_INFO, "Loaded custom font: %s", font_file);
+                                    if (!load_ui_font(THEME_SYSTEM_DEFAULT_FONT.path, THEME_SYSTEM_DEFAULT_FONT.name[0] ? THEME_SYSTEM_DEFAULT_FONT.name : THEME_NAME))
+                                        nob_log(NOB_WARNING, "System default font not available: %s", THEME_SYSTEM_DEFAULT_FONT.path);
+                                }
+                                strncpy(save_state.global.theme, theme_names[idx], sizeof(save_state.global.theme) - 1);
+                                save_state.global.theme[sizeof(save_state.global.theme) - 1] = '\0';
+                                write_save_state(SAVE_FILE_PATH, &save_state);
+                            } else if (idx == theme_count) {
+                                const char* filters[] = { "*.h" };
+                                char* chosen = open_file_dialog(filters, 1, "Theme files (*.h)", false, "Select Theme File", NULL, NULL);
+                                if (chosen) {
+                                    if (!load_theme_probe(chosen)) {
+                                        nob_log(NOB_ERROR, "Invalid theme file: %s", chosen);
+                                        snprintf(flash_text, sizeof(flash_text), "Invalid theme file");
+                                        flash_until = SDL_GetTicks() + 2500;
+                                    } else {
+                                        char exe_dir[512];
+                                        get_exe_dir(exe_dir, sizeof(exe_dir));
+                                        char dest_dir[1024];
+                                        snprintf(dest_dir, sizeof(dest_dir), "%s/assets/themes", exe_dir);
+                                        const char* src_base = chosen;
+                                        for (const char* p = chosen; *p; p++)
+                                            if (*p == '/' || *p == '\\') src_base = p + 1;
+                                        char dest_path[1536];
+                                        snprintf(dest_path, sizeof(dest_path), "%s/%s", dest_dir, src_base);
+                                        bool copy_ok = false;
+                                        FILE* in = fopen(chosen, "rb");
+                                        FILE* out_f = in ? fopen(dest_path, "wb") : NULL;
+                                        if (in && out_f) {
+                                            char buf[4096];
+                                            size_t n;
+                                            while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+                                                fwrite(buf, 1, n, out_f);
+                                            copy_ok = !ferror(in) && !ferror(out_f);
+                                        }
+                                        if (in)  fclose(in);
+                                        if (out_f) fclose(out_f);
+                                        if (!copy_ok) {
+                                            nob_log(NOB_ERROR, "Failed to copy theme to %s", dest_path);
+                                            snprintf(flash_text, sizeof(flash_text), "Failed to copy theme file");
+                                            flash_until = SDL_GetTicks() + 2500;
+                                        } else {
+                                            load_theme_file(dest_path);
+                                            draw_init(&draw_state);
+                                            if (THEME_FONT.path[0]) {
+                                                if (!load_ui_font(THEME_FONT.path, THEME_FONT.name[0] ? THEME_FONT.name : THEME_NAME)) {
+                                                    nob_log(NOB_WARNING, "Theme font not available: %s", THEME_FONT.path);
+                                                    snprintf(flash_text, sizeof(flash_text), "Theme font unavailable");
+                                                    flash_until = SDL_GetTicks() + 2500;
+                                                }
+                                            } else {
+                                                if (!load_ui_font(THEME_SYSTEM_DEFAULT_FONT.path, THEME_SYSTEM_DEFAULT_FONT.name[0] ? THEME_SYSTEM_DEFAULT_FONT.name : THEME_NAME))
+                                                    nob_log(NOB_WARNING, "System default font not available: %s", THEME_SYSTEM_DEFAULT_FONT.path);
+                                            }
+                                            char theme_id[64];
+                                            strncpy(theme_id, src_base, sizeof(theme_id) - 1);
+                                            theme_id[sizeof(theme_id) - 1] = '\0';
+                                            size_t tid_len = strlen(theme_id);
+                                            if (tid_len > 2 && strcmp(theme_id + tid_len - 2, ".h") == 0)
+                                                theme_id[tid_len - 2] = '\0';
+                                            strncpy(save_state.global.theme, theme_id, sizeof(save_state.global.theme) - 1);
+                                            save_state.global.theme[sizeof(save_state.global.theme) - 1] = '\0';
+                                            write_save_state(SAVE_FILE_PATH, &save_state);
+                                            nob_log(NOB_INFO, "Custom theme installed: %s", dest_path);
+                                        }
+                                    }
                                 }
                             }
-
-                            font_menu_open = false;
+                            theme_menu_open = false;
                             handled = true;
                         }
                     }
@@ -4117,7 +4182,7 @@ int main(int argc, char** argv) {
                         menu_open = false;
                         audio_menu_open = false;
                         subtitle_menu_open = false;
-                        font_menu_open = false;
+                        theme_menu_open = false;
                         playback_menu_open = false;
                         subtitle_settings_menu_open = false;
                     }
@@ -4317,7 +4382,7 @@ int main(int argc, char** argv) {
         Uint32 now = SDL_GetTicks();
         float dt = (now - last_tick) / 1000.0f;
         last_tick = now;
-        if (!dragging_timeline && !volume_dragging && !menu_open && !audio_menu_open && !subtitle_menu_open && !font_menu_open && !playback_menu_open && !subtitle_settings_menu_open && !subtitle_settings_value_menu_open) {
+        if (!dragging_timeline && !volume_dragging && !menu_open && !audio_menu_open && !subtitle_menu_open && !theme_menu_open && !playback_menu_open && !subtitle_settings_menu_open && !subtitle_settings_value_menu_open) {
             if (now - last_mouse_move > 3000) overlay_target = 0.0f;
         }
         
@@ -4515,7 +4580,7 @@ int main(int argc, char** argv) {
                 draw_rect(ren, menu_panel, (SDL_Color){ THEME_MENU_PANEL_BG_COLOR[0], THEME_MENU_PANEL_BG_COLOR[1], THEME_MENU_PANEL_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
                 draw_rect(ren, audio_box, (SDL_Color){ THEME_MENU_PANEL_ITEM_BG_COLOR[0], THEME_MENU_PANEL_ITEM_BG_COLOR[1], THEME_MENU_PANEL_ITEM_BG_COLOR[2], (Uint8)(200 * overlay_alpha) });
                 draw_rect(ren, subtitle_box, (SDL_Color){ THEME_MENU_PANEL_ITEM_BG_COLOR[0], THEME_MENU_PANEL_ITEM_BG_COLOR[1], THEME_MENU_PANEL_ITEM_BG_COLOR[2], (Uint8)(200 * overlay_alpha) });
-                draw_rect(ren, font_box, (SDL_Color){ THEME_MENU_PANEL_ITEM_BG_COLOR[0], THEME_MENU_PANEL_ITEM_BG_COLOR[1], THEME_MENU_PANEL_ITEM_BG_COLOR[2], (Uint8)(200 * overlay_alpha) });
+                draw_rect(ren, theme_box, (SDL_Color){ THEME_MENU_PANEL_ITEM_BG_COLOR[0], THEME_MENU_PANEL_ITEM_BG_COLOR[1], THEME_MENU_PANEL_ITEM_BG_COLOR[2], (Uint8)(200 * overlay_alpha) });
                 draw_rect(ren, playback_box, (SDL_Color){ THEME_MENU_PANEL_ITEM_BG_COLOR[0], THEME_MENU_PANEL_ITEM_BG_COLOR[1], THEME_MENU_PANEL_ITEM_BG_COLOR[2], (Uint8)(200 * overlay_alpha) });
                 if (subtitle_settings_applicable) {
                     draw_rect(ren, subtitle_settings_box, (SDL_Color){ THEME_MENU_PANEL_ITEM_BG_COLOR[0], THEME_MENU_PANEL_ITEM_BG_COLOR[1], THEME_MENU_PANEL_ITEM_BG_COLOR[2], (Uint8)(200 * overlay_alpha) });
@@ -4528,8 +4593,8 @@ int main(int argc, char** argv) {
                     snprintf(audio_label, sizeof(audio_label), "Audio");
                 }
                 const char* sub_name = (vr && vr_get_subtitle_track_count(vr) > 0 && vr->current_subtitle >= 0) ? vr_get_subtitle_track_name(vr, vr->current_subtitle) : "Subtitles: Off";
-                char font_label[160];
-                snprintf(font_label, sizeof(font_label), "Font: %s", ui_font_label);
+                char theme_label[256+8];
+                snprintf(theme_label, sizeof(theme_label), "Theme: %s", THEME_NAME);
                 char playback_label[160];
                 char subtitle_settings_label[200];
                 char tmp[64];
@@ -4541,7 +4606,7 @@ int main(int argc, char** argv) {
                 snprintf(subtitle_settings_label, sizeof(subtitle_settings_label), "Subtitle Style...");
                 draw_text_shadow(ren, audio_box.x + 8, audio_box.y + 3, audio_label, text);
                 draw_text_shadow(ren, subtitle_box.x + 8, subtitle_box.y + 3, sub_name, text);
-                draw_text_shadow(ren, font_box.x + 8, font_box.y + 3, font_label, text);
+                draw_text_shadow(ren, theme_box.x + 8, theme_box.y + 3, theme_label, text);
                 draw_text_shadow(ren, playback_box.x + 8, playback_box.y + 3, playback_label, text);
                 if (subtitle_settings_applicable) {
                     draw_text_shadow(ren, subtitle_settings_box.x + 8, subtitle_settings_box.y + 3, subtitle_settings_label, text);
@@ -4626,38 +4691,40 @@ int main(int argc, char** argv) {
                     }
                 }
 
-                if (font_menu_open) {
-                    int count = default_font_count + 1;
+                if (theme_menu_open) {
+                    char theme_names[32][64];
+                    int theme_count = get_theme_list(theme_names, 32);
                     int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
-
                     SDL_Rect list = {
                         menu_panel.x - THEME_MENU_DROPDOWN_WIDTH,
-                        font_box.y,
+                        theme_box.y,
                         THEME_MENU_DROPDOWN_WIDTH,
-                        item_h * count
+                        item_h * (theme_count + 1)
                     };
-
                     if (list.x < margin) list.x = margin;
-
                     draw_rect(ren, list, (SDL_Color){ THEME_LIST_BG_COLOR[0], THEME_LIST_BG_COLOR[1], THEME_LIST_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
-
-                    for (int i = 0; i < default_font_count; ++i) {
-                        draw_text_shadow(
-                            ren,
+                    char current_theme[64] = "default";
+                    if (strcmp(THEME_FILE, "config.h") != 0) {
+                        strncpy(current_theme, THEME_FILE, 63);
+                        current_theme[63] = '\0';
+                        size_t cl = strlen(current_theme);
+                        if (cl > 2 && strcmp(current_theme + cl - 2, ".h") == 0)
+                            current_theme[cl - 2] = '\0';
+                    }
+                    for (int i = 0; i < theme_count; i++) {
+                        if (strcmp(theme_names[i], current_theme) == 0) {
+                            SDL_Rect item = { list.x, list.y + i * item_h, list.w, item_h };
+                            draw_rect(ren, item, (SDL_Color){ THEME_LIST_ITEM_BG_COLOR[0], THEME_LIST_ITEM_BG_COLOR[1], THEME_LIST_ITEM_BG_COLOR[2], (Uint8)(180 * overlay_alpha) });
+                        }
+                        draw_text_shadow(ren,
                             list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X,
                             list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h * i,
-                            default_fonts[i].name,
-                            text
-                        );
+                            theme_names[i], text);
                     }
-
-                    draw_text_shadow(
-                        ren,
+                    draw_text_shadow(ren,
                         list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X,
-                        list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h * default_font_count,
-                        "Custom...",
-                        text
-                    );
+                        list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h * theme_count,
+                        "Custom", text);
                 }
 
                 if (playback_menu_open) {

@@ -1,35 +1,13 @@
 /*
-Femboy theme for amp
-One of defaultly shipped themes with amp, 
-colors were chosen by markofwitch.
+   Femboy theme for amp
+   One of defaultly shipped themes with amp, 
+   colors were chosen by markofwitch.
 */
 
 /* Theme metadata */
 #define THEME_NAME "Femboy~"
 #define THEME_FILE "femboy.h"
 
-/* Menu dimensions (same as default) */
-#define MENU_DROPDOWN_ITEM_HEIGHT 28
-#define MENU_DROPDOWN_WIDTH 230
-#define MENU_DROPDOWN_SCROLLBAR_WIDTH 12
-#define MENU_DROPDOWN_TEXT_PADDING_X 8
-#define MENU_DROPDOWN_TEXT_PADDING_Y 2
-#define MENU_MAX_VISIBLE_ITEMS 10
-
-/* Timeline dimensions (same as default) */
-#define TIMELINE_HEIGHT 6
-#define TIMELINE_HITBOX_PADDING 12
-#define TIMELINE_THUMB_SIZE 12
-#define TIMELINE_CHAPTER_MARKER_WIDTH 4
-#define TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH 6
-#define TIMELINE_BOOKMARK_MARKER_WIDTH 4
-#define TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH 6
-
-/* Hamburger dimensions (same as default) */
-#define HAMBURGER_LINE_HEIGHT 2
-#define HAMBURGER_LINE_MARGIN 6
-
-#define SHADOW_OFFSET 2
 #define DEFAULT_BOOKMARK_COLOR 0xFF96C8
 
 /* Cute Pink (Femboy) Theme */
@@ -74,31 +52,3 @@ colors were chosen by markofwitch.
 #define DRAW_PALETTE_COLOR_6     255, 200, 225  /* light highlight pink */
 #define DRAW_PALETTE_COLOR_7     255, 185, 215  /* warm pink */
 #define DRAW_PALETTE_COLOR_ALPHA 255
-
-/* Platform-specific fonts (same as default) */
-#ifdef _WIN32
-
-#define PLATFORM_FONTS \
-    { "Segoe UI", "C:/Windows/Fonts/segoeui.ttf" }, \
-    { "Consolas", "C:/Windows/Fonts/consola.ttf" }
-
-#elif defined(__APPLE__)
-
-#define PLATFORM_FONTS \
-    { "Arial", "/Library/Fonts/Arial.ttf" }, \
-    { "Monaco", "/Library/Fonts/Monaco.ttf" }
-
-#else
-
-/* for arch linux */
-#define PLATFORM_FONTS \
-    { "DejaVu Sans", "/usr/share/fonts/TTF/DejaVuSans.ttf" }, \
-    { "DejaVu Mono", "/usr/share/fonts/TTF/DejaVuSansMono.ttf" }
-
-#endif
-
-/* Default fonts map */
-#define DEFAULT_FONTS_MAP { \
-    { "Iosevka (bundled)", "assets/Iosevka-Regular.ttc" }, \
-    PLATFORM_FONTS \
-}

@@ -21,12 +21,12 @@ static char THEME_NAME[256] = "AMP";
 static char THEME_FILE[256] = "config.h";
 
 typedef struct {
-    const char* name;
-    const char* path;
-} ThemeFontEntry;
+    char name[256];
+    char path[512];
+} ThemeFont;
 
-static ThemeFontEntry THEME_DEFAULT_FONTS_MAP[16];
-static int THEME_DEFAULT_FONTS_COUNT = 0;
+static ThemeFont THEME_FONT = FONT;
+static ThemeFont THEME_SYSTEM_DEFAULT_FONT = SYSTEM_DEFAULT_FONT;
 
 static int THEME_MENU_DROPDOWN_ITEM_HEIGHT = MENU_DROPDOWN_ITEM_HEIGHT;
 static int THEME_MENU_DROPDOWN_WIDTH = MENU_DROPDOWN_WIDTH;
@@ -85,15 +85,15 @@ static int THEME_DRAW_PALETTE_COLOR_6[3]      = { DRAW_PALETTE_COLOR_6 };
 static int THEME_DRAW_PALETTE_COLOR_7[3]      = { DRAW_PALETTE_COLOR_7 };
 static int THEME_DRAW_PALETTE_COLOR_ALPHA     = DRAW_PALETTE_COLOR_ALPHA;
 
-typedef Ht(const char*, char*) Theme_Defines;
+typedef Ht(const char*, char*) ThemeDefines;
 
 typedef struct {
     const char* file_path;
     int line;
     int column;
-} Theme_Location;
+} ThemeLocation;
 
-static void theme_error(Theme_Location loc, const char* fmt, ...) {
+static void theme_error(ThemeLocation loc, const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
     fprintf(stderr, "%s:%d:%d: error: ", loc.file_path, loc.line, loc.column);
@@ -173,11 +173,11 @@ static bool theme_parse_value(const char** p, char* out, size_t out_size) {
     return write > out;
 }
 
-static bool theme_is_defined(Theme_Defines* defines, const char* name) {
+static bool theme_is_defined(ThemeDefines* defines, const char* name) {
     return ht_find(defines, name) != NULL;
 }
 
-static bool theme_eval_condition(Theme_Defines* defines, const char* condition) {
+static bool theme_eval_condition(ThemeDefines* defines, const char* condition) {
     char name[256];
     const char* p = condition;
     theme_skip_whitespace_and_comments(&p);
@@ -201,7 +201,7 @@ static bool theme_eval_condition(Theme_Defines* defines, const char* condition) 
     return false;
 }
 
-static char* theme_expand_macros(Theme_Defines* defines, const char* value) {
+static char* theme_expand_macros(ThemeDefines* defines, const char* value) {
     static char expanded[4096];
     char temp[4096];
     strncpy(temp, value, sizeof(temp) - 1);
@@ -262,7 +262,7 @@ static char* theme_expand_macros(Theme_Defines* defines, const char* value) {
     return expanded;
 }
 
-static bool theme_load_file(const char* theme_path, Theme_Defines* defines) {
+static bool theme_load_file(const char* theme_path, ThemeDefines* defines) {
     nob_log(NOB_INFO, "Loading theme: %s", theme_path);
     
     Nob_String_Builder sb = {0};
@@ -286,7 +286,7 @@ static bool theme_load_file(const char* theme_path, Theme_Defines* defines) {
         if (*p == '\n') { line++; line_start = p + 1; p++; continue; }
         if (*p == '\0') break;
         
-        Theme_Location loc = { .file_path = theme_path, .line = line, .column = (int)(p - line_start) + 1 };
+        ThemeLocation loc = { .file_path = theme_path, .line = line, .column = (int)(p - line_start) + 1 };
         
         if (*p == '#') {
             p++;
@@ -394,7 +394,7 @@ static bool theme_load_file(const char* theme_path, Theme_Defines* defines) {
     return true;
 }
 
-static void theme_set_int(Theme_Defines* defines, const char* name, int* target) {
+static void theme_set_int(ThemeDefines* defines, const char* name, int* target) {
     char** value = ht_find(defines, name);
     if (value && *value) {
         char* endptr;
@@ -406,7 +406,7 @@ static void theme_set_int(Theme_Defines* defines, const char* name, int* target)
     }
 }
 
-static void theme_set_color(Theme_Defines* defines, const char* name, int* target) {
+static void theme_set_color(ThemeDefines* defines, const char* name, int* target) {
     char** value = ht_find(defines, name);
     if (value && *value) {
         int r, g, b;
@@ -424,7 +424,7 @@ static void theme_set_color(Theme_Defines* defines, const char* name, int* targe
     }
 }
 
-static void theme_set_string(Theme_Defines* defines, const char* name, char* target, size_t target_size) {
+static void theme_set_string(ThemeDefines* defines, const char* name, char* target, size_t target_size) {
     char** value = ht_find(defines, name);
     if (value && *value) {
         const char* str = *value;
@@ -447,7 +447,7 @@ static void theme_set_string(Theme_Defines* defines, const char* name, char* tar
 }
 
 static bool theme_load(const char* theme_path) {
-    Theme_Defines defines = { .hasheq = ht_cstr_hasheq };
+    ThemeDefines defines = { .hasheq = ht_cstr_hasheq };
     
 #ifdef _WIN32
     *ht_put(&defines, strdup("_WIN32")) = strdup("1");
@@ -552,63 +552,37 @@ static bool theme_load(const char* theme_path) {
     theme_set_color(&defines, "DRAW_PALETTE_COLOR_7", THEME_DRAW_PALETTE_COLOR_7);
     theme_set_int(&defines, "DRAW_PALETTE_COLOR_ALPHA", &THEME_DRAW_PALETTE_COLOR_ALPHA);
     
-    char** fonts_map_value = ht_find(&defines, "DEFAULT_FONTS_MAP");
-    if (fonts_map_value && *fonts_map_value) {
-        const char* expanded_value = theme_expand_macros(&defines, *fonts_map_value);
-        const char* p = expanded_value;
-        THEME_DEFAULT_FONTS_COUNT = 0;
-        
-        while (isspace(*p)) p++;
+    THEME_FONT.name[0] = '\0';
+    THEME_FONT.path[0] = '\0';
+    char** font_value = ht_find(&defines, "FONT");
+    if (font_value && *font_value) {
+        const char* raw = theme_expand_macros(&defines, *font_value);
+        const char* p = raw;
+        while (isspace((unsigned char)*p)) p++;
         if (*p == '{') p++;
-        while (isspace(*p)) p++;
-        
-        while (*p && THEME_DEFAULT_FONTS_COUNT < 16) {
-            while (isspace(*p)) p++;
-            if (*p == '}') break;
-            
-            if (*p != '{') break;
+        while (isspace((unsigned char)*p)) p++;
+        if (*p == '"') {
             p++;
-            
-            while (isspace(*p)) p++;
-            if (*p != '"') break;
-            p++;
-            const char* name_start = p;
-            while (*p && *p != '\"') p++;
-            if (*p != '"') break;
-            size_t name_len = p - name_start;
-            char* name = malloc(name_len + 1);
-            memcpy(name, name_start, name_len);
-            name[name_len] = '\0';
-            p++;
-            
-            while (isspace(*p)) p++;
-            if (*p != ',') { free(name); break; }
-            p++;
-            
-            while (isspace(*p)) p++;
-            if (*p != '"') { free(name); break; }
-            p++;
-            const char* path_start = p;
-            while (*p && *p != '\"') p++;
-            if (*p != '\"') { free(name); break; }
-            size_t path_len = p - path_start;
-            char* path = malloc(path_len + 1);
-            memcpy(path, path_start, path_len);
-            path[path_len] = '\0';
-            p++;
-            
-            while (isspace(*p)) p++;
-            if (*p != '}') { free(name); free(path); break; }
-            p++;
-            
-            THEME_DEFAULT_FONTS_MAP[THEME_DEFAULT_FONTS_COUNT].name = name;
-            THEME_DEFAULT_FONTS_MAP[THEME_DEFAULT_FONTS_COUNT].path = path;
-            THEME_DEFAULT_FONTS_COUNT++;
-            nob_log(NOB_INFO, "  Font[%d]: %s -> %s", THEME_DEFAULT_FONTS_COUNT - 1, name, path);
-            
-            while (isspace(*p)) p++;
-            if (*p == ',') p++;
+            size_t i = 0;
+            while (*p && *p != '"' && i < sizeof(THEME_FONT.name) - 1)
+                THEME_FONT.name[i++] = *p++;
+            THEME_FONT.name[i] = '\0';
+            if (*p == '"') p++;
         }
+        while (isspace((unsigned char)*p) || *p == ',') p++;
+        if (*p == '"') {
+            p++;
+            size_t i = 0;
+            while (*p && *p != '"' && i < sizeof(THEME_FONT.path) - 1)
+                THEME_FONT.path[i++] = *p++;
+            THEME_FONT.path[i] = '\0';
+        }
+        if (THEME_FONT.path[0])
+            nob_log(NOB_INFO, "  Theme font: %s (%s)", THEME_FONT.name[0] ? THEME_FONT.name : "unnamed", THEME_FONT.path);
+    } else {
+        THEME_FONT = (ThemeFont)FONT;
+        if (THEME_FONT.path[0])
+            nob_log(NOB_INFO, "  Theme font: %s (%s)", THEME_FONT.name[0] ? THEME_FONT.name : "unnamed", THEME_FONT.path);
     }
     
     ht_foreach(value, &defines) {
@@ -689,7 +663,7 @@ bool load_theme(const char* name) {
         strncpy(THEME_NAME, "AMP", sizeof(THEME_NAME) - 1);
         strncpy(THEME_FILE, "config.h", sizeof(THEME_FILE) - 1);
         
-        THEME_DEFAULT_FONTS_COUNT = 0;
+        THEME_FONT = (ThemeFont)FONT;
         
         THEME_MENU_DROPDOWN_ITEM_HEIGHT          = MENU_DROPDOWN_ITEM_HEIGHT;
         THEME_MENU_DROPDOWN_WIDTH                = MENU_DROPDOWN_WIDTH;
@@ -846,42 +820,90 @@ bool load_theme(const char* name) {
     return theme_load(theme_path);
 }
 
+bool load_theme_probe(const char* path) {
+    if (!path || !path[0]) return false;
+    ThemeDefines defines = { .hasheq = ht_cstr_hasheq };
+#ifdef _WIN32
+    *ht_put(&defines, strdup("_WIN32")) = strdup("1");
+#elif defined(__APPLE__)
+    *ht_put(&defines, strdup("__APPLE__")) = strdup("1");
+#else
+    *ht_put(&defines, strdup("__linux__")) = strdup("1");
+#endif
+    bool ok = theme_load_file(path, &defines)
+           && theme_is_defined(&defines, "THEME_NAME")
+           && theme_is_defined(&defines, "THEME_FILE");
+    ht_foreach(value, &defines) {
+        free((void*)ht_key(&defines, value));
+        free(*value);
+    }
+    ht_free(&defines);
+    return ok;
+}
+
+bool load_theme_file(const char* path) {
+    if (!path || !path[0]) return false;
+    return theme_load(path);
+}
+
+int get_theme_list(char themes[][64], int max_count) {
+    int count = 0;
+
+    if (count < max_count) {
+        snprintf(themes[count], 64, "%s", "default");
+        count++;
+    }
+
+    char exe_dir[512];
+    char themes_dir[1024];
+    get_exe_dir(exe_dir, sizeof(exe_dir));
+    snprintf(themes_dir, sizeof(themes_dir), "%s/assets/themes", exe_dir);
+
+    Nob_File_Paths paths = {0};
+    if (nob_read_entire_dir(themes_dir, &paths)) {
+        for (size_t i = 0; i < paths.count && count < max_count; i++) {
+            const char* name = paths.items[i];
+            if (!name || !*name) continue;
+            if (strcmp(name, "template.h") == 0) continue;
+
+            size_t len = strlen(name);
+            if (len <= 2) continue;
+            if (strcmp(name + len - 2, ".h") != 0) continue;
+
+            size_t copy_len = len - 2;
+            if (copy_len >= 64) copy_len = 63;
+
+            memcpy(themes[count], name, copy_len);
+            themes[count][copy_len] = '\0';
+
+            count++;
+        }
+        nob_da_free(paths);
+    }
+
+    return count;
+}
+
 void list_themes(FILE* out) {
     if (!out) out = stdout;
-    
+
     char exe_dir[512];
     get_exe_dir(exe_dir, sizeof(exe_dir));
-    
+
     char themes_dir[1024];
     snprintf(themes_dir, sizeof(themes_dir), "%s/assets/themes", exe_dir);
-    
+
     fprintf(out, "Available themes in %s:\n", themes_dir);
-    
-    Nob_File_Paths paths = {0};
-    if (!nob_read_entire_dir(themes_dir, &paths)) {
-        fprintf(out, "  (unable to read themes directory)\n");
+
+    char themes[32][64];
+    int count = get_theme_list(themes, 32);
+
+    if (count <= 0) {
+        fprintf(out, "  (no themes found)\n");
         return;
     }
-    
-    bool found_any = false;
-    for (size_t i = 0; i < paths.count; i++) {
-        const char* name = paths.items[i];
-        size_t len = strlen(name);
-        
-        if (len > 2 && strcmp(name + len - 2, ".h") == 0) {
-            char display_name[256];
-            strncpy(display_name, name, sizeof(display_name) - 1);
-            display_name[sizeof(display_name) - 1] = '\0';
-            display_name[len - 2] = '\0';
-            
-            fprintf(out, "  - %s\n", display_name);
-            found_any = true;
-        }
+
+    for (int i = 0; i < count; i++) {
+        fprintf(out, "  - %s\n", themes[i]);
     }
-    
-    if (!found_any) {
-        fprintf(out, "  (no themes found)\n");
-    }
-    
-    nob_da_free(paths);
 }
