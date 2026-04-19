@@ -211,15 +211,20 @@ int main(int argc, char** argv) {
         }
     }
 
+    time_t t = time(NULL);
+    struct tm *tm = localtime(&t);
+
 #ifdef _WIN32
-    char maj[32], min[32], pat[32];
+    char maj[32], min[32], pat[32], ffl[32], ogf[32];
     snprintf(maj, sizeof(maj), "-DAMP_VER_MAJOR=%d", (AMP_VERSION >> 16) & 0xFF);
     snprintf(min, sizeof(min), "-DAMP_VER_MINOR=%d", (AMP_VERSION >> 8) & 0xFF);
     snprintf(pat, sizeof(pat), "-DAMP_VER_PATCH=%d", AMP_VERSION & 0xFF);
+    snprintf(ffl, sizeof(ffl), "-DAMP_FILEFLAGS=%d", opt ? 0 : 1);
+    snprintf(ogf, sizeof(ogf), "-DAMP_ORIG_FILE=\\\"%s.exe\\\"", dist ? "amp" : OUT_EXE_NAME);
     nob_cmd_append(
         &cmd,
         "windres", "assets/amp.rc", "-O", "coff", "-o", "assets/amp.res",
-        maj, min, pat
+        maj, min, pat, ffl, ogf
     );
     if (!nob_cmd_run(&cmd)) {
         fprintf(stderr, "Resource compilation failed!\n");

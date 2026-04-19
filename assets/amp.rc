@@ -5,8 +5,13 @@
 #define STR(x) STR_HELPER(x)
 
 1 VERSIONINFO
-FILEVERSION AMP_VER_MAJOR,AMP_VER_MINOR,AMP_VER_PATCH,0
-PRODUCTVERSION AMP_VER_MAJOR,AMP_VER_MINOR,AMP_VER_PATCH,0
+  FILEVERSION AMP_VER_MAJOR,AMP_VER_MINOR,AMP_VER_PATCH,0
+  PRODUCTVERSION AMP_VER_MAJOR,AMP_VER_MINOR,AMP_VER_PATCH,0
+  FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+  FILEFLAGS AMP_FILEFLAGS
+  FILEOS VOS__WINDOWS32
+  FILETYPE VFT_APP
+  FILESUBTYPE 0
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
@@ -15,9 +20,12 @@ BEGIN
       VALUE "FileDescription", "simple media player"
       VALUE "ProductName", "amp"
       VALUE "InternalName", "amp"
-      VALUE "OriginalFilename", "main.exe"
+      VALUE "OriginalFilename", AMP_ORIG_FILE
       VALUE "FileVersion", STR(AMP_VER_MAJOR) "." STR(AMP_VER_MINOR) "." STR(AMP_VER_PATCH)
       VALUE "ProductVersion", STR(AMP_VER_MAJOR) "." STR(AMP_VER_MINOR) "." STR(AMP_VER_PATCH)
+      VALUE "CompanyName", "Markofwitch"
+      VALUE "LegalCopyright", "Copyright (c) 2026 Markofwitch"
+      VALUE "LegalTrademarks", ""
     END
   END
 

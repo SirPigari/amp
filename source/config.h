@@ -12,6 +12,7 @@
 #define RELEASE_CFLAGS "-Wno-cast-function-type", "-Wall", "-Wextra", "-O3"
 #define SAVE_FILE_MAGIC 0x414D5056 /* 'AMPV' */
 #define OUT_EXE_NAME   "main"
+#define TIMESTAMP      __DATE__ " " __TIME__
 
 #define AMP_FLASH_DEBUG_DEFAULT 0
 #define AMP_FLASH_DEBUG_LEVEL_DEFAULT NOB_INFO

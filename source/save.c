@@ -93,6 +93,8 @@ static HWCache hw_cache = {0};
 typedef struct {
     int paused;
     char theme[256];
+    int32_t win_x;
+    int32_t win_y;
 } Global;
 
 static const LayoutField CURRENT_LAYOUT[] = {
@@ -972,6 +974,7 @@ static void debug_save_state(const SaveState* state) {
     printf("Global:\n");
     printf("  Paused: %d\n", state->global.paused);
     printf("  Theme: %s\n", state->global.theme);
+    printf("  Win Pos: %d, %d\n", state->global.win_x, state->global.win_y);
 }
 
 static void update_bookmarks_in_save_state(SaveState* state,

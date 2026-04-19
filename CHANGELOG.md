@@ -1,12 +1,18 @@
 # Changelog
 
-## [1.8.0]
+## 1.8.0
 
-- UNRELEASED (more stuff will be added)
 - Replaced `Font` with `Themes` in the hamburger menu
 - Added [template.h](assets/themes/template.h)
 - Changed how fonts work in themes (now its just a single `FONT` define)
 - Made themes persistent (added them to `Global` in saving)
+- Updated [amp.rc](assets/amp.rc)
+- Added timestamp to `-i`
+- Fixed marker to be FASTER (really fast now it uses a better approach)
+- Added <kbd>?</kbd> for keyboard shortcuts overlay (may be used later to add custom kbds)
+- Added `Keyboard shortcuts` to HMENU
+- Added <kbd>Alt+S</kbd> for custom speed
+- Made `Drawing` menu items disable/enable based on the drawing toggle state
 
 ## 1.7.0
 

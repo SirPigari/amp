@@ -117,6 +117,127 @@ static const char* subtitle_override_move_labels[] = {
     "Mid",
     "High"
 };
+typedef struct {
+    union {
+        struct {
+            SDL_Keycode key;
+            SDL_Keymod mod;
+        } keysym;
+        const char* textinput;
+    } key;
+    enum {
+        KBD_ENTRY_KEYSYM,
+        KBD_ENTRY_TEXT_INPUT,
+    } tag;
+    const char* desc;
+} KbdEntry;
+
+#define KBD_KSM(m, k, d) \
+    { .key.keysym = { SDLK_##k, m }, .tag = KBD_ENTRY_KEYSYM, .desc = d }
+
+#define KBD_KS(m, k, d) \
+    KBD_KSM(KMOD_##m, k, d)
+
+#define KBD_K(k, d) KBD_KS(NONE, k, d)
+
+#define KBD_TI(t, d) \
+    { .key.textinput = t, .tag = KBD_ENTRY_TEXT_INPUT, .desc = d }
+
+static const KbdEntry kbd_entries[] = {
+    KBD_K(SPACE, "Play / Pause"),
+    KBD_K(LEFT, "Seek -5s"),
+    KBD_K(RIGHT, "Seek +5s"),
+    KBD_K(UP, "Volume +5%"),
+    KBD_K(DOWN, "Volume -5%"),
+    KBD_KS(ALT, LEFT, "Previous Frame"),
+    KBD_KS(ALT, RIGHT, "Next Frame"),
+    KBD_KS(SHIFT, LEFT, "Previous Media"),
+    KBD_KS(SHIFT, RIGHT, "Next Media"),
+    KBD_K(HOME, "Seek to Beginning"),
+    KBD_K(END, "Seek to End"),
+    KBD_KS(ALT, m, "Minimize"),
+    KBD_K(F10, "Toggle Maximize"),
+    KBD_K(F11, "Toggle Fullscreen"),
+    KBD_K(F2, "Screenshot"),
+    KBD_K(c, "Toggle Subtitles"),
+    KBD_KS(ALT, c, "Cycle Subtitles"),
+    KBD_KS(CTRL, o, "Open File"),
+    KBD_KS(CTRL, r, "Reload File"),
+    KBD_KS(CTRL, z, "Undo"),
+    KBD_KS(CTRL, y, "Redo"),
+    KBD_K(b, "Add Bookmark"),
+    KBD_KS(SHIFT, b, "Delete Closest Bookmark"),
+    KBD_TI("[", "Previous Bookmark/Chapter"),
+    KBD_TI("]", "Next Bookmark/Chapter"),
+    KBD_K(m, "Mute / Unmute"),
+    KBD_KS(CTRL, 1, "Volume 100%"),
+    KBD_KS(CTRL, 2, "Volume 200%"),
+    KBD_K(p, "Enter Draw Mode"),
+    KBD_KS(CTRL, g, "Jump to Time"),
+    KBD_KS(ALT, r, "Custom Resolution"),
+    KBD_KSM(KMOD_SHIFT | KMOD_ALT, r, "Reset Resolution"),
+    KBD_KSM(KMOD_ALT, a, "Custom Aspect Ratio"),
+    KBD_KSM(KMOD_SHIFT | KMOD_ALT, a, "Reset Aspect Ratio"),
+    KBD_KSM(KMOD_SHIFT | KMOD_ALT, s, "Stretch to Window"),
+    KBD_KSM(KMOD_SHIFT | KMOD_ALT, z, "Custom Zoom"),
+    KBD_KSM(KMOD_CTRL | KMOD_ALT, z, "Reset Zoom"),
+    KBD_KSM(KMOD_ALT, s, "Custom Speed"),
+    KBD_KS(CTRL, 0, "Reset view state"),
+    KBD_KS(CTRL, KP_PLUS, "Zoom In"),
+    KBD_KS(CTRL, KP_MINUS, "Zoom Out"),
+    KBD_K(KP_PLUS, "Subtitle +1ms"),
+    KBD_K(KP_MINUS, "Subtitle -1ms"),
+    KBD_KS(SHIFT, KP_PLUS, "Subtitle +100ms"),
+    KBD_KS(SHIFT, KP_MINUS, "Subtitle -100ms"),
+    KBD_TI("?", "Keyboard Shortcuts"),
+    KBD_KS(ALT, F4, "Exit"),
+    KBD_K(ESCAPE, "Close"),
+};
+static const int kbd_entry_count = (int)(sizeof(kbd_entries) / sizeof(kbd_entries[0]));
+#undef KBD_KSM
+#undef KBD_KS
+#undef KBD_K
+#undef KBD_TI
+
+static char* display_kbd(KbdEntry* kbd) {
+    static char key[64];
+    key[0] = '\0';
+
+    if (kbd->tag == KBD_ENTRY_KEYSYM) {
+        SDL_Keymod mod = kbd->key.keysym.mod;
+
+        if (mod & KMOD_CTRL)
+            strncat(key, "Ctrl+", sizeof(key) - strlen(key) - 1);
+        if (mod & KMOD_SHIFT)
+            strncat(key, "Shift+", sizeof(key) - strlen(key) - 1);
+        if (mod & KMOD_ALT)
+            strncat(key, "Alt+", sizeof(key) - strlen(key) - 1);
+        if (mod & KMOD_GUI)
+            strncat(key, "Super+", sizeof(key) - strlen(key) - 1);
+
+        const char* raw = SDL_GetKeyName(kbd->key.keysym.key);
+
+        char pretty[32];
+        snprintf(pretty, sizeof(pretty), "%s", raw);
+
+        if (strcmp(raw, "-") == 0) strcpy(pretty, "Minus");
+        else if (strcmp(raw, "Keypad -") == 0) strcpy(pretty, "Minus");
+        else if (strcmp(raw, "=") == 0) strcpy(pretty, "Equals");
+        else if (strcmp(raw, "+") == 0) strcpy(pretty, "Plus");
+        else if (strcmp(raw, "Keypad +") == 0) strcpy(pretty, "Plus");
+        else if (strcmp(raw, "Return") == 0) strcpy(pretty, "Enter");
+        else if (strcmp(raw, "Escape") == 0) strcpy(pretty, "Esc");
+        else if (strcmp(raw, "Left Shift") == 0 || strcmp(raw, "Right Shift") == 0) strcpy(pretty, "Shift");
+        else if (strcmp(raw, "Left Ctrl") == 0 || strcmp(raw, "Right Ctrl") == 0) strcpy(pretty, "Ctrl");
+        else if (strcmp(raw, "Left Alt") == 0 || strcmp(raw, "Right Alt") == 0) strcpy(pretty, "Alt");
+
+        strncat(key, pretty, sizeof(key) - strlen(key) - 1);
+    } else {
+        snprintf(key, sizeof(key), "%s", kbd->key.textinput);
+    }
+
+    return key;
+}
 
 static void apply_subtitle_override(VideoRenderer* vr, uint32_t color_rgb, int size, int margin_bottom) {
     if (!vr) return;
@@ -1547,6 +1668,7 @@ enum {
     MENU_DRAW_TOOL_CIRCLE,
     MENU_DRAW_TOOL_FILLED_RECT,
     MENU_DRAW_TOOL_FILLED_CIRCLE,
+    MENU_KBD_OVERLAY,
     MENU_RECENT_BASE = 6969
 };
 
@@ -1615,6 +1737,8 @@ HMENU create_windows_menu(SDL_Window* window) {
     AppendMenu(hZoomMenu, MF_STRING, MENU_ZOOM_IN, "Zoom In\tCtrl+Plus");
     AppendMenu(hZoomMenu, MF_STRING, MENU_ZOOM_OUT, "Zoom Out\tCtrl+Minus");
     AppendMenu(hViewMenu, MF_POPUP, (UINT_PTR)hZoomMenu, "Zoom");
+    AppendMenu(hViewMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hViewMenu, MF_STRING, MENU_KBD_OVERLAY, "Keyboard Shortcuts\t?");
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hViewMenu, "View");
 
     AppendMenu(hVolumeMenu, MF_STRING, MENU_VOLUME_UP, "Volume Up (by 5%)\tUp");
@@ -1673,6 +1797,36 @@ HMENU create_windows_menu(SDL_Window* window) {
     SetMenu(hwnd, hMenu);
     DrawMenuBar(hwnd);
     return hMenu;
+}
+
+void menu_set_draw_mode(bool on) {
+    if (!g_menu_win) return;
+
+    HWND hwnd = get_hwnd(g_menu_win);
+    if (!hwnd || !g_current_win_menu) return;
+
+    HMENU menu = g_current_win_menu;
+
+    UINT disable = MF_BYCOMMAND | MF_GRAYED;
+    UINT enable  = MF_BYCOMMAND | MF_ENABLED;
+
+    EnableMenuItem(menu, MENU_DRAW_ENTER, on ? disable : enable);
+    EnableMenuItem(menu, MENU_DRAW_EXIT,  on ? enable  : disable);
+
+    EnableMenuItem(menu, MENU_DRAW_TOOL_PEN,           on ? enable : disable);
+    EnableMenuItem(menu, MENU_DRAW_TOOL_ERASER,        on ? enable : disable);
+    EnableMenuItem(menu, MENU_DRAW_TOOL_MARKER,        on ? enable : disable);
+    EnableMenuItem(menu, MENU_DRAW_TOOL_LINE,          on ? enable : disable);
+    EnableMenuItem(menu, MENU_DRAW_TOOL_RECT,          on ? enable : disable);
+    EnableMenuItem(menu, MENU_DRAW_TOOL_CIRCLE,        on ? enable : disable);
+    EnableMenuItem(menu, MENU_DRAW_TOOL_FILLED_RECT,   on ? enable : disable);
+    EnableMenuItem(menu, MENU_DRAW_TOOL_FILLED_CIRCLE, on ? enable : disable);
+
+    EnableMenuItem(menu, MENU_DRAW_EXPORT_WITH_FRAME, on ? enable : disable);
+    EnableMenuItem(menu, MENU_DRAW_EXPORT_ONLY,       on ? enable : disable);
+    EnableMenuItem(menu, MENU_DRAW_CLEAR,             on ? enable : disable);
+
+    DrawMenuBar(hwnd);
 }
 
 static void refresh_windows_recent_menu(void) {
@@ -1988,6 +2142,8 @@ int main(int argc, char** argv) {
     bool subtitle_settings_menu_open = false;
     bool subtitle_settings_value_menu_open = false;
     int subtitle_settings_value_menu_row = -1;
+    bool kbd_overlay_open = false;
+    int kbd_scroll = 0;
     double drag_time = 0.0;
     float overlay_alpha = 1.0f;
     float overlay_target = 1.0f;
@@ -2014,7 +2170,7 @@ int main(int argc, char** argv) {
     int history_pos   = -1;
 
     TextInputState ti = {0};
-    typedef enum { TI_NONE = 0, TI_BOOKMARK_RENAME, TI_GOTO_TIME, TI_SET_RESOLUTION, TI_SET_ASPECT_RATIO, TI_SET_ZOOM } TIPurpose;
+    typedef enum { TI_NONE = 0, TI_BOOKMARK_RENAME, TI_GOTO_TIME, TI_SET_RESOLUTION, TI_SET_ASPECT_RATIO, TI_SET_ZOOM, TI_SET_SPEED } TIPurpose;
     TIPurpose ti_purpose = TI_NONE;
     int ti_bm_idx = -1;
     char ti_bm_old_name[BOOKMARK_NAME_MAX] = {0};
@@ -2126,6 +2282,7 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "--info") == 0 || strcmp(argv[i], "-i") == 0) {
             fprintf(stdout, "amp - A simple video player\n");
             fprintf(stdout, "version: %d.%d.%d\n", (AMP_VERSION >> 16) & 0xFF, (AMP_VERSION >> 8) & 0xFF, AMP_VERSION & 0xFF);
+            fprintf(stdout, "timestamp: %s\n", TIMESTAMP);
             usage(stdout, argv[0]);
             fprintf(stdout, "Compiled with:\n");
             fprintf(stdout, "  Nob version: %s\n", NOB_VERSION);
@@ -2367,6 +2524,9 @@ int main(int argc, char** argv) {
                 paused = save_state.global.paused;
             }
         #endif
+        if (save_state.global.win_x != 0 || save_state.global.win_y != 0) {
+            SDL_SetWindowPosition(win, save_state.global.win_x, save_state.global.win_y);
+        }
     #endif
 
     if (video_file) {
@@ -2389,6 +2549,7 @@ int main(int argc, char** argv) {
         g_menu_playback_speed_ptr = &playback_speed;
         g_prev_menu_wndproc = (WNDPROC)SetWindowLongPtr(win_hwnd, GWLP_WNDPROC, (LONG_PTR)amp_menu_wndproc);
     }
+    menu_set_draw_mode(false);
 #endif
 
     SDL_Rect timeline_rect, timeline_hitbox, volume_rect, hamburger, menu_panel, audio_box, subtitle_box, theme_box, playback_box, subtitle_settings_box, overlay_rect;
@@ -2544,6 +2705,32 @@ int main(int argc, char** argv) {
                         } else {
                             snprintf(flash_text, sizeof(flash_text), "Invalid zoom (use 150, 150%%, 2x, 2 times)");
                         }
+                        flash_until = SDL_GetTicks() + 900;
+                    } else if (ti_purpose == TI_SET_SPEED) {
+                        float spd = 0.0f;
+
+                        char buf[256];
+                        snprintf(buf, sizeof(buf), "%s", ti.value);
+
+                        size_t len = strlen(buf);
+                        if (len > 0 && (buf[len - 1] == 'x' || buf[len - 1] == 'X')) {
+                            buf[len - 1] = '\0';
+                        }
+
+                        if (sscanf(buf, "%f", &spd) == 1 && spd > 0.0f) {
+                            playback_speed = spd;
+
+                            if (vr) {
+                                vr_set_speed(vr, playback_speed);
+                                SDL_ClearQueuedAudio(vr->audio_dev);
+                                if (playback_speed > 2.0f) vr->audio_clock_valid = 0;
+                            }
+
+                            snprintf(flash_text, sizeof(flash_text), "Speed: %.6gx", (double)playback_speed);
+                        } else {
+                            snprintf(flash_text, sizeof(flash_text), "Invalid speed (must be > 0)");
+                        }
+
                         flash_until = SDL_GetTicks() + 900;
                     }
                     ti_purpose = TI_NONE;
@@ -3048,6 +3235,8 @@ int main(int argc, char** argv) {
                                 if (draw_canvas) SDL_DestroyTexture(draw_canvas);
                                 draw_canvas = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, win_w, win_h);
                                 SDL_SetTextureBlendMode(draw_canvas, SDL_BLENDMODE_BLEND);
+                                draw_notify_canvas_resized(&draw_state, win_w, win_h);
+                                menu_set_draw_mode(true);
                                 snprintf(flash_text, sizeof(flash_text), "Draw Mode: ON (Paused)");
                                 flash_until = SDL_GetTicks() + 900;
                             }
@@ -3056,6 +3245,7 @@ int main(int argc, char** argv) {
                                 draw_mode_active = 0;
                                 paused = draw_mode_was_paused;
                                 if (vr) vr_set_paused(vr, paused);
+                                menu_set_draw_mode(false);
                                 snprintf(flash_text, sizeof(flash_text), "Draw Mode: OFF");
                                 flash_until = SDL_GetTicks() + 900;
                             }
@@ -3070,13 +3260,13 @@ int main(int argc, char** argv) {
                                 video_dst = compute_video_dst_rect(win_w, win_h, src_w, src_h, vr->ar_x, vr->ar_y);
                                 video_dst = apply_zoom_to_rect(video_dst, win_w, win_h, vr->zoom_percent);
                             }
-                            draw_export(ren, draw_canvas, frame_tex, video_dst, win_w, win_h, 1);
+                            draw_export(ren, draw_canvas, frame_tex, video_dst, win_w, win_h, 1, &draw_state);
                             snprintf(flash_text, sizeof(flash_text), "Drawing exported");
                             flash_until = SDL_GetTicks() + 900;
                         } else if (id == MENU_DRAW_EXPORT_ONLY && draw_canvas && draw_mode_active) {
                             int win_w, win_h;
                             SDL_GetWindowSize(win, &win_w, &win_h);
-                            draw_export(ren, draw_canvas, NULL, (SDL_Rect){0,0,0,0}, win_w, win_h, 0);
+                            draw_export(ren, draw_canvas, NULL, (SDL_Rect){0,0,0,0}, win_w, win_h, 0, &draw_state);
                             snprintf(flash_text, sizeof(flash_text), "Drawing exported");
                             flash_until = SDL_GetTicks() + 900;
                         } else if (id == MENU_DRAW_CLEAR && draw_mode_active) {
@@ -3126,6 +3316,7 @@ int main(int argc, char** argv) {
                 int go_next_ti = -1;
                 if (txt[0] == ']' && txt[1] == '\0') go_next_ti = 1;
                 else if (txt[0] == '[' && txt[1] == '\0') go_next_ti = 0;
+                else if (txt[0] == '?' && txt[1] == '\0') kbd_overlay_open = !kbd_overlay_open;
                 if (go_next_ti >= 0) {
                     double cur_ti = vr_get_time(vr);
                     double dur_ti = vr_get_duration(vr);
@@ -3400,7 +3591,9 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (key == SDLK_ESCAPE) {
-                    if (draw_mode_active) {
+                    if (kbd_overlay_open) {
+                        kbd_overlay_open = false;
+                    } else if (draw_mode_active) {
                         draw_mode_active = 0;
                         paused = draw_mode_was_paused;
                         if (vr) vr_set_paused(vr, paused);
@@ -3714,6 +3907,12 @@ int main(int argc, char** argv) {
                     text_input_open(&ti, "Zoom (e.g. 150%, 2x):", zoom_hint[0] ? zoom_hint : "", 16);
                     ti_purpose = TI_SET_ZOOM;
                 }
+                if (key == SDLK_s && !((e.key.keysym.mod & KMOD_CTRL) && (e.key.keysym.mod & KMOD_SHIFT)) && (e.key.keysym.mod & KMOD_ALT) && !ti.active) {
+                    char speed_hint[16] = {0};
+                    if (vr) snprintf(speed_hint, sizeof(speed_hint), "%.6gx", vr->playback_speed);
+                    text_input_open(&ti, "Speed (e.g. 2, 3x):", speed_hint[0] ? speed_hint : "", 16);
+                    ti_purpose = TI_SET_SPEED;
+                }
                 if ((key == SDLK_EQUALS || key == SDLK_PLUS || key == SDLK_KP_PLUS) && (e.key.keysym.mod & KMOD_CTRL) && vr) {
                     vr_set_zoom(vr, vr->zoom_percent + 25);
                     snprintf(flash_text, sizeof(flash_text), "Zoom: %d%%", vr->zoom_percent);
@@ -3724,9 +3923,11 @@ int main(int argc, char** argv) {
                     snprintf(flash_text, sizeof(flash_text), "Zoom: %d%%", vr->zoom_percent);
                     flash_until = SDL_GetTicks() + 900;
                 }
-                
                 if (key == SDLK_p && !(e.key.keysym.mod & KMOD_CTRL) && vr) {
                     draw_mode_active = !draw_mode_active;
+                    #ifdef _WIN32
+                    menu_set_draw_mode(draw_mode_active);
+                    #endif
                     if (draw_mode_active) {
                         draw_mode_was_paused = paused;
                         paused = true;
@@ -3737,6 +3938,7 @@ int main(int argc, char** argv) {
                         if (draw_canvas) SDL_DestroyTexture(draw_canvas);
                         draw_canvas = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, win_w, win_h);
                         SDL_SetTextureBlendMode(draw_canvas, SDL_BLENDMODE_BLEND);
+                        draw_notify_canvas_resized(&draw_state, win_w, win_h);
                         snprintf(flash_text, sizeof(flash_text), "Draw Mode: ON (Paused)");
                     } else {
                         paused = draw_mode_was_paused;
@@ -3759,7 +3961,7 @@ int main(int argc, char** argv) {
                             video_dst = apply_zoom_to_rect(video_dst, win_w, win_h, vr->zoom_percent);
                         }
                         int include_video = !(e.key.keysym.mod & KMOD_SHIFT);
-                        draw_export(ren, draw_canvas, frame_tex, video_dst, win_w, win_h, include_video);
+                        draw_export(ren, draw_canvas, frame_tex, video_dst, win_w, win_h, include_video, &draw_state);
                         snprintf(flash_text, sizeof(flash_text), "Drawing exported");
                         flash_until = SDL_GetTicks() + 900;
                     }
@@ -3833,7 +4035,7 @@ int main(int argc, char** argv) {
                 if (draw_mode_active && draw_canvas) {
                     DrawTool saved_tool = draw_state.current_tool;
                     draw_state.current_tool = TOOL_ERASER;
-                    draw_begin_stroke(&draw_state, mx, my);
+                    draw_begin_stroke(&draw_state, mx, my, ren, draw_canvas);
                     draw_state.current_tool = saved_tool;
                 } else if (point_in_rect(mx, my, timeline_hitbox)) {
                     double dur = vr ? vr_get_duration(vr) : 0.0;
@@ -3850,6 +4052,61 @@ int main(int argc, char** argv) {
                 }
             }
 
+            if (kbd_overlay_open && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
+                int col_w = 360;
+                int cols = w > col_w * 2 + 80 ? 2 : 1;
+                int rows = (kbd_entry_count + cols - 1) / cols;
+                int panel_w = col_w * cols + 24;
+                int panel_h = rows * item_h + 40;
+                if (panel_h > h - 40) panel_h = h - 40;
+                int panel_x = (w - panel_w) / 2;
+                int panel_y = (h - panel_h) / 2;
+                SDL_Rect panel = { panel_x, panel_y, panel_w, panel_h };
+                int mx_k = e.button.x, my_k = e.button.y;
+                if (!point_in_rect(mx_k, my_k, panel)) {
+                    kbd_overlay_open = false;
+                } else {
+                    int inner_y = panel_y + 30;
+                    int max_visible = (panel_h - 30) / item_h;
+                    int btn_y_pad = 4;
+                    int key_col_w = 130;
+                    int bx = panel_x + 12;
+                    for (int i = 0; i < max_visible && (kbd_scroll + i) < kbd_entry_count; i++) {
+                        int entry_idx = kbd_scroll + i;
+                        int by = inner_y + i * item_h;
+                        SDL_Rect btn = { bx, by + btn_y_pad, key_col_w, item_h - btn_y_pad * 2 };
+                        if (point_in_rect(mx_k, my_k, btn)) {
+                            KbdEntry k = kbd_entries[entry_idx];
+                            SDL_Event ev;
+                            switch (k.tag) {
+                                case KBD_ENTRY_KEYSYM: {
+                                    ev.type = SDL_KEYDOWN;
+                                    ev.key.type = SDL_KEYDOWN;
+                                    ev.key.state = SDL_PRESSED;
+                                    ev.key.keysym.sym = k.key.keysym.key;
+                                    ev.key.keysym.mod = k.key.keysym.mod;
+                                } break;
+                                case KBD_ENTRY_TEXT_INPUT: {
+                                    ev.type = SDL_TEXTINPUT;
+                                    snprintf(ev.text.text, sizeof(ev.text.text), "%s", k.key.textinput);
+                                } break;
+                            }
+                            SDL_PushEvent(&ev);
+                            snprintf(flash_text, sizeof(flash_text), "%s", kbd_entries[entry_idx].desc);
+                            flash_until = SDL_GetTicks() + 700;
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+
+            if (e.type == SDL_MOUSEWHEEL && kbd_overlay_open) {
+                kbd_scroll -= e.wheel.y;
+                if (kbd_scroll < 0) kbd_scroll = 0;
+            }
+
             if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                 int mx = e.button.x;
                 int my = e.button.y;
@@ -3857,7 +4114,7 @@ int main(int argc, char** argv) {
 
                 if (draw_mode_active && draw_canvas) {
                     if (!draw_palette_click(&draw_state, mx, my, w, h)) {
-                        draw_begin_stroke(&draw_state, mx, my);
+                        draw_begin_stroke(&draw_state, mx, my, ren, draw_canvas);
                     }
                     click_processed = true;
                 }
@@ -4329,7 +4586,7 @@ int main(int argc, char** argv) {
 
             if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
                 if (draw_mode_active && draw_canvas && draw_state.is_drawing) {
-                    draw_end_stroke(&draw_state, e.button.x, e.button.y);
+                    draw_end_stroke(&draw_state, e.button.x, e.button.y, ren, draw_canvas);
                 }
                 
                 if (dragging_timeline && vr) {
@@ -4350,13 +4607,13 @@ int main(int argc, char** argv) {
             
             if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT) {
                 if (draw_mode_active && draw_canvas && draw_state.is_drawing) {
-                    draw_end_stroke(&draw_state, e.button.x, e.button.y);
+                    draw_end_stroke(&draw_state, e.button.x, e.button.y, ren, draw_canvas);
                 }
             }
 
             if (e.type == SDL_MOUSEMOTION) {
                 if (draw_mode_active && draw_canvas && draw_state.is_drawing) {
-                    draw_continue_stroke(&draw_state, e.motion.x, e.motion.y);
+                    draw_continue_stroke(&draw_state, e.motion.x, e.motion.y, ren, draw_canvas);
                 }
                 
                 if (dragging_timeline && vr) {
@@ -4395,12 +4652,13 @@ int main(int argc, char** argv) {
         int window_h = 0;
         SDL_GetWindowSize(win, &window_w, &window_h);
 
+        SDL_Rect video_dst = {0, 0, window_w, window_h};
+        double   video_time = 0.0;
         if (vr) {
             if (!paused) {
                 run_playback_tick(vr, playback_speed);
             }
             SDL_Texture* tex = vr_get_texture(vr);
-            SDL_Rect video_dst = {0, 0, window_w, window_h};
             if (tex) {
                 int src_w = 0;
                 int src_h = 0;
@@ -4409,7 +4667,8 @@ int main(int argc, char** argv) {
                 video_dst = apply_zoom_to_rect(video_dst, window_w, window_h, vr->zoom_percent);
                 SDL_RenderCopy(ren, tex, NULL, &video_dst);
             }
-            if (vr_render_subtitles(vr, vr_get_video_time(vr))) {
+            video_time = vr_get_video_time(vr);
+            if (vr_render_subtitles(vr, video_time)) {
                 SDL_Texture* sub = vr_get_subtitle_texture(vr);
                 if (sub) SDL_RenderCopy(ren, sub, NULL, &video_dst);
             }
@@ -4418,7 +4677,7 @@ int main(int argc, char** argv) {
         if (draw_mode_active && draw_canvas) {
             int mouse_x, mouse_y;
             SDL_GetMouseState(&mouse_x, &mouse_y);
-            draw_render_all(ren, draw_canvas, &draw_state, (SDL_Rect){0, 0, window_w, window_h});
+            draw_render_all(ren, draw_canvas, &draw_state, (SDL_Rect){0, 0, window_w, window_h}, video_dst, video_time);
             draw_render_preview(ren, &draw_state, mouse_x, mouse_y);
             draw_render_palette(ren, &draw_state, window_w, window_h);
         }
@@ -4703,10 +4962,9 @@ int main(int argc, char** argv) {
                     };
                     if (list.x < margin) list.x = margin;
                     draw_rect(ren, list, (SDL_Color){ THEME_LIST_BG_COLOR[0], THEME_LIST_BG_COLOR[1], THEME_LIST_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
-                    char current_theme[64] = "default";
+                    char current_theme[256] = "default";
                     if (strcmp(THEME_FILE, "config.h") != 0) {
-                        strncpy(current_theme, THEME_FILE, 63);
-                        current_theme[63] = '\0';
+                        snprintf(current_theme, sizeof(current_theme), "%s", THEME_FILE);
                         size_t cl = strlen(current_theme);
                         if (cl > 2 && strcmp(current_theme + cl - 2, ".h") == 0)
                             current_theme[cl - 2] = '\0';
@@ -4854,6 +5112,44 @@ int main(int argc, char** argv) {
             #undef CTX_W
         }
 
+        if (kbd_overlay_open) {
+            int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
+            int col_w = 360;
+            int cols = w > col_w * 2 + 80 ? 2 : 1;
+            int rows = (kbd_entry_count + cols - 1) / cols;
+            int panel_w = col_w * cols + 24;
+            int panel_h = rows * item_h + 40;
+            if (panel_h > h - 40) panel_h = h - 40;
+            int panel_x = (w - panel_w) / 2;
+            int panel_y = (h - panel_h) / 2;
+            SDL_Rect panel = { panel_x, panel_y, panel_w, panel_h };
+            SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+            draw_rect(ren, panel, (SDL_Color){ THEME_CONTEXT_MENU_BG_COLOR[0], THEME_CONTEXT_MENU_BG_COLOR[1], THEME_CONTEXT_MENU_BG_COLOR[2], 240 });
+            SDL_Color kbd_text = { THEME_TEXT_COLOR[0], THEME_TEXT_COLOR[1], THEME_TEXT_COLOR[2], 255 };
+            SDL_Color kbd_key_bg = { THEME_OVERLAY_COLOR[0], THEME_OVERLAY_COLOR[1], THEME_OVERLAY_COLOR[2], 220 };
+            SDL_Color kbd_hl = { THEME_CONTEXT_MENU_ITEM_HL[0], THEME_CONTEXT_MENU_ITEM_HL[1], THEME_CONTEXT_MENU_ITEM_HL[2], 200 };
+            draw_text_shadow(ren, panel_x + 12, panel_y + 8, "Keyboard Shortcuts  (? to close)", kbd_text);
+            int inner_y = panel_y + 30;
+            int max_visible = (panel_h - 30) / item_h;
+            int max_scroll_kbd = kbd_entry_count - max_visible;
+            if (max_scroll_kbd < 0) max_scroll_kbd = 0;
+            if (kbd_scroll > max_scroll_kbd) kbd_scroll = max_scroll_kbd;
+            int key_col_w = 130;
+            int btn_y_pad = 4;
+            int mx_r = 0, my_r = 0;
+            SDL_GetMouseState(&mx_r, &my_r);
+            for (int i = 0; i < max_visible && (kbd_scroll + i) < kbd_entry_count; i++) {
+                int entry_idx = kbd_scroll + i;
+                int by = inner_y + i * item_h;
+                int bx = panel_x + 12;
+                SDL_Rect btn = { bx, by + btn_y_pad, key_col_w, item_h - btn_y_pad * 2 };
+                if (point_in_rect(mx_r, my_r, btn)) draw_rect(ren, btn, kbd_hl);
+                else draw_rect(ren, btn, kbd_key_bg);
+                draw_text_shadow(ren, btn.x + 6, btn.y - 1, display_kbd((KbdEntry*)(&(kbd_entries[entry_idx]))), kbd_text);
+                draw_text_shadow(ren, bx + key_col_w + 10, by + btn_y_pad + 3, kbd_entries[entry_idx].desc, kbd_text);
+            }
+        }
+
         if (ti.active) {
             text_input_draw(ren, &ti);
         }
@@ -4863,6 +5159,12 @@ int main(int argc, char** argv) {
     
     #if SAVE_FILE
         fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
+        if (!fullscreen && !maximized) {
+            int _sx = 0, _sy = 0;
+            SDL_GetWindowPosition(win, &_sx, &_sy);
+            save_state.global.win_x = (int32_t)_sx;
+            save_state.global.win_y = (int32_t)_sy;
+        }
         for (uint64_t i = 0; i < save_state.recent_files_count && i < MAX_RECENT; i++) {
             if (save_state.recent_files[i]) {
                 free(save_state.recent_files[i]);
@@ -4891,6 +5193,7 @@ int main(int argc, char** argv) {
     g_menu_paused_ptr = NULL;
     g_menu_playback_speed_ptr = NULL;
 #endif
+    draw_free(&draw_state);
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     SDL_Quit();
