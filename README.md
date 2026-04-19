@@ -11,6 +11,7 @@ amp is a simple media player built using C and SDL2.
 - Remember last playback position and settings for each video file
 - Playback history (<kbd>Ctrl+Z</kbd> <kbd>Ctrl+Y</kbd>)
 - Hardware and software decoding
+- Drawing mode
 - Runtime themes
 - Recent files
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.8.1
+
+- Added dirty rects and merging for marker in drawing mode
+- Fixed eraser lagging
+- Fixed canvas clearing not pushing to undo stack
+- I forgot to update version in config sorry
+
 ## 1.8.0
 
 - Replaced `Font` with `Themes` in the hamburger menu
@@ -12,7 +19,7 @@
 - Added <kbd>?</kbd> for keyboard shortcuts overlay (may be used later to add custom kbds)
 - Added `Keyboard shortcuts` to HMENU
 - Added <kbd>Alt+S</kbd> for custom speed
-- Made `Drawing` menu items disable/enable based on the drawing toggle state
+- Made `Drawing` menu items disable/enable based on the drawing toggle
 
 ## 1.7.0
 

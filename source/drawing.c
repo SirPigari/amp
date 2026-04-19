@@ -41,6 +41,8 @@ typedef struct {
     Point end;
 } Stroke;
 
+#define MARKER_MAX_DIRTY_RECTS 16
+
 typedef struct {
     Uint8*    buf;
     Uint8*    cover;
@@ -48,7 +50,8 @@ typedef struct {
     int       buf_h;
     int       valid;
     int       dirty;
-    SDL_Rect  dirty_rect;
+    SDL_Rect  dirty_rects[MARKER_MAX_DIRTY_RECTS];
+    int       dirty_count;
     Uint32    fmt;
     int       alpha_offset;
 } MarkerBatch;
@@ -58,6 +61,7 @@ typedef struct {
     int stroke_count;
     int last_rendered_stroke_count;
     int needs_full_redraw;
+    int stroke_rendered_point_count;
 
     int undo_stack[MAX_DRAW_UNDO_STACK];
     int undo_count;
@@ -103,6 +107,7 @@ static void marker_buf_free(MarkerBatch* m) {
     m->buf_h = 0;
     m->valid = 0;
     m->dirty = 0;
+    m->dirty_count = 0;
 }
 
 static int marker_buf_ensure(MarkerBatch* m, int w, int h, Uint32 fmt) {
@@ -147,19 +152,52 @@ static void marker_expand_dirty(MarkerBatch* m, int cx, int cy, int r) {
     int y2 = cy + r; if (y2 >= m->buf_h) y2 = m->buf_h - 1;
     if (x2 < x1 || y2 < y1) return;
 
-    if (!m->dirty) {
-        m->dirty_rect = (SDL_Rect){x1, y1, x2 - x1 + 1, y2 - y1 + 1};
+    SDL_Rect nr = {x1, y1, x2 - x1 + 1, y2 - y1 + 1};
+    int nr_area = nr.w * nr.h;
+
+    for (int i = 0; i < m->dirty_count; i++) {
+        SDL_Rect* e = &m->dirty_rects[i];
+        int ex1 = e->x, ey1 = e->y;
+        int ex2 = ex1 + e->w - 1, ey2 = ey1 + e->h - 1;
+        int ux1 = x1 < ex1 ? x1 : ex1;
+        int uy1 = y1 < ey1 ? y1 : ey1;
+        int ux2 = x2 > ex2 ? x2 : ex2;
+        int uy2 = y2 > ey2 ? y2 : ey2;
+        int union_area = (ux2 - ux1 + 1) * (uy2 - uy1 + 1);
+        int existing_area = e->w * e->h;
+        if (union_area <= (existing_area + nr_area) * 3 / 2) {
+            *e = (SDL_Rect){ux1, uy1, ux2 - ux1 + 1, uy2 - uy1 + 1};
+            m->dirty = 1;
+            return;
+        }
+    }
+
+    if (m->dirty_count < MARKER_MAX_DIRTY_RECTS) {
+        m->dirty_rects[m->dirty_count++] = nr;
         m->dirty = 1;
     } else {
-        int ox1 = m->dirty_rect.x;
-        int oy1 = m->dirty_rect.y;
-        int ox2 = ox1 + m->dirty_rect.w - 1;
-        int oy2 = oy1 + m->dirty_rect.h - 1;
-        if (x1 < ox1) ox1 = x1;
-        if (y1 < oy1) oy1 = y1;
-        if (x2 > ox2) ox2 = x2;
-        if (y2 > oy2) oy2 = y2;
-        m->dirty_rect = (SDL_Rect){ox1, oy1, ox2 - ox1 + 1, oy2 - oy1 + 1};
+        int best = 0;
+        int best_growth = INT_MAX;
+        for (int i = 0; i < m->dirty_count; i++) {
+            SDL_Rect* e = &m->dirty_rects[i];
+            int ex1 = e->x, ey1 = e->y;
+            int ex2 = ex1 + e->w - 1, ey2 = ey1 + e->h - 1;
+            int ux1 = x1 < ex1 ? x1 : ex1;
+            int uy1 = y1 < ey1 ? y1 : ey1;
+            int ux2 = x2 > ex2 ? x2 : ex2;
+            int uy2 = y2 > ey2 ? y2 : ey2;
+            int growth = (ux2-ux1+1)*(uy2-uy1+1) - e->w*e->h;
+            if (growth < best_growth) { best_growth = growth; best = i; }
+        }
+        SDL_Rect* e = &m->dirty_rects[best];
+        int ex1 = e->x, ey1 = e->y;
+        int ex2 = ex1 + e->w - 1, ey2 = ey1 + e->h - 1;
+        int ux1 = x1 < ex1 ? x1 : ex1;
+        int uy1 = y1 < ey1 ? y1 : ey1;
+        int ux2 = x2 > ex2 ? x2 : ex2;
+        int uy2 = y2 > ey2 ? y2 : ey2;
+        *e = (SDL_Rect){ux1, uy1, ux2 - ux1 + 1, uy2 - uy1 + 1};
+        m->dirty = 1;
     }
 }
 
@@ -225,16 +263,11 @@ static void marker_read_screen(MarkerBatch* m, SDL_Renderer* ren, SDL_Texture* c
     if (m->cover) memset(m->cover, 0, m->buf_w * m->buf_h);
     m->valid = 1;
     m->dirty = 0;
+    m->dirty_count = 0;
 }
 
 static void marker_flush(MarkerBatch* m, SDL_Renderer* ren, SDL_Texture* canvas_tex) {
     if (!m || !m->dirty || !m->valid || !m->buf || !m->cover) return;
-
-    SDL_Rect* r = &m->dirty_rect;
-    int dw = r->w, dh = r->h;
-
-    Uint8* out = (Uint8*)malloc(dw * dh * 4);
-    if (!out) return;
 
     int ao = m->alpha_offset;
     Uint8 xor_bytes[4] = {0xFF, 0xFF, 0xFF, 0xFF};
@@ -253,44 +286,6 @@ static void marker_flush(MarkerBatch* m, SDL_Renderer* ren, SDL_Texture* canvas_
         ((Uint32)or_bytes[2] << 16)   |
         ((Uint32)or_bytes[3] << 24);
 
-    int buf_stride = m->buf_w * 4;
-
-    for (int ry = 0; ry < dh; ry++) {
-        int sy = r->y + ry;
-        const Uint8* src_row = m->buf   + sy * buf_stride + r->x * 4;
-        const Uint8* cov_row = m->cover + sy * m->buf_w   + r->x;
-        Uint8*       out_row = out      + ry * dw * 4;
-        int px = 0;
-
-#ifdef USE_SSE2_SIMD
-        __m128i vxor  = _mm_set1_epi32((int)xor32);
-        __m128i vor   = _mm_set1_epi32((int)or32);
-        __m128i vzero = _mm_setzero_si128();
-
-        for (; px + 3 < dw; px += 4) {
-            __m128i cov4 = _mm_set_epi32(
-                (int)(Uint32)cov_row[px+3],
-                (int)(Uint32)cov_row[px+2],
-                (int)(Uint32)cov_row[px+1],
-                (int)(Uint32)cov_row[px+0]);
-            __m128i mask = _mm_cmpgt_epi32(cov4, vzero);
-
-            __m128i orig = _mm_loadu_si128((__m128i*)(src_row + px * 4));
-            __m128i xord = _mm_or_si128(_mm_xor_si128(orig, vxor), vor);
-            __m128i res  = _mm_or_si128(
-                _mm_and_si128(mask, xord),
-                _mm_andnot_si128(mask, orig));
-            _mm_storeu_si128((__m128i*)(out_row + px * 4), res);
-        }
-#endif
-        for (; px < dw; px++) {
-            Uint32 orig;
-            memcpy(&orig, src_row + px * 4, 4);
-            Uint32 res = cov_row[px] ? ((orig ^ xor32) | or32) : orig;
-            memcpy(out_row + px * 4, &res, 4);
-        }
-    }
-
     SDL_PixelFormat* pf = SDL_AllocFormat(m->fmt);
     Uint32 rmask = pf ? pf->Rmask : 0x000000FF;
     Uint32 gmask = pf ? pf->Gmask : 0x0000FF00;
@@ -298,38 +293,81 @@ static void marker_flush(MarkerBatch* m, SDL_Renderer* ren, SDL_Texture* canvas_
     Uint32 amask = pf ? pf->Amask : 0xFF000000;
     if (pf) SDL_FreeFormat(pf);
 
-    SDL_Surface* surf = SDL_CreateRGBSurfaceFrom(
-        out, dw, dh, 32, dw * 4,
-        rmask, gmask, bmask, amask);
-    if (!surf) { free(out); return; }
-
-    SDL_Texture* patch = SDL_CreateTextureFromSurface(ren, surf);
-    SDL_FreeSurface(surf);
-    if (!patch) { free(out); return; }
-
-    SDL_SetTextureBlendMode(patch, SDL_BLENDMODE_NONE);
-
     SDL_BlendMode old_tex;
     SDL_GetTextureBlendMode(canvas_tex, &old_tex);
     SDL_SetTextureBlendMode(canvas_tex, SDL_BLENDMODE_NONE);
-
     SDL_SetRenderTarget(ren, canvas_tex);
-
     SDL_BlendMode old_ren;
     SDL_GetRenderDrawBlendMode(ren, &old_ren);
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_NONE);
 
-    SDL_RenderCopy(ren, patch, NULL, r);
+    int buf_stride = m->buf_w * 4;
+
+    for (int ri = 0; ri < m->dirty_count; ri++) {
+        SDL_Rect* r = &m->dirty_rects[ri];
+        int dw = r->w, dh = r->h;
+        if (dw <= 0 || dh <= 0) continue;
+
+        Uint8* out = (Uint8*)malloc(dw * dh * 4);
+        if (!out) continue;
+
+        for (int ry = 0; ry < dh; ry++) {
+            int sy = r->y + ry;
+            const Uint8* src_row = m->buf   + sy * buf_stride + r->x * 4;
+            const Uint8* cov_row = m->cover + sy * m->buf_w   + r->x;
+            Uint8*       out_row = out      + ry * dw * 4;
+            int px = 0;
+
+#ifdef USE_SSE2_SIMD
+            __m128i vxor  = _mm_set1_epi32((int)xor32);
+            __m128i vor   = _mm_set1_epi32((int)or32);
+            __m128i vzero = _mm_setzero_si128();
+
+            for (; px + 3 < dw; px += 4) {
+                __m128i cov4 = _mm_set_epi32(
+                    (int)(Uint32)cov_row[px+3],
+                    (int)(Uint32)cov_row[px+2],
+                    (int)(Uint32)cov_row[px+1],
+                    (int)(Uint32)cov_row[px+0]);
+                __m128i mask = _mm_cmpgt_epi32(cov4, vzero);
+
+                __m128i orig = _mm_loadu_si128((__m128i*)(src_row + px * 4));
+                __m128i xord = _mm_or_si128(_mm_xor_si128(orig, vxor), vor);
+                __m128i res  = _mm_or_si128(
+                    _mm_and_si128(mask, xord),
+                    _mm_andnot_si128(mask, orig));
+                _mm_storeu_si128((__m128i*)(out_row + px * 4), res);
+            }
+#endif
+            for (; px < dw; px++) {
+                Uint32 orig;
+                memcpy(&orig, src_row + px * 4, 4);
+                Uint32 res = cov_row[px] ? ((orig ^ xor32) | or32) : orig;
+                memcpy(out_row + px * 4, &res, 4);
+            }
+        }
+
+        SDL_Surface* surf = SDL_CreateRGBSurfaceFrom(
+            out, dw, dh, 32, dw * 4,
+            rmask, gmask, bmask, amask);
+        if (!surf) { free(out); continue; }
+
+        SDL_Texture* patch = SDL_CreateTextureFromSurface(ren, surf);
+        SDL_FreeSurface(surf);
+        if (!patch) { free(out); continue; }
+
+        SDL_SetTextureBlendMode(patch, SDL_BLENDMODE_NONE);
+        SDL_RenderCopy(ren, patch, NULL, r);
+        SDL_DestroyTexture(patch);
+        free(out);
+    }
 
     SDL_SetRenderDrawBlendMode(ren, old_ren);
     SDL_SetRenderTarget(ren, NULL);
     SDL_SetTextureBlendMode(canvas_tex, old_tex);
 
-    SDL_DestroyTexture(patch);
-    free(out);
-
-    m->dirty = 0;
-    m->dirty_rect = (SDL_Rect){0, 0, 0, 0};
+    m->dirty       = 0;
+    m->dirty_count = 0;
 }
 
 static void marker_replay_stroke(MarkerBatch* m, SDL_Renderer* ren,
@@ -348,6 +386,8 @@ static void marker_replay_stroke(MarkerBatch* m, SDL_Renderer* ren,
     marker_flush(m, ren, canvas_tex);
     m->valid = 0;
 }
+
+static void draw_push_undo(DrawingState* ds);
 
 static void draw_init(DrawingState* ds) {
     if (!ds) return;
@@ -378,15 +418,8 @@ static void draw_init(DrawingState* ds) {
 
 static void draw_clear(DrawingState* ds) {
     if (!ds) return;
-    for (int i = 0; i < ds->stroke_count; i++) {
-        if (ds->strokes[i].points) {
-            free(ds->strokes[i].points);
-            ds->strokes[i].points = NULL;
-        }
-    }
+    draw_push_undo(ds);
     ds->stroke_count               = 0;
-    ds->undo_count                 = 0;
-    ds->redo_count                 = 0;
     ds->is_drawing                 = 0;
     ds->last_rendered_stroke_count = 0;
     ds->needs_full_redraw          = 1;
@@ -449,6 +482,10 @@ static int draw_redo(DrawingState* ds) {
     return 1;
 }
 
+static void draw_render_all(SDL_Renderer* ren, SDL_Texture* canvas_tex,
+                             DrawingState* ds, SDL_Rect dst,
+                             SDL_Rect video_dst, double video_time);
+
 static void draw_add_point_to_current_stroke(DrawingState* ds, int x, int y) {
     if (!ds || ds->stroke_count >= MAX_DRAW_STROKES) return;
     Stroke* stroke = &ds->strokes[ds->stroke_count];
@@ -486,6 +523,7 @@ static void draw_begin_stroke(DrawingState* ds, int x, int y,
     draw_push_undo(ds);
 
     Stroke* stroke = &ds->strokes[ds->stroke_count];
+    if (stroke->points) { free(stroke->points); stroke->points = NULL; }
     memset(stroke, 0, sizeof(Stroke));
     stroke->color = ds->current_color;
     stroke->size  = ds->brush_size;
@@ -498,6 +536,7 @@ static void draw_begin_stroke(DrawingState* ds, int x, int y,
     ds->last_point.y  = y;
     ds->shape_start.x = x;
     ds->shape_start.y = y;
+    ds->stroke_rendered_point_count = 0;
 
     if (ds->current_tool == TOOL_MARKER) {
         if (ren && canvas_tex) {
@@ -808,6 +847,7 @@ static void draw_render_all(SDL_Renderer* ren, SDL_Texture* canvas_tex,
 
         ds->last_rendered_stroke_count = ds->stroke_count;
         ds->needs_full_redraw = 0;
+        ds->stroke_rendered_point_count = 0;
     } else {
         for (int i = ds->last_rendered_stroke_count; i < ds->stroke_count; i++) {
             if (ds->strokes[i].tool == TOOL_MARKER) {
@@ -830,7 +870,23 @@ static void draw_render_all(SDL_Renderer* ren, SDL_Texture* canvas_tex,
         Stroke* current = &ds->strokes[ds->stroke_count];
         if (current->tool == TOOL_PEN || current->tool == TOOL_ERASER) {
             SDL_SetRenderTarget(ren, canvas_tex);
-            draw_render_stroke(ren, current, ds);
+            int from = ds->stroke_rendered_point_count;
+            if (from > current->point_count) from = 0;
+            SDL_Color color = current->color;
+            SDL_BlendMode old_blend;
+            int restore_blend = 0;
+            if (current->tool == TOOL_ERASER) {
+                color = (SDL_Color){0, 0, 0, 0};
+                SDL_GetRenderDrawBlendMode(ren, &old_blend);
+                SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_NONE);
+                restore_blend = 1;
+            }
+            for (int i = from; i < current->point_count; i++)
+                draw_circle_filled(ren, current->points[i].x, current->points[i].y,
+                                   current->size / 2, color);
+            if (restore_blend)
+                SDL_SetRenderDrawBlendMode(ren, old_blend);
+            ds->stroke_rendered_point_count = current->point_count;
         }
     }
 
