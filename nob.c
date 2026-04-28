@@ -7,59 +7,6 @@
 #include "source/config.h"
 
 #ifdef _WIN32
-static int is_system_dll(const char* name) {
-    const char* sys[] = {
-        "avrt", "bcd", "bcp47langs", "bcp47mrm", "biwinrt",
-        "browcli", "cabinet", "certca", "certenroll",
-        "chartv", "cldapi", "combase", "coml2",
-        "contactactivation", "coremessaging", "coreuicomponents",
-        "cryptdll", "cryptngc", "crypttpmeksvc", "cscapi",
-        "d3dscache", "davhlpr", "dbgeng", "dbghelp", "dbgmodel",
-        "declaredconfiguration", "dfscli", "diagnosticdatasettings",
-        "dmcmnutils", "dmenterprisediagnostics", "dmpushproxy",
-        "dmxmlhelputils", "dsclient", "dsparse", "dsreg", "dsrole",
-        "dui70", "duser", "edpauditapi", "edpcsp", "edputil",
-        "efscore", "efsutil", "efswrt", "elscore",
-        "enterpriseresourcemanager", "faultrep", "feclient",
-        "firewallapi", "fms", "fveapi", "fvecerts", "fveskybackup",
-        "fwbase", "fwpolicyiomgr", "fwpuclnt", "gmsaclient",
-        "hwreqchk", "iertutil", "iri", "kerb3961", "ktmw32",
-        "linkinfo", "logoncli", "mfc42u",
-        "mpr", "mrmcorer", "msasn1", "msiltcfg", "msimg32",
-        "msvcp110_win", "msvcp_win", "msvcrt",
-        "netutils", "ngcrecovery", "ngcutils", "nsi",
-        "ntasn1", "ntdsapi", "ntshrui",
-        "oledlg", "omadmapi", "policymanager",
-        "policymanagerprecheck", "printui", "propsys",
-        "rmclient", "samsrv", "scecli", "sechost",
-        "setupcl", "spfileq", "spinf", "srpapi", "shell32", 
-        "sspicli", "sspisrv", "tbs",
-        "textinputframework", "textshaping",
-        "twinapi", "umpdc", "urlmon", "user32", "uxtheme",
-        "vaultcli", "vertdisk", "webio", "webservices",
-        "winsta", "wldp", "wtsapi32", "xmllite"
-    };
-
-    char buf[260];
-    strncpy(buf, name, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = 0;
-
-    for (char* s = buf; *s; s++) {
-        *s = (char)tolower((unsigned char)*s);
-    }
-
-    char* dot = strrchr(buf, '.');
-    if (dot) *dot = 0;
-
-    for (int i = 0; i < (int)(sizeof(sys) / sizeof(sys[0])); i++) {
-        if (strcmp(buf, sys[i]) == 0) {
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
 static int already_copied(const char* name, char copied[][260], int count) {
     for (int i = 0; i < count; i++) {
         if (strcmp(copied[i], name) == 0) {
@@ -77,14 +24,12 @@ static void copy_deps_ldd(const char* exe, const char* out_dir) {
     if (!pipe) return;
 
     char line[2048];
-
     char copied[1024][260];
     int copied_count = 0;
 
     while (fgets(line, sizeof(line), pipe)) {
         char* p = strstr(line, "=>");
         if (!p) continue;
-
         p += 2;
         while (*p == ' ') p++;
 
@@ -92,15 +37,23 @@ static void copy_deps_ldd(const char* exe, const char* out_dir) {
         if (!end) continue;
         *end = 0;
 
-        if (!strstr(p, ".dll")) continue;
+        if (!strstr(p, ".dll") && !strstr(p, ".DLL")) continue;
+
+        char lower_path[2048];
+        strncpy(lower_path, p, sizeof(lower_path) - 1);
+        lower_path[sizeof(lower_path) - 1] = 0;
+        for (char* s = lower_path; *s; s++) *s = (char)tolower((unsigned char)*s);
+
+        if (strstr(lower_path, "\\system32\\") ||
+            strstr(lower_path, "\\syswow64\\") ||
+            strstr(lower_path, "\\sysnative\\") ||
+            strstr(lower_path, "\\windows\\winsxs\\")) continue;
 
         char* name = strrchr(p, '\\');
         if (!name) continue;
         name++;
 
         if (already_copied(name, copied, copied_count)) continue;
-
-        if (is_system_dll(name)) continue;
 
         strncpy(copied[copied_count++], name, 259);
         copied[copied_count - 1][259] = 0;
@@ -110,18 +63,13 @@ static void copy_deps_ldd(const char* exe, const char* out_dir) {
 
         FILE* src = fopen(p, "rb");
         if (!src) continue;
-
         FILE* dst = fopen(out_path, "wb");
-        if (!dst) {
-            fclose(src);
-            continue;
-        }
+        if (!dst) { fclose(src); continue; }
 
         char buf[8192];
         size_t n;
-        while ((n = fread(buf, 1, sizeof(buf), src)) > 0) {
+        while ((n = fread(buf, 1, sizeof(buf), src)) > 0)
             fwrite(buf, 1, n, dst);
-        }
 
         fclose(src);
         fclose(dst);
@@ -164,31 +112,6 @@ int main(int argc, char** argv) {
     NOB_GO_REBUILD_URSELF_PLUS(argc, argv, "source/config.h");
 
     Nob_Cmd cmd = {0};
-
-    const char* sdl_lib = getenv("SDL_PATH");
-    if (!sdl_lib) {
-#ifdef _WIN32
-        sdl_lib = "C:/SDL2/lib/x64";
-#else
-        sdl_lib = "/usr/lib";
-#endif
-    }
-    const char* ffmpeg_lib = getenv("FFMPEG_PATH");
-    if (!ffmpeg_lib) {
-#ifdef _WIN32
-        ffmpeg_lib = "C:/ffmpeg/lib";
-#else
-        ffmpeg_lib = "/usr/lib";
-#endif
-    }
-    const char* ass_lib = getenv("ASS_PATH");
-    if (!ass_lib) {
-#ifdef _WIN32
-        ass_lib = "C:/ass/lib";
-#else
-        ass_lib = "/usr/lib";
-#endif
-    }
 
     bool run = false;
     char** run_flags = NULL;
@@ -234,13 +157,11 @@ int main(int argc, char** argv) {
     nob_cmd_append(&cmd, CC);
     if (opt) nob_cmd_append(&cmd, RELEASE_CFLAGS);
     else nob_cmd_append(&cmd, CFLAGS);
+    if (dist) nob_cmd_append(&cmd, "-DUSE_SSE2_SIMD=0");
     nob_cmd_append(&cmd,
                     "source/main.c",
                     "assets/amp.res",
                     "-DSDL_MAIN_HANDLED",
-                    "-L", sdl_lib,
-                    "-L", ffmpeg_lib,
-                    "-L", ass_lib,
                     "-lmingw32",
                     "-lSDL2main",
                     "-lSDL2",
@@ -261,15 +182,12 @@ int main(int argc, char** argv) {
                     "-luuid",
                     "-mwindows",
                     "-o", OUT_EXE_NAME".exe");
-#else
+#elif defined(__linux__)
     nob_cmd_append(&cmd, CC);
     if (opt) nob_cmd_append(&cmd, RELEASE_CFLAGS);
     else nob_cmd_append(&cmd, CFLAGS);
     nob_cmd_append(&cmd,
                     "source/main.c",
-                    "-L", sdl_lib,
-                    "-L", ffmpeg_lib,
-                    "-L", ass_lib,
                     "-lSDL2",
                     "-lSDL2_ttf",
                     "-lavformat",
@@ -284,6 +202,47 @@ int main(int argc, char** argv) {
                     "-lfribidi",
                     "-lm",
                     "-o", OUT_EXE_NAME);
+#else
+    nob_cmd_append(&cmd, CC);
+
+    if (opt) nob_cmd_append(&cmd, RELEASE_CFLAGS);
+    else nob_cmd_append(&cmd, CFLAGS);
+
+    FILE* fp = popen("brew --prefix", "r");
+    char brew_prefix[512] = {0};
+
+    if (fp) {
+        fgets(brew_prefix, sizeof(brew_prefix), fp);
+        pclose(fp);
+    }
+
+    brew_prefix[strcspn(brew_prefix, "\n")] = 0;
+
+    char lib_path[1024];
+    snprintf(lib_path, sizeof(lib_path), "%s/lib", brew_prefix);
+
+    nob_cmd_append(&cmd,
+        "-L", lib_path,
+
+        "source/main.c",
+
+        "-lSDL2",
+        "-lSDL2_ttf",
+        "-lavformat",
+        "-lavcodec",
+        "-lavutil",
+        "-lavfilter",
+        "-lswscale",
+        "-lswresample",
+        "-lass",
+        "-lfreetype",
+        "-lharfbuzz",
+        "-lfribidi",
+        "-liconv",
+        "-lm",
+
+        "-o", OUT_EXE_NAME
+    );
 #endif
     if (!nob_cmd_run(&cmd)) {
         fprintf(stderr, "Compilation failed!\n");
@@ -330,7 +289,7 @@ int main(int argc, char** argv) {
 
     printf("dist created in %s\n", out_dir);
 
-    system("cd dist && 7z a -tzip -mx=9 ..\\dist.zip *");
+    if (system("cd dist && 7z a -tzip -mx=9 ..\\dist.zip *")) return 1;
     printf("dist.zip created\n");
 #else
     nob_log(NOB_ERROR, "Distribution is only supported on Windows!\n");

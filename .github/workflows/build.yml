@@ -1,0 +1,110 @@
+name: Build
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+
+jobs:
+  ubuntu:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+            sudo apt update
+            sudo apt install -y \
+            build-essential \
+            ffmpeg \
+            libsdl2-dev \
+            libsdl2-ttf-dev \
+            libass-dev \
+            libavformat-dev \
+            libavcodec-dev \
+            libavutil-dev \
+            libavfilter-dev \
+            libswscale-dev \
+            libswresample-dev \
+            libfreetype6-dev \
+            libharfbuzz-dev \
+            libfribidi-dev
+
+      - name: Build
+        run: |
+          gcc nob.c -o nob
+          ./nob
+          ./nob release
+
+
+  macos:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          brew update
+          brew install ffmpeg sdl2 sdl2_ttf libass libiconv
+
+      - name: Build
+        run: |
+          gcc nob.c -o nob
+          ./nob
+          ./nob release
+
+
+  arch:
+    runs-on: ubuntu-latest
+
+    container:
+      image: archlinux:latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          pacman -Sy --noconfirm
+          pacman -S --noconfirm base-devel ffmpeg sdl2 sdl2_ttf libass
+
+      - name: Build
+        run: |
+          gcc nob.c -o nob
+          ./nob
+          ./nob release
+
+
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: >
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-ffmpeg
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-SDL2_ttf
+            mingw-w64-x86_64-libass
+            mingw-w64-x86_64-ntldd
+            mingw-w64-x86_64-freetype
+            mingw-w64-x86_64-harfbuzz
+            mingw-w64-x86_64-fribidi
+            mingw-w64-x86_64-binutils
+
+      - name: Add mingw to PATH
+        run: echo "C:\msys64\mingw64\bin" >> $env:GITHUB_PATH
+
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          gcc nob.c -o nob.exe
+          ./nob.exe
+          ./nob.exe release

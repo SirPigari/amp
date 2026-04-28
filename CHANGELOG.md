@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.8.2
+
+- Made next/prev media faster
+- Made next/prev media to keep the subtitle/audio settings same if they have the same tracks
+- Fixed path issues
+- Added <kbd>Alt+Mouse Scroll</kbd> for zooming in for draw mode
+- Added [github workflows](./.github/workflows/) for building and auto releases
+- Updated [nob.c](./nob.c) to support MacOS (stupid ahh os tim cook cannot make his own os work) and fixed a bug with SSE enabling
+- Fixed `distribute` mode copying some DLLs that weren't needed
+
 ## 1.8.1
 
 - Added dirty rects and merging for marker in drawing mode

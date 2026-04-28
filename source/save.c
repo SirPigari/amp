@@ -931,12 +931,12 @@ static void free_save_state(SaveState* state) {
 
 static void debug_save_state(const SaveState* state) {
     if (!state) return;
-    printf("Recent Files (%zu):\n", state->recent_files_count);
+    printf("Recent Files (%" PRIu64 "):\n", state->recent_files_count);
     for (uint64_t i = 0; i < state->recent_files_count; i++)
         printf("  - %s\n", state->recent_files[i] ? state->recent_files[i] : "NULL");
 
     printf("SaveState:\n");
-    printf("  Remembered Files (%zu):\n", state->remembered_count);
+    printf("  Remembered Files (%" PRIu64 "):\n", state->remembered_count);
     for (uint64_t i = 0; i < state->remembered_count; i++) {
         const FileConfig* cfg = &state->remembered_files[i];
         printf("    - Video Path: %s\n", cfg->video_path ? cfg->video_path : "NULL");
