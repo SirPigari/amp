@@ -165,31 +165,6 @@ int main(int argc, char** argv) {
 
     Nob_Cmd cmd = {0};
 
-    const char* sdl_lib = getenv("SDL_PATH");
-    if (!sdl_lib) {
-#ifdef _WIN32
-        sdl_lib = "C:/SDL2/lib/x64";
-#else
-        sdl_lib = "/usr/lib";
-#endif
-    }
-    const char* ffmpeg_lib = getenv("FFMPEG_PATH");
-    if (!ffmpeg_lib) {
-#ifdef _WIN32
-        ffmpeg_lib = "C:/ffmpeg/lib";
-#else
-        ffmpeg_lib = "/usr/lib";
-#endif
-    }
-    const char* ass_lib = getenv("ASS_PATH");
-    if (!ass_lib) {
-#ifdef _WIN32
-        ass_lib = "C:/ass/lib";
-#else
-        ass_lib = "/usr/lib";
-#endif
-    }
-
     bool run = false;
     char** run_flags = NULL;
     unsigned int run_flags_count = 0;
@@ -234,13 +209,11 @@ int main(int argc, char** argv) {
     nob_cmd_append(&cmd, CC);
     if (opt) nob_cmd_append(&cmd, RELEASE_CFLAGS);
     else nob_cmd_append(&cmd, CFLAGS);
+    if (dist) nob_cmd_append(&cmd, "-DUSE_SSE2_SIMD=0");
     nob_cmd_append(&cmd,
                     "source/main.c",
                     "assets/amp.res",
                     "-DSDL_MAIN_HANDLED",
-                    "-L", sdl_lib,
-                    "-L", ffmpeg_lib,
-                    "-L", ass_lib,
                     "-lmingw32",
                     "-lSDL2main",
                     "-lSDL2",
@@ -261,15 +234,12 @@ int main(int argc, char** argv) {
                     "-luuid",
                     "-mwindows",
                     "-o", OUT_EXE_NAME".exe");
-#else
+#elif defined(__linux__)
     nob_cmd_append(&cmd, CC);
     if (opt) nob_cmd_append(&cmd, RELEASE_CFLAGS);
     else nob_cmd_append(&cmd, CFLAGS);
     nob_cmd_append(&cmd,
                     "source/main.c",
-                    "-L", sdl_lib,
-                    "-L", ffmpeg_lib,
-                    "-L", ass_lib,
                     "-lSDL2",
                     "-lSDL2_ttf",
                     "-lavformat",
@@ -284,6 +254,47 @@ int main(int argc, char** argv) {
                     "-lfribidi",
                     "-lm",
                     "-o", OUT_EXE_NAME);
+#else
+    nob_cmd_append(&cmd, CC);
+
+    if (opt) nob_cmd_append(&cmd, RELEASE_CFLAGS);
+    else nob_cmd_append(&cmd, CFLAGS);
+
+    FILE* fp = popen("brew --prefix", "r");
+    char brew_prefix[512] = {0};
+
+    if (fp) {
+        fgets(brew_prefix, sizeof(brew_prefix), fp);
+        pclose(fp);
+    }
+
+    brew_prefix[strcspn(brew_prefix, "\n")] = 0;
+
+    char lib_path[1024];
+    snprintf(lib_path, sizeof(lib_path), "%s/lib", brew_prefix);
+
+    nob_cmd_append(&cmd,
+        "-L", lib_path,
+
+        "source/main.c",
+
+        "-lSDL2",
+        "-lSDL2_ttf",
+        "-lavformat",
+        "-lavcodec",
+        "-lavutil",
+        "-lavfilter",
+        "-lswscale",
+        "-lswresample",
+        "-lass",
+        "-lfreetype",
+        "-lharfbuzz",
+        "-lfribidi",
+        "-liconv",
+        "-lm",
+
+        "-o", OUT_EXE_NAME
+    );
 #endif
     if (!nob_cmd_run(&cmd)) {
         fprintf(stderr, "Compilation failed!\n");

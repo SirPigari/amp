@@ -1,0 +1,130 @@
+name: Windows Release
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get commit message
+        id: commit
+        run: |
+          echo "msg=$(git log -1 --pretty=%B)" >> $env:GITHUB_OUTPUT
+
+      - name: Extract version
+        id: version
+        shell: bash
+        run: |
+            msg="${{ steps.commit.outputs.msg }}"
+
+            if [[ "$msg" =~ (release|patch)[[:space:]]([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            type="${BASH_REMATCH[1]}"
+            ver="${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.${BASH_REMATCH[4]}"
+
+            echo "trigger=true" >> $GITHUB_OUTPUT
+            echo "version=$ver" >> $GITHUB_OUTPUT
+            echo "type=$type" >> $GITHUB_OUTPUT
+            else
+            echo "trigger=false" >> $GITHUB_OUTPUT
+            fi
+
+      - name: Stop if not release commit
+        if: steps.version.outputs.trigger != 'true'
+        run: exit 0
+
+      - name: Get commit author
+        id: author
+        shell: bash
+        run: |
+          echo "name=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: >
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-ffmpeg
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-SDL2_ttf
+            mingw-w64-x86_64-libass
+            mingw-w64-x86_64-ntldd
+            mingw-w64-x86_64-freetype
+            mingw-w64-x86_64-harfbuzz
+            mingw-w64-x86_64-fribidi
+            mingw-w64-x86_64-binutils
+            p7zip
+
+      - name: Add mingw to PATH
+        run: echo "C:\msys64\mingw64\bin" >> $env:GITHUB_PATH
+
+      - name: Extract changelog
+        id: changelog
+        shell: bash
+        run: |
+          ver="${{ steps.version.outputs.version }}"
+
+          awk -v ver="## $ver" '
+            $0 == ver {flag=1; found=1; next}
+            /^## / && flag {exit}
+            flag
+          ' CHANGELOG.md > changelog.txt
+
+          if [ ! -s changelog.txt ]; then
+            echo "Missing changelog for version $ver"
+            exit 1
+          fi
+
+          sed -i '/./,$!d' changelog.txt
+          tac changelog.txt | sed '/./,$!d' | tac > cleaned.txt
+
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          cat cleaned.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          gcc nob.c -o nob.exe
+
+      - name: Run build steps
+        shell: msys2 {0}
+        run: |
+          ./nob.exe
+          ./nob.exe release distribute
+
+      - name: Ensure dist.zip exists
+        shell: bash
+        run: |
+          if [ ! -f dist.zip ]; then
+            7z a dist.zip ./dist/*
+          fi
+
+      - name: Create tag via API
+        shell: bash
+        run: |
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.RELEASE_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/git/refs \
+            -d '{
+              "ref": "refs/tags/v${{ steps.version.outputs.version }}",
+              "sha": "${{ github.sha }}"
+            }'
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.type == 'patch' && 'Patch' || 'Release' }} ${{ steps.version.outputs.version }}
+          body: |
+            ${{ steps.changelog.outputs.body }}
+          files: dist.zip#amp-win-x86_64.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}

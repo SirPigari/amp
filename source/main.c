@@ -12,7 +12,7 @@
 #include "../thirdparty/SDL2/SDL.h"
 #include "../thirdparty/SDL2/SDL_ttf.h"
 #ifdef _WIN32
-#include <SDL2/SDL_syswm.h>
+#include "../thirdparty/SDL2/SDL_syswm.h"
 #endif
 #include "../thirdparty/nob.h"
 #include "../thirdparty/tinyfd.c"
@@ -1091,7 +1091,6 @@ static int get_adjacent_supported_media(const char* current_media_path, int dire
         full[dir_len] = '\\';
         memcpy(full + dir_len + 1, fd.cFileName, name_len);
         full[dir_len + 1 + name_len] = '\0';
-        if (!is_supported_video_file(full)) continue;
         char** grown = (char**)realloc(files, sizeof(char*) * (size_t)(count + 1));
         if (!grown) continue;
         files = grown;
@@ -1111,8 +1110,6 @@ static int get_adjacent_supported_media(const char* current_media_path, int dire
         if (written < 0 || (size_t)written >= n) {
             continue;
         }
-
-        if (!is_supported_video_file(full)) continue;
 
         char** grown = (char**)realloc(files, sizeof(char*) * (size_t)(count + 1));
         if (!grown) continue;
@@ -1142,23 +1139,30 @@ static int get_adjacent_supported_media(const char* current_media_path, int dire
         return 0;
     }
 
-    int target_index = current_index + direction;
-    if (target_index < 0 || target_index >= count) {
-        if (!wrap) {
+    int i = current_index;
+
+    while (1) {
+        i += direction;
+
+        if (i < 0 || i >= count) {
+            if (!wrap) {
+                free_path_list(files, count);
+                return 0;
+            }
+            i = (direction > 0) ? 0 : (count - 1);
+        }
+
+        if (i == current_index) {
             free_path_list(files, count);
             return 0;
         }
-        target_index = direction > 0 ? 0 : (count - 1);
-    }
 
-    if (target_index == current_index) {
-        free_path_list(files, count);
-        return 0;
+        if (is_supported_video_file(files[i])) {
+            *out_path = strdup(files[i]);
+            free_path_list(files, count);
+            return *out_path != NULL;
+        }
     }
-
-    *out_path = strdup(files[target_index]);
-    free_path_list(files, count);
-    return *out_path != NULL;
 }
 
 static int load_media_file(
@@ -1438,6 +1442,18 @@ static int navigate_media(
         return 1;
     }
 
+    char prev_audio_name[256]    = "";
+    char prev_subtitle_name[256] = "";
+    int  prev_subtitle_idx       = (*vr)->current_subtitle;
+    {
+        const char* an = vr_get_audio_track_name(*vr, (*vr)->current_audio);
+        const char* sn = prev_subtitle_idx >= 0
+                       ? vr_get_subtitle_track_name(*vr, prev_subtitle_idx)
+                       : NULL;
+        if (an) strncpy(prev_audio_name,    an, sizeof(prev_audio_name)    - 1);
+        if (sn) strncpy(prev_subtitle_name, sn, sizeof(prev_subtitle_name) - 1);
+    }
+
     char* target_path = NULL;
     if (!get_adjacent_supported_media(*video_file, direction, wrap_when_boundary, &target_path)) {
         snprintf(flash_text, sizeof(flash_text), "%s media", direction > 0 ? "No next" : "No previous");
@@ -1478,10 +1494,35 @@ static int navigate_media(
 
     #if SAVE_FILE
     if (save_state && *video_file) {
+        bool has_saved_entry = get_remembered_file_index(save_state, *video_file, NULL) >= 0;
         apply_save_state_to_vr(*vr, save_state, *video_file, volume_percent);
         vr_set_volume(*vr, volume_percent_to_gain(*volume_percent));
         if (*vr && (*vr)->desired_win_w > 0 && (*vr)->desired_win_h > 0) {
             apply_window_size_for_video(win, vr_get_texture(*vr), (*vr)->desired_win_w, (*vr)->desired_win_h);
+        }
+        if (!has_saved_entry && *vr) {
+            if (prev_audio_name[0]) {
+                int ac = vr_get_audio_track_count(*vr);
+                for (int i = 0; i < ac; i++) {
+                    const char* n = vr_get_audio_track_name(*vr, i);
+                    if (n && strcmp(n, prev_audio_name) == 0) {
+                        vr_select_audio_track(*vr, i);
+                        break;
+                    }
+                }
+            }
+            if (prev_subtitle_idx < 0) {
+                vr_select_subtitle_track(*vr, -1);
+            } else if (prev_subtitle_name[0]) {
+                int sc = vr_get_subtitle_track_count(*vr);
+                for (int i = 0; i < sc; i++) {
+                    const char* n = vr_get_subtitle_track_name(*vr, i);
+                    if (n && strcmp(n, prev_subtitle_name) == 0) {
+                        vr_select_subtitle_track(*vr, i);
+                        break;
+                    }
+                }
+            }
         }
     }
     if (save_state && bookmarks && bookmark_count && *video_file) {
@@ -2103,7 +2144,19 @@ static void take_screenshot(VideoRenderer* vr,
 
 int main(int argc, char** argv) {
     nob_set_log_handler(amp_log_handler);
-    
+
+    {
+        char exe_dir[512];
+        get_exe_dir(exe_dir, sizeof(exe_dir));
+        if (exe_dir[0]) {
+#ifdef _WIN32
+            SetCurrentDirectoryA(exe_dir);
+#else
+            chdir(exe_dir);
+#endif
+        }
+    }
+
     #ifdef _WIN32
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     AddDllDirectory(L"./dll");
@@ -2180,6 +2233,11 @@ int main(int argc, char** argv) {
     static DrawingState draw_state = {0};
     draw_init(&draw_state);
     SDL_Texture* draw_canvas = NULL;
+    SDL_Texture* draw_zoom_tex = NULL;
+    float draw_zoom = 1.0f;
+    float draw_zoom_target = 1.0f;
+    float draw_zoom_ox = 0.0f, draw_zoom_oy = 0.0f;
+    float draw_zoom_ox_target = 0.0f, draw_zoom_oy_target = 0.0f;
     int draw_mode_active = 0;
     bool draw_mode_was_paused = false;
 
@@ -2319,8 +2377,7 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "--audio-driver") == 0 && i + 1 < argc) {
             const char* driver_name = argv[i + 1];
             if (driver_name && strlen(driver_name) < sizeof(audio_driver)) {
-                strncpy(audio_driver, driver_name, sizeof(audio_driver) - 1);
-                audio_driver[sizeof(audio_driver) - 1] = '\0';
+                sprintf(audio_driver, "%s", driver_name);
             } else {
                 nob_log(NOB_WARNING, "Invalid audio driver name: %s", driver_name);
             }
@@ -4004,11 +4061,23 @@ int main(int argc, char** argv) {
             if (e.type == SDL_MOUSEWHEEL) {
                 if (draw_mode_active && !menu_open) {
                     int dy = e.wheel.y;
-                    draw_state.brush_size += dy;
-                    if (draw_state.brush_size < DRAW_BRUSH_SIZE_MIN) draw_state.brush_size = DRAW_BRUSH_SIZE_MIN;
-                    if (draw_state.brush_size > DRAW_BRUSH_SIZE_MAX) draw_state.brush_size = DRAW_BRUSH_SIZE_MAX;
-                    snprintf(flash_text, sizeof(flash_text), "Brush Size: %d", draw_state.brush_size);
-                    flash_until = SDL_GetTicks() + 900;
+                    if (SDL_GetModState() & KMOD_ALT) {
+                        int mx_z, my_z;
+                        SDL_GetMouseState(&mx_z, &my_z);
+                        float new_target = draw_zoom_target * (dy > 0 ? 1.15f : (1.0f / 1.15f));
+                        if (new_target < 0.25f) new_target = 0.25f;
+                        if (new_target > 8.0f)  new_target = 8.0f;
+                        float factor = new_target / draw_zoom_target;
+                        draw_zoom_ox_target = mx_z - (mx_z - draw_zoom_ox_target) * factor;
+                        draw_zoom_oy_target = my_z - (my_z - draw_zoom_oy_target) * factor;
+                        draw_zoom_target = new_target;
+                    } else {
+                        draw_state.brush_size += dy;
+                        if (draw_state.brush_size < DRAW_BRUSH_SIZE_MIN) draw_state.brush_size = DRAW_BRUSH_SIZE_MIN;
+                        if (draw_state.brush_size > DRAW_BRUSH_SIZE_MAX) draw_state.brush_size = DRAW_BRUSH_SIZE_MAX;
+                        snprintf(flash_text, sizeof(flash_text), "Brush Size: %d", draw_state.brush_size);
+                        flash_until = SDL_GetTicks() + 900;
+                    }
                 }
             }
             
@@ -4033,9 +4102,14 @@ int main(int argc, char** argv) {
                 int my = e.button.y;
                 
                 if (draw_mode_active && draw_canvas) {
+                    int dmx = mx, dmy = my;
+                    if (fabsf(draw_zoom - 1.0f) > 0.001f) {
+                        dmx = (int)((mx - draw_zoom_ox) / draw_zoom);
+                        dmy = (int)((my - draw_zoom_oy) / draw_zoom);
+                    }
                     DrawTool saved_tool = draw_state.current_tool;
                     draw_state.current_tool = TOOL_ERASER;
-                    draw_begin_stroke(&draw_state, mx, my, ren, draw_canvas);
+                    draw_begin_stroke(&draw_state, dmx, dmy, ren, draw_canvas);
                     draw_state.current_tool = saved_tool;
                 } else if (point_in_rect(mx, my, timeline_hitbox)) {
                     double dur = vr ? vr_get_duration(vr) : 0.0;
@@ -4113,8 +4187,13 @@ int main(int argc, char** argv) {
                 bool click_processed = false;
 
                 if (draw_mode_active && draw_canvas) {
-                    if (!draw_palette_click(&draw_state, mx, my, w, h)) {
-                        draw_begin_stroke(&draw_state, mx, my, ren, draw_canvas);
+                    int dmx = mx, dmy = my;
+                    if (fabsf(draw_zoom - 1.0f) > 0.001f) {
+                        dmx = (int)((mx - draw_zoom_ox) / draw_zoom);
+                        dmy = (int)((my - draw_zoom_oy) / draw_zoom);
+                    }
+                    if (!draw_palette_click(&draw_state, dmx, dmy, w, h)) {
+                        draw_begin_stroke(&draw_state, dmx, dmy, ren, draw_canvas);
                     }
                     click_processed = true;
                 }
@@ -4586,7 +4665,12 @@ int main(int argc, char** argv) {
 
             if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
                 if (draw_mode_active && draw_canvas && draw_state.is_drawing) {
-                    draw_end_stroke(&draw_state, e.button.x, e.button.y, ren, draw_canvas);
+                    int ux = e.button.x, uy = e.button.y;
+                    if (fabsf(draw_zoom - 1.0f) > 0.001f) {
+                        ux = (int)((ux - draw_zoom_ox) / draw_zoom);
+                        uy = (int)((uy - draw_zoom_oy) / draw_zoom);
+                    }
+                    draw_end_stroke(&draw_state, ux, uy, ren, draw_canvas);
                 }
                 
                 if (dragging_timeline && vr) {
@@ -4607,13 +4691,23 @@ int main(int argc, char** argv) {
             
             if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT) {
                 if (draw_mode_active && draw_canvas && draw_state.is_drawing) {
-                    draw_end_stroke(&draw_state, e.button.x, e.button.y, ren, draw_canvas);
+                    int ux = e.button.x, uy = e.button.y;
+                    if (fabsf(draw_zoom - 1.0f) > 0.001f) {
+                        ux = (int)((ux - draw_zoom_ox) / draw_zoom);
+                        uy = (int)((uy - draw_zoom_oy) / draw_zoom);
+                    }
+                    draw_end_stroke(&draw_state, ux, uy, ren, draw_canvas);
                 }
             }
 
             if (e.type == SDL_MOUSEMOTION) {
                 if (draw_mode_active && draw_canvas && draw_state.is_drawing) {
-                    draw_continue_stroke(&draw_state, e.motion.x, e.motion.y, ren, draw_canvas);
+                    int cx = e.motion.x, cy = e.motion.y;
+                    if (fabsf(draw_zoom - 1.0f) > 0.001f) {
+                        cx = (int)((cx - draw_zoom_ox) / draw_zoom);
+                        cy = (int)((cy - draw_zoom_oy) / draw_zoom);
+                    }
+                    draw_continue_stroke(&draw_state, cx, cy, ren, draw_canvas);
                 }
                 
                 if (dragging_timeline && vr) {
@@ -4645,12 +4739,43 @@ int main(int argc, char** argv) {
         
         overlay_alpha = lerpf(overlay_alpha, overlay_target, clampf(dt * 6.0f, 0.0f, 1.0f));
 
-        SDL_SetRenderDrawColor(ren, THEME_LETTERBOX_COLOR[0], THEME_LETTERBOX_COLOR[1], THEME_LETTERBOX_COLOR[2], 255);
-        SDL_RenderClear(ren);
+        if (draw_mode_active && !(SDL_GetModState() & KMOD_ALT)) {
+            draw_zoom_target = 1.0f;
+            draw_zoom_ox_target = 0.0f;
+            draw_zoom_oy_target = 0.0f;
+        }
+        if (draw_mode_active) {
+            float zlp = clampf(dt * 14.0f, 0.0f, 1.0f);
+            draw_zoom    = lerpf(draw_zoom,    draw_zoom_target,    zlp);
+            draw_zoom_ox = lerpf(draw_zoom_ox, draw_zoom_ox_target, zlp);
+            draw_zoom_oy = lerpf(draw_zoom_oy, draw_zoom_oy_target, zlp);
+            if (fabsf(draw_zoom - draw_zoom_target) < 0.0005f) {
+                draw_zoom    = draw_zoom_target;
+                draw_zoom_ox = draw_zoom_ox_target;
+                draw_zoom_oy = draw_zoom_oy_target;
+            }
+        }
 
         int window_w = 0;
         int window_h = 0;
         SDL_GetWindowSize(win, &window_w, &window_h);
+
+        if (draw_mode_active) {
+            int ztw = 0, zth = 0;
+            if (draw_zoom_tex) SDL_QueryTexture(draw_zoom_tex, NULL, NULL, &ztw, &zth);
+            if (!draw_zoom_tex || ztw != window_w || zth != window_h) {
+                if (draw_zoom_tex) SDL_DestroyTexture(draw_zoom_tex);
+                draw_zoom_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888,
+                                                  SDL_TEXTUREACCESS_TARGET, window_w, window_h);
+            }
+        }
+
+        bool using_zoom_tex = draw_mode_active && draw_zoom_tex && fabsf(draw_zoom - 1.0f) > 0.001f;
+        if (using_zoom_tex)
+            SDL_SetRenderTarget(ren, draw_zoom_tex);
+
+        SDL_SetRenderDrawColor(ren, THEME_LETTERBOX_COLOR[0], THEME_LETTERBOX_COLOR[1], THEME_LETTERBOX_COLOR[2], 255);
+        SDL_RenderClear(ren);
 
         SDL_Rect video_dst = {0, 0, window_w, window_h};
         double   video_time = 0.0;
@@ -4677,8 +4802,13 @@ int main(int argc, char** argv) {
         if (draw_mode_active && draw_canvas) {
             int mouse_x, mouse_y;
             SDL_GetMouseState(&mouse_x, &mouse_y);
+            int lmx = mouse_x, lmy = mouse_y;
+            if (fabsf(draw_zoom - 1.0f) > 0.001f) {
+                lmx = (int)((mouse_x - draw_zoom_ox) / draw_zoom);
+                lmy = (int)((mouse_y - draw_zoom_oy) / draw_zoom);
+            }
             draw_render_all(ren, draw_canvas, &draw_state, (SDL_Rect){0, 0, window_w, window_h}, video_dst, video_time);
-            draw_render_preview(ren, &draw_state, mouse_x, mouse_y);
+            draw_render_preview(ren, &draw_state, lmx, lmy);
             draw_render_palette(ren, &draw_state, window_w, window_h);
         }
 
@@ -5152,6 +5282,19 @@ int main(int argc, char** argv) {
 
         if (ti.active) {
             text_input_draw(ren, &ti);
+        }
+
+        if (using_zoom_tex) {
+            SDL_SetRenderTarget(ren, NULL);
+            SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+            SDL_RenderClear(ren);
+            SDL_Rect dst = {
+                (int)draw_zoom_ox,
+                (int)draw_zoom_oy,
+                (int)(window_w * draw_zoom),
+                (int)(window_h * draw_zoom)
+            };
+            SDL_RenderCopy(ren, draw_zoom_tex, NULL, &dst);
         }
 
         SDL_RenderPresent(ren);

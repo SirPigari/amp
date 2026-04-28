@@ -6,9 +6,11 @@
 #endif
 #include <string.h>
 #include <math.h>
-#if defined(__x86_64__) || defined(_M_X64) || defined(__amd64__)
+#if (defined(__x86_64__) || defined(_M_X64) || defined(__amd64__)) && !(defined(__APPLE__) || defined(USE_SSE2_SIMD))
 #define USE_SSE2_SIMD 1
 #include <emmintrin.h>
+#else
+#define USE_SSE2_SIMD 0
 #endif
 #include "../thirdparty/SDL2/SDL.h"
 #include "../thirdparty/tinyfd.h"
@@ -95,7 +97,7 @@ static const int draw_palette_count = 7;
 
 static void marker_buf_free(MarkerBatch* m) {
     if (!m || !m->buf) return;
-#ifdef USE_SSE2_SIMD
+#if USE_SSE2_SIMD
     _mm_free(m->buf);
 #else
     free(m->buf);
@@ -116,7 +118,7 @@ static int marker_buf_ensure(MarkerBatch* m, int w, int h, Uint32 fmt) {
 
     marker_buf_free(m);
     int total = w * h * 4;
-#ifdef USE_SSE2_SIMD
+#if USE_SSE2_SIMD
     m->buf = (Uint8*)_mm_malloc(total, 16);
 #else
     m->buf = (Uint8*)malloc(total);
@@ -124,7 +126,7 @@ static int marker_buf_ensure(MarkerBatch* m, int w, int h, Uint32 fmt) {
     if (!m->buf) return 0;
     m->cover = (Uint8*)calloc(w * h, 1);
     if (!m->cover) {
-#ifdef USE_SSE2_SIMD
+#if USE_SSE2_SIMD
         _mm_free(m->buf);
 #else
         free(m->buf);
@@ -318,7 +320,7 @@ static void marker_flush(MarkerBatch* m, SDL_Renderer* ren, SDL_Texture* canvas_
             Uint8*       out_row = out      + ry * dw * 4;
             int px = 0;
 
-#ifdef USE_SSE2_SIMD
+#if USE_SSE2_SIMD
             __m128i vxor  = _mm_set1_epi32((int)xor32);
             __m128i vor   = _mm_set1_epi32((int)or32);
             __m128i vzero = _mm_setzero_si128();
