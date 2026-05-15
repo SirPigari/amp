@@ -4,10 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <assert.h>
 #include "source/config.h"
 
 #ifdef _WIN32
-static int already_copied(const char* name, char copied[][260], int count) {
+static int already_copied(const char* name, char** copied, int count) {
     for (int i = 0; i < count; i++) {
         if (strcmp(copied[i], name) == 0) {
             return 1;
@@ -16,7 +17,7 @@ static int already_copied(const char* name, char copied[][260], int count) {
     return 0;
 }
 
-static void copy_deps_ldd(const char* exe, const char* out_dir) {
+static void copy_deps_ldd(const char* exe, const char* out_dir, char** copied, int* copied_count) {
     char cmd[2048];
     snprintf(cmd, sizeof(cmd), "ntldd -R %s", exe);
 
@@ -24,8 +25,6 @@ static void copy_deps_ldd(const char* exe, const char* out_dir) {
     if (!pipe) return;
 
     char line[2048];
-    char copied[1024][260];
-    int copied_count = 0;
 
     while (fgets(line, sizeof(line), pipe)) {
         char* p = strstr(line, "=>");
@@ -53,10 +52,13 @@ static void copy_deps_ldd(const char* exe, const char* out_dir) {
         if (!name) continue;
         name++;
 
-        if (already_copied(name, copied, copied_count)) continue;
+        if (already_copied(name, copied, *copied_count)) continue;
 
-        strncpy(copied[copied_count++], name, 259);
-        copied[copied_count - 1][259] = 0;
+        assert(*copied_count < 1024);
+
+        strncpy(copied[*copied_count], name, 259);
+        copied[*copied_count][259] = 0;
+        (*copied_count)++;
 
         char out_path[1024];
         snprintf(out_path, sizeof(out_path), "%s/%s", out_dir, name);
@@ -76,6 +78,75 @@ static void copy_deps_ldd(const char* exe, const char* out_dir) {
     }
 
     _pclose(pipe);
+}
+
+static int write_loader(const char* out_dir) {
+    static const char loader_code[] =
+"#include <windows.h>\n"
+"\n"
+"int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd) {\n"
+"    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);\n"
+"    AddDllDirectory(L\".\\\\dll\");\n"
+"\n"
+"    STARTUPINFOW si;\n"
+"    PROCESS_INFORMATION pi;\n"
+"    ZeroMemory(&si, sizeof(si));\n"
+"    ZeroMemory(&pi, sizeof(pi));\n"
+"    si.cb = sizeof(si);\n"
+"\n"
+"    wchar_t exePath[MAX_PATH];\n"
+"    GetModuleFileNameW(NULL, exePath, MAX_PATH);\n"
+"\n"
+"    wchar_t* slash = wcsrchr(exePath, L'\\\\');\n"
+"    if (slash) *(slash + 1) = 0;\n"
+"    wcscat(exePath, L\"dll\\\\amp.exe\");\n"
+"\n"
+"    wchar_t args[4096];\n"
+"    int len = MultiByteToWideChar(CP_ACP, 0, lpCmdLine, -1, NULL, 0);\n"
+"    if (len > 1) MultiByteToWideChar(CP_ACP, 0, lpCmdLine, -1, args, 4096);\n"
+"    else args[0] = 0;\n"
+"\n"
+"    wchar_t cmd[4096];\n"
+"    if (args[0]) wsprintfW(cmd, L\"\\\"%s\\\" %s\", exePath, args);\n"
+"    else wsprintfW(cmd, L\"\\\"%s\\\"\", exePath);\n"
+"\n"
+"    CreateProcessW(\n"
+"        NULL,\n"
+"        cmd,\n"
+"        NULL,\n"
+"        NULL,\n"
+"        FALSE,\n"
+"        CREATE_NO_WINDOW,\n"
+"        NULL,\n"
+"        NULL,\n"
+"        &si,\n"
+"        &pi\n"
+"    );\n"
+"\n"
+"    CloseHandle(pi.hThread);\n"
+"    CloseHandle(pi.hProcess);\n"
+"    return 0;\n"
+"}\n";
+
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/__loader.c", out_dir);
+
+    FILE* f = fopen(path, "wb");
+    if (!f) return -1;
+
+    fwrite(loader_code, 1, sizeof(loader_code) - 1, f);
+    fclose(f);
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd),
+        "gcc -mwindows \"%s\" -o \"%s/amp.exe\"",
+        path, out_dir);
+
+    int r = system(cmd);
+
+    remove(path);
+
+    return r ? -1 : 0;
 }
 
 static void write_readme(const char* out_dir) {
@@ -109,7 +180,7 @@ static void write_readme(const char* out_dir) {
 #endif
 
 int main(int argc, char** argv) {
-    NOB_GO_REBUILD_URSELF_PLUS(argc, argv, "source/config.h");
+    NOB_GO_REBUILD_URSELF_PLUS(argc, argv, "source/config.h", "thirdparty/nob.h", "thirdparty/ascii.h");
 
     Nob_Cmd cmd = {0};
 
@@ -157,7 +228,7 @@ int main(int argc, char** argv) {
     nob_cmd_append(&cmd, CC);
     if (opt) nob_cmd_append(&cmd, RELEASE_CFLAGS);
     else nob_cmd_append(&cmd, CFLAGS);
-    if (dist) nob_cmd_append(&cmd, "-DUSE_SSE2_SIMD=0");
+    if (dist) nob_cmd_append(&cmd, "-DUSE_SSE2_SIMD=0", "-DDIST=1");
     nob_cmd_append(&cmd,
                     "source/main.c",
                     "assets/amp.res",
@@ -263,25 +334,28 @@ int main(int argc, char** argv) {
     snprintf(exe, sizeof(exe), "%s.exe", OUT_EXE_NAME);
 
     char out_exe[256];
-    snprintf(out_exe, sizeof(out_exe), "%s/amp.exe", out_dir);
+    snprintf(out_exe, sizeof(out_exe), "%s\\dll\\amp.exe", out_dir);
 
     system("rmdir /S /Q dist\\assets");
     system("xcopy assets dist\\assets /E /I /Y /Q");
 
-    FILE* src = fopen(exe, "rb");
-    FILE* dst = fopen(out_exe, "wb");
+    CopyFileA(exe, out_exe, FALSE);
 
-    if (src && dst) {
-        char buf[8192];
-        size_t n;
-        while ((n = fread(buf, 1, sizeof(buf), src)) > 0)
-            fwrite(buf, 1, n, dst);
+    char** dlls = calloc(1024, sizeof(char*));
+    for (int i = 0; i < 1024; i++) {
+        dlls[i] = malloc(260);
     }
+    int dll_count = 0;
+    copy_deps_ldd(exe, dll_dir, dlls, &dll_count);
 
-    if (src) fclose(src);
-    if (dst) fclose(dst);
+    printf("Found %d dlls\n", dll_count);
 
-    copy_deps_ldd(exe, dll_dir);
+    for (int i = 0; i < dll_count; i++) {
+        free(dlls[i]);
+    }
+    free(dlls);
+    
+    write_loader(out_dir);
 
     system("copy LICENSE dist\\LICENSE.txt /Y");
     system("copy CHANGELOG.md dist\\CHANGELOG.md /Y");
@@ -289,7 +363,7 @@ int main(int argc, char** argv) {
 
     printf("dist created in %s\n", out_dir);
 
-    if (system("cd dist && 7z a -tzip -mx=9 ..\\dist.zip *")) return 1;
+    if (system("cd dist && 7z a -tzip -mx=9 ..\\dist.zip *")) { puts("Failed to create dist.zip"); return 1; }
     printf("dist.zip created\n");
 #else
     nob_log(NOB_ERROR, "Distribution is only supported on Windows!\n");

@@ -190,7 +190,11 @@ static const KbdEntry kbd_entries[] = {
     KBD_KS(SHIFT, KP_PLUS, "Subtitle +100ms"),
     KBD_KS(SHIFT, KP_MINUS, "Subtitle -100ms"),
     KBD_TI("?", "Keyboard Shortcuts"),
+    #ifdef _WIN32
     KBD_KS(ALT, F4, "Exit"),
+    #else
+    KBD_KS(CTRL, q, "Exit"),
+    #endif
     KBD_K(ESCAPE, "Close"),
 };
 static const int kbd_entry_count = (int)(sizeof(kbd_entries) / sizeof(kbd_entries[0]));
@@ -2158,8 +2162,8 @@ int main(int argc, char** argv) {
     }
 
     #ifdef _WIN32
-    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-    AddDllDirectory(L"./dll");
+    /* SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    AddDllDirectory(L"./dll"); */
     SetProcessDPIAware();
     INITCOMMONCONTROLSEX icc = {
         sizeof(INITCOMMONCONTROLSEX),
@@ -2169,6 +2173,21 @@ int main(int argc, char** argv) {
     InitCommonControlsEx(&icc);
     attach_console_if_present();
     SetCurrentProcessExplicitAppUserModelID(L"amp");
+    #endif
+
+    #ifdef DIST
+    if (strncmp(THEME_FONT.path, "assets/", 7) == 0 ||
+        strncmp(THEME_FONT.path, "./assets/", 10) == 0) {
+
+        size_t len = strlen(THEME_FONT.path);
+
+        if (len + 3 < sizeof(THEME_FONT.path)) {
+            char temp[sizeof(THEME_FONT.path)];
+
+            snprintf(temp, sizeof(temp), "../%s", THEME_FONT.path);
+            memcpy(THEME_FONT.path, temp, sizeof(THEME_FONT.path));
+        }
+    }
     #endif
 
     VideoRenderer* vr = NULL;
@@ -3486,7 +3505,10 @@ int main(int argc, char** argv) {
                     }
                     flash_until = SDL_GetTicks() + 900;
                 } else if (key==SDLK_F4 && (e.key.keysym.mod & KMOD_ALT)) running=0;
-                
+                #ifndef _WIN32
+                else if (key == SDLK_q && (e.key.keysym.mod & KMOD_CTRL) && !(e.key.keysym.mod & ~(KMOD_CTRL))) running=0;
+                #endif
+
                 if (key==SDLK_F2 && vr) {
                     take_screenshot(vr, win, ren, flash_text, &flash_until);
                 }
@@ -4377,7 +4399,7 @@ int main(int argc, char** argv) {
                                         char exe_dir[512];
                                         get_exe_dir(exe_dir, sizeof(exe_dir));
                                         char dest_dir[1024];
-                                        snprintf(dest_dir, sizeof(dest_dir), "%s/assets/themes", exe_dir);
+                                        snprintf(dest_dir, sizeof(dest_dir), "%s" D_ASSETS "themes", exe_dir);
                                         const char* src_base = chosen;
                                         for (const char* p = chosen; *p; p++)
                                             if (*p == '/' || *p == '\\') src_base = p + 1;

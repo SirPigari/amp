@@ -865,6 +865,56 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
             } else {
                 if (hw_tried && vr->hw_device_ctx) {
                     nob_log(NOB_INFO, "Successfully opened hardware decoder: %s", vr->hw_device_name);
+
+                    int hw_probe_ok = 0;
+                    AVFrame* probe_frame = av_frame_alloc();
+                    AVPacket* probe_pkt = av_packet_alloc();
+                    if (probe_frame && probe_pkt) {
+                        for (int _tries = 0; _tries < 64 && !hw_probe_ok; _tries++) {
+                            if (av_read_frame(vr->fmt_ctx, probe_pkt) < 0) break;
+                            if (probe_pkt->stream_index != vr->video_stream_index) {
+                                av_packet_unref(probe_pkt);
+                                continue;
+                            }
+                            if (avcodec_send_packet(vr->video_ctx, probe_pkt) >= 0) {
+                                if (avcodec_receive_frame(vr->video_ctx, probe_frame) == 0) {
+                                    if (probe_frame->format == (int)vr->hw_pix_fmt) {
+                                        AVFrame* sw = av_frame_alloc();
+                                        if (sw) {
+                                            hw_probe_ok = (av_hwframe_transfer_data(sw, probe_frame, 0) == 0 && sw->data[0] != NULL);
+                                            av_frame_free(&sw);
+                                        }
+                                    }
+                                    av_frame_unref(probe_frame);
+                                }
+                            }
+                            av_packet_unref(probe_pkt);
+                        }
+                    }
+                    if (probe_frame) av_frame_free(&probe_frame);
+                    if (probe_pkt)   av_packet_free(&probe_pkt);
+
+                    av_seek_frame(vr->fmt_ctx, vr->video_stream_index, 0, AVSEEK_FLAG_BACKWARD);
+                    avcodec_flush_buffers(vr->video_ctx);
+
+                    if (!hw_probe_ok) {
+                        nob_log(NOB_WARNING, "HW decoder probe failed (surfaces not working), falling back to software");
+                        avcodec_free_context(&vr->video_ctx);
+                        if (vr->hw_device_ctx) { av_buffer_unref(&vr->hw_device_ctx); vr->hw_device_ctx = NULL; }
+                        vr->hw_pix_fmt = AV_PIX_FMT_NONE;
+                        vr->hw_device_type = AV_HWDEVICE_TYPE_NONE;
+                        vr->hw_device_name[0] = '\0';
+
+                        vr->video_ctx = avcodec_alloc_context3(codec);
+                        avcodec_parameters_to_context(vr->video_ctx, stream->codecpar);
+                        if (avcodec_open2(vr->video_ctx, (AVCodec*)codec, NULL) < 0) {
+                            nob_log(NOB_ERROR, "Failed to open software decoder after HW probe failure");
+                            avcodec_free_context(&vr->video_ctx);
+                            vr->video_ctx = NULL;
+                            continue;
+                        }
+                        nob_log(NOB_INFO, "Software decoder opened after HW probe failure");
+                    }
                 } else {
                     nob_log(NOB_INFO, "Successfully opened software decoder");
                 }

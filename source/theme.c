@@ -14,6 +14,12 @@
 #include <unistd.h>
 #endif
 
+#ifndef DIST
+#define D_ASSETS "/assets/"
+#else
+#define D_ASSETS "/../assets/"
+#endif
+
 #undef THEME_NAME
 #undef THEME_FILE
 
@@ -584,6 +590,15 @@ static bool theme_load(const char* theme_path) {
         if (THEME_FONT.path[0])
             nob_log(NOB_INFO, "  Theme font: %s (%s)", THEME_FONT.name[0] ? THEME_FONT.name : "unnamed", THEME_FONT.path);
     }
+
+    #ifdef DIST
+    if (strncmp(THEME_FONT.path, "assets/", 7) == 0 ||
+           strncmp(THEME_FONT.path, "./assets/", 10) == 0) {
+        char temp[sizeof(THEME_FONT.path)];
+        snprintf(temp, sizeof(temp), "../%s", THEME_FONT.path);
+        memcpy(THEME_FONT.path, temp, sizeof(THEME_FONT.path));
+    }
+    #endif
     
     ht_foreach(value, &defines) {
         free((void*)ht_key(&defines, value));
@@ -643,9 +658,9 @@ bool is_valid_theme_name(const char* name) {
     get_exe_dir(exe_dir, sizeof(exe_dir));
     
     if (strstr(name, ".h") == NULL) {
-        snprintf(theme_path, sizeof(theme_path), "%s/assets/themes/%s.h", exe_dir, name);
+        snprintf(theme_path, sizeof(theme_path), "%s" D_ASSETS "themes/%s.h", exe_dir, name);
     } else {
-        snprintf(theme_path, sizeof(theme_path), "%s/assets/themes/%s", exe_dir, name);
+        snprintf(theme_path, sizeof(theme_path), "%s" D_ASSETS "themes/%s", exe_dir, name);
     }
     
     return file_exists(theme_path);
@@ -664,6 +679,20 @@ bool load_theme(const char* name) {
         strncpy(THEME_FILE, "config.h", sizeof(THEME_FILE) - 1);
         
         THEME_FONT = (ThemeFont)FONT;
+        #ifdef DIST
+        if (strncmp(THEME_FONT.path, "assets/", 7) == 0 ||
+            strncmp(THEME_FONT.path, "./assets/", 10) == 0) {
+
+            size_t len = strlen(THEME_FONT.path);
+
+            if (len + 3 < sizeof(THEME_FONT.path)) {
+                char temp[sizeof(THEME_FONT.path)];
+
+                snprintf(temp, sizeof(temp), "../%s", THEME_FONT.path);
+                memcpy(THEME_FONT.path, temp, sizeof(THEME_FONT.path));
+            }
+        }
+        #endif
         
         THEME_MENU_DROPDOWN_ITEM_HEIGHT          = MENU_DROPDOWN_ITEM_HEIGHT;
         THEME_MENU_DROPDOWN_WIDTH                = MENU_DROPDOWN_WIDTH;
@@ -809,11 +838,11 @@ bool load_theme(const char* name) {
     } else {
         char exe_dir[512];
         get_exe_dir(exe_dir, sizeof(exe_dir));
-        
+
         if (strstr(name, ".h") == NULL) {
-            snprintf(theme_path, sizeof(theme_path), "%s/assets/themes/%s.h", exe_dir, name);
+            snprintf(theme_path, sizeof(theme_path), "%s" D_ASSETS "themes/%s.h", exe_dir, name);
         } else {
-            snprintf(theme_path, sizeof(theme_path), "%s/assets/themes/%s", exe_dir, name);
+            snprintf(theme_path, sizeof(theme_path), "%s" D_ASSETS "themes/%s", exe_dir, name);
         }
     }
     
@@ -857,7 +886,7 @@ int get_theme_list(char themes[][64], int max_count) {
     char exe_dir[512];
     char themes_dir[1024];
     get_exe_dir(exe_dir, sizeof(exe_dir));
-    snprintf(themes_dir, sizeof(themes_dir), "%s/assets/themes", exe_dir);
+    snprintf(themes_dir, sizeof(themes_dir), "%s" D_ASSETS "themes", exe_dir);
 
     Nob_File_Paths paths = {0};
     if (nob_read_entire_dir(themes_dir, &paths)) {
@@ -891,7 +920,7 @@ void list_themes(FILE* out) {
     get_exe_dir(exe_dir, sizeof(exe_dir));
 
     char themes_dir[1024];
-    snprintf(themes_dir, sizeof(themes_dir), "%s/assets/themes", exe_dir);
+    snprintf(themes_dir, sizeof(themes_dir), "%s" D_ASSETS "themes", exe_dir);
 
     fprintf(out, "Available themes in %s:\n", themes_dir);
 

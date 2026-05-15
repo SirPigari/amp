@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.8.3
+
+- Fixed distribution to have a loader `./amp.exe` which loads `./dll/amp.exe`
+- Fixed `assets` path issues for distribution
+- Added probe for HW decoding to check for failure, if yes fallbacks to SW decoding
+- Added <kbd>Ctrl+Q</kbd> for exiting the application for non-windows
+
 ## 1.8.2
 
 - Made next/prev media faster
