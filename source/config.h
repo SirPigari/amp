@@ -2,7 +2,7 @@
 #define CONFIG_H
 
 /* Build config */
-#define AMP_VERSION 0x010802 /* 1.8.2 */
+#define AMP_VERSION 0x010900 /* 1.9.0 */
 
 #define THEMES_DIR "assets/themes/"
 #define USE_THEMES 1
@@ -74,6 +74,10 @@
 
 #define SHADOW_OFFSET 2
 #define DEFAULT_BOOKMARK_COLOR 0x44A0FF
+#define MAX_BLACKOUT_WINDOWS 16
+#define AMBIENT_FADE_ROWS 8
+#define AMBIENT_ZONES 8
+#define BLACKOUT_MODE_TURN_OFF_MONITOR 1
 
 /* Colors */
 /*      Format is                 R,   G,   B */

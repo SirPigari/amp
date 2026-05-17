@@ -21,9 +21,9 @@
 #ifndef AVCODEC_BSF_H
 #define AVCODEC_BSF_H
 
-#include "libavutil/dict.h"
-#include "libavutil/log.h"
-#include "libavutil/rational.h"
+#include "../libavutil/dict.h"
+#include "../libavutil/log.h"
+#include "../libavutil/rational.h"
 
 #include "codec_id.h"
 #include "codec_par.h"
