@@ -10,6 +10,7 @@
 #include "../thirdparty/SDL2/SDL.h"
 #include "../thirdparty/libavformat/avformat.h"
 #include "../thirdparty/libavcodec/avcodec.h"
+#include "../thirdparty/libavcodec/bsf.h"
 #include "../thirdparty/libswscale/swscale.h"
 #include "../thirdparty/libavutil/imgutils.h"
 #include "../thirdparty/libavutil/frame.h"
@@ -54,6 +55,7 @@ typedef struct {
     AVCodecContext* audio_ctx;
     int audio_stream_index;
     SwrContext* swr_ctx;
+    AVBSFContext* spdif_bsf;
     SDL_AudioDeviceID audio_dev;
     SDL_AudioSpec audio_spec;
     AVFrame* audio_frame;
@@ -69,6 +71,16 @@ typedef struct {
     int64_t audio_samples_written;
     int audio_clock_valid;
     double last_time;
+    int os_passthrough;
+    int passthrough_active;
+    int night_mode;
+    float night_env;
+    float night_gain;
+    int ambient_glow;
+    SDL_Color ambient_top[AMBIENT_ZONES];
+    SDL_Color ambient_bottom[AMBIENT_ZONES];
+    SDL_Color ambient_left[AMBIENT_ZONES];
+    SDL_Color ambient_right[AMBIENT_ZONES];
 
     AVCodecContext* subtitle_ctx;
     int subtitle_stream_index;
@@ -160,6 +172,7 @@ static void pkt_queue_free(PacketQueue* q) {
 
 extern int hw_cache_has(const char* name);
 extern void hw_cache_mark_success(const char* name);
+void vr_select_audio_track(VideoRenderer* vr, int idx);
 
 static int pkt_queue_is_full(PacketQueue* q) {
     return q && q->size >= q->capacity;
@@ -183,6 +196,24 @@ static int pkt_queue_pop(PacketQueue* q, AVPacket* out) {
     q->r = (q->r + 1) % q->capacity;
     q->size--;
     return 1;
+}
+
+static int vr_audio_codec_supports_passthrough(enum AVCodecID codec_id) {
+    switch (codec_id) {
+        case AV_CODEC_ID_AC3:
+        case AV_CODEC_ID_EAC3:
+        case AV_CODEC_ID_DTS:
+        case AV_CODEC_ID_TRUEHD:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int vr_audio_should_passthrough(VideoRenderer* vr) {
+    if (!vr || !vr->audio_ctx) return 0;
+    if (!vr->os_passthrough) return 0;
+    return vr_audio_codec_supports_passthrough(vr->audio_ctx->codec_id);
 }
 
 static double vr_get_audio_queue_seconds(VideoRenderer* vr) {
@@ -272,6 +303,10 @@ static void vr_reset_stream(VideoRenderer* vr) {
         av_frame_free(&vr->audio_frame);
         vr->audio_frame = NULL;
     }
+    if (vr->spdif_bsf) {
+        av_bsf_free(&vr->spdif_bsf);
+        vr->spdif_bsf = NULL;
+    }
     if (vr->audio_buf) {
         free(vr->audio_buf);
         vr->audio_buf = NULL;
@@ -284,6 +319,9 @@ static void vr_reset_stream(VideoRenderer* vr) {
     vr->audio_base_samples = 0;
     vr->audio_samples_written = 0;
     vr->audio_clock_valid = 0;
+    vr->passthrough_active = 0;
+    vr->night_env = 0.0f;
+    vr->night_gain = 1.0f;
     if (vr->swr_ctx) {
         swr_free(&vr->swr_ctx);
         vr->swr_ctx = NULL;
@@ -502,10 +540,38 @@ static void vr_queue_audio(VideoRenderer* vr, AVFrame* frame) {
     int sample_count = bytes / sizeof(int16_t);
     float gain = vr->audio_volume;
     for (int i = 0; i < sample_count; i++) {
-        int v = (int)(samples[i] * gain);
-        if (v > 32767) v = 32767;
-        if (v < -32768) v = -32768;
-        samples[i] = (int16_t)v;
+        float s = (float)samples[i] / 32768.0f;
+
+        if (vr->night_mode) {
+            float abs_s = fabsf(s);
+            const float env_attack = 0.25f;
+            const float env_release = 0.003f;
+            const float threshold = 0.20f;
+            const float ratio = 6.0f;
+            const float makeup = 1.45f;
+            const float gain_smooth = 0.08f;
+
+            if (abs_s > vr->night_env) {
+                vr->night_env += (abs_s - vr->night_env) * env_attack;
+            } else {
+                vr->night_env += (abs_s - vr->night_env) * env_release;
+            }
+
+            {
+                float target_gain = 1.0f;
+                if (vr->night_env > threshold) {
+                    float over = vr->night_env / threshold;
+                    target_gain = powf(over, -(1.0f - 1.0f / ratio));
+                }
+                vr->night_gain += (target_gain - vr->night_gain) * gain_smooth;
+                s *= vr->night_gain * makeup;
+            }
+        }
+
+        s *= gain;
+        if (s > 1.0f) s = 1.0f;
+        if (s < -1.0f) s = -1.0f;
+        samples[i] = (int16_t)(s * 32767.0f);
     }
 
     SDL_QueueAudio(vr->audio_dev, vr->audio_buf, bytes);
@@ -531,6 +597,43 @@ static void vr_queue_audio(VideoRenderer* vr, AVFrame* frame) {
         }
     }
     vr->audio_samples_written += converted;
+}
+
+static void vr_queue_passthrough_packet(VideoRenderer* vr, const AVPacket* pkt) {
+    if (!vr || !pkt || !vr->audio_dev) return;
+
+    if (vr->spdif_bsf) {
+        int send_ret = av_bsf_send_packet(vr->spdif_bsf, (AVPacket*)pkt);
+        if (send_ret < 0 && send_ret != AVERROR(EAGAIN)) return;
+
+        AVPacket* out_pkt = av_packet_alloc();
+        if (!out_pkt) return;
+        while (av_bsf_receive_packet(vr->spdif_bsf, out_pkt) == 0) {
+            if (out_pkt->size > 0) {
+                SDL_QueueAudio(vr->audio_dev, out_pkt->data, (Uint32)out_pkt->size);
+            }
+            av_packet_unref(out_pkt);
+        }
+        av_packet_free(&out_pkt);
+    } else if (pkt->size > 0) {
+        SDL_QueueAudio(vr->audio_dev, pkt->data, (Uint32)pkt->size);
+    }
+
+    if (vr->audio_time_base.num != 0 && vr->audio_time_base.den != 0) {
+        int64_t pts = pkt->pts;
+        if (pts == AV_NOPTS_VALUE) pts = pkt->dts;
+        if (pts != AV_NOPTS_VALUE) {
+            double pts_sec = pts * av_q2d(vr->audio_time_base);
+            if (!vr->start_time_set) {
+                vr->start_time = pts_sec;
+                vr->start_time_set = 1;
+            }
+            pts_sec -= vr->start_time;
+            vr->audio_clock_pts = pts_sec;
+            vr->audio_clock_valid = 1;
+        }
+    }
+    SDL_PauseAudioDevice(vr->audio_dev, 0);
 }
 
 static void vr_process_subtitle(VideoRenderer* vr, const AVPacket* pkt) {
@@ -622,6 +725,18 @@ VideoRenderer* vr_create(SDL_Window* window, SDL_Renderer* renderer) {
     vr->playback_speed = 1.0;
     vr->current_time = 0.0;
     vr->audio_volume = 1.0f;
+    vr->os_passthrough = 0;
+    vr->passthrough_active = 0;
+    vr->night_mode = 0;
+    vr->night_env = 0.0f;
+    vr->night_gain = 1.0f;
+    vr->ambient_glow = 0;
+    {
+        SDL_Color zero = {0, 0, 0, 255};
+        for (int i = 0; i < AMBIENT_ZONES; i++) {
+            vr->ambient_top[i] = vr->ambient_bottom[i] = vr->ambient_left[i] = vr->ambient_right[i] = zero;
+        }
+    }
     vr->current_audio = -1;
     vr->current_subtitle = -1;
     vr->audio_clock_pts = 0.0;
@@ -983,13 +1098,14 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
 
         if (vr->audio_ctx) {
             vr->audio_time_base = stream->time_base;
+            vr->passthrough_active = vr_audio_should_passthrough(vr);
             
             SDL_AudioSpec want;
             SDL_zero(want);
-            want.freq = vr->audio_ctx->sample_rate;
+            want.freq = vr->passthrough_active ? 48000 : vr->audio_ctx->sample_rate;
             want.format = AUDIO_S16SYS;
             want.channels = 2;
-            want.samples = 1024;
+            want.samples = vr->passthrough_active ? 2048 : 1024;
             want.callback = NULL;
             if (vr->audio_dev && vr->audio_spec.freq == want.freq) {
                 SDL_ClearQueuedAudio(vr->audio_dev);
@@ -1007,15 +1123,32 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
             }
             if (vr->audio_dev) SDL_PauseAudioDevice(vr->audio_dev, 0);
 
-            AVChannelLayout in_layout = vr->audio_ctx->ch_layout;
-            AVChannelLayout out_layout;
-            av_channel_layout_default(&out_layout, 2);
-            swr_alloc_set_opts2(&vr->swr_ctx,
-                &out_layout, AV_SAMPLE_FMT_S16, vr->audio_spec.freq,
-                &in_layout, vr->audio_ctx->sample_fmt, vr->audio_ctx->sample_rate,
-                0, NULL);
-            swr_init(vr->swr_ctx);
-            vr->audio_frame = av_frame_alloc();
+            if (vr->passthrough_active) {
+                const AVBitStreamFilter* spdif = av_bsf_get_by_name("spdif");
+                if (!spdif || av_bsf_alloc(spdif, &vr->spdif_bsf) < 0) {
+                    vr->passthrough_active = 0;
+                } else {
+                    if (avcodec_parameters_copy(vr->spdif_bsf->par_in, stream->codecpar) < 0
+                        || av_bsf_init(vr->spdif_bsf) < 0) {
+                        av_bsf_free(&vr->spdif_bsf);
+                        vr->spdif_bsf = NULL;
+                        vr->passthrough_active = 0;
+                    }
+                    vr->spdif_bsf->time_base_in = stream->time_base;
+                }
+            }
+
+            if (!vr->passthrough_active) {
+                AVChannelLayout in_layout = vr->audio_ctx->ch_layout;
+                AVChannelLayout out_layout;
+                av_channel_layout_default(&out_layout, 2);
+                swr_alloc_set_opts2(&vr->swr_ctx,
+                    &out_layout, AV_SAMPLE_FMT_S16, vr->audio_spec.freq,
+                    &in_layout, vr->audio_ctx->sample_fmt, vr->audio_ctx->sample_rate,
+                    0, NULL);
+                swr_init(vr->swr_ctx);
+                vr->audio_frame = av_frame_alloc();
+            }
         }
     }
 
@@ -1114,6 +1247,22 @@ static void vr_demux_packets(VideoRenderer* vr) {
 
 static void vr_decode_audio(VideoRenderer* vr) {
     if (!vr || !vr->audio_ctx || !vr->audio_dev) return;
+
+    if (vr->passthrough_active) {
+        double queued_passthrough = vr_get_audio_queue_seconds(vr);
+        if (queued_passthrough >= AUDIO_QUEUE_TARGET_SEC) return;
+
+        while (queued_passthrough < AUDIO_QUEUE_TARGET_SEC) {
+            if (pkt_queue_is_empty(&vr->audio_pktq)) break;
+            AVPacket pkt;
+            if (!pkt_queue_pop(&vr->audio_pktq, &pkt)) break;
+            vr_queue_passthrough_packet(vr, &pkt);
+            av_packet_unref(&pkt);
+            queued_passthrough = vr_get_audio_queue_seconds(vr);
+        }
+        return;
+    }
+
     double queued = vr_get_audio_queue_seconds(vr);
     if (queued >= AUDIO_QUEUE_TARGET_SEC) return;
 
@@ -1218,6 +1367,99 @@ end:
     }
 
     return ret;
+}
+
+static SDL_Color yuv_to_sdl_color(int Y, int U, int V) {
+    int r = Y + (int)(1.402f   * (float)(V - 128));
+    int g = Y - (int)(0.344f   * (float)(U - 128)) - (int)(0.714f * (float)(V - 128));
+    int b = Y + (int)(1.772f   * (float)(U - 128));
+    SDL_Color c;
+    c.r = (Uint8)(r < 0 ? 0 : r > 255 ? 255 : r);
+    c.g = (Uint8)(g < 0 ? 0 : g > 255 ? 255 : g);
+    c.b = (Uint8)(b < 0 ? 0 : b > 255 ? 255 : b);
+    c.a = 255;
+    return c;
+}
+
+static void vr_sample_ambient_colors(VideoRenderer* vr) {
+    int W = vr->width;
+    int H = vr->height;
+    if (W <= 0 || H <= 0 || !vr->yuv_frame || !vr->yuv_frame->data[0]) return;
+
+    const int STRIP = 16;
+    const int STEP  = 4;
+
+    for (int z = 0; z < AMBIENT_ZONES; z++) {
+        int zx0 = z * W / AMBIENT_ZONES;
+        int zx1 = (z + 1) * W / AMBIENT_ZONES;
+        if (zx1 <= zx0) zx1 = zx0 + 1;
+
+        {
+            long sumY = 0, sumU = 0, sumV = 0, cnt = 0;
+            int rows = (STRIP < H) ? STRIP : H;
+            for (int y = 0; y < rows; y++) {
+                for (int x = zx0; x < zx1; x += STEP) {
+                    sumY += vr->yuv_frame->data[0][y * vr->yuv_frame->linesize[0] + x];
+                    int ux = x >> 1, uy = y >> 1;
+                    sumU += vr->yuv_frame->data[1][uy * vr->yuv_frame->linesize[1] + ux];
+                    sumV += vr->yuv_frame->data[2][uy * vr->yuv_frame->linesize[2] + ux];
+                    cnt++;
+                }
+            }
+            if (cnt > 0) vr->ambient_top[z] = yuv_to_sdl_color((int)(sumY/cnt), (int)(sumU/cnt), (int)(sumV/cnt));
+        }
+
+        {
+            long sumY = 0, sumU = 0, sumV = 0, cnt = 0;
+            int y0b = (H - STRIP > 0) ? H - STRIP : 0;
+            for (int y = y0b; y < H; y++) {
+                for (int x = zx0; x < zx1; x += STEP) {
+                    sumY += vr->yuv_frame->data[0][y * vr->yuv_frame->linesize[0] + x];
+                    int ux = x >> 1, uy = y >> 1;
+                    sumU += vr->yuv_frame->data[1][uy * vr->yuv_frame->linesize[1] + ux];
+                    sumV += vr->yuv_frame->data[2][uy * vr->yuv_frame->linesize[2] + ux];
+                    cnt++;
+                }
+            }
+            if (cnt > 0) vr->ambient_bottom[z] = yuv_to_sdl_color((int)(sumY/cnt), (int)(sumU/cnt), (int)(sumV/cnt));
+        }
+    }
+
+    for (int z = 0; z < AMBIENT_ZONES; z++) {
+        int zy0 = z * H / AMBIENT_ZONES;
+        int zy1 = (z + 1) * H / AMBIENT_ZONES;
+        if (zy1 <= zy0) zy1 = zy0 + 1;
+
+        {
+            long sumY = 0, sumU = 0, sumV = 0, cnt = 0;
+            int cols = (STRIP < W) ? STRIP : W;
+            for (int y = zy0; y < zy1; y += STEP) {
+                for (int x = 0; x < cols; x++) {
+                    sumY += vr->yuv_frame->data[0][y * vr->yuv_frame->linesize[0] + x];
+                    int ux = x >> 1, uy = y >> 1;
+                    sumU += vr->yuv_frame->data[1][uy * vr->yuv_frame->linesize[1] + ux];
+                    sumV += vr->yuv_frame->data[2][uy * vr->yuv_frame->linesize[2] + ux];
+                    cnt++;
+                }
+            }
+            if (cnt > 0) vr->ambient_left[z] = yuv_to_sdl_color((int)(sumY/cnt), (int)(sumU/cnt), (int)(sumV/cnt));
+        }
+
+        {
+            long sumY = 0, sumU = 0, sumV = 0, cnt = 0;
+            int x0r = (W - STRIP > 0) ? W - STRIP : 0;
+            for (int y = zy0; y < zy1; y += STEP) {
+                for (int x = x0r; x < W; x++) {
+                    sumY += vr->yuv_frame->data[0][y * vr->yuv_frame->linesize[0] + x];
+                    int ux = x >> 1, uy = y >> 1;
+                    sumU += vr->yuv_frame->data[1][uy * vr->yuv_frame->linesize[1] + ux];
+                    sumV += vr->yuv_frame->data[2][uy * vr->yuv_frame->linesize[2] + ux];
+                    cnt++;
+                }
+            }
+            if (cnt > 0) vr->ambient_right[z] = yuv_to_sdl_color((int)(sumY/cnt), (int)(sumU/cnt), (int)(sumV/cnt));
+        }
+    }
 }
 
 int vr_render_frame(VideoRenderer* vr) {
@@ -1341,6 +1583,8 @@ int vr_render_frame(VideoRenderer* vr) {
                 vr->yuv_frame->data[1], vr->yuv_frame->linesize[1],
                 vr->yuv_frame->data[2], vr->yuv_frame->linesize[2]);
 
+            if (vr->ambient_glow) vr_sample_ambient_colors(vr);
+
             vr->hw_bad_frame_count = 0;
             vr->video_ready = 1;
 
@@ -1396,7 +1640,8 @@ double vr_get_audio_time(VideoRenderer* vr) {
 void vr_resync_audio(VideoRenderer* vr, double target_time) {
     if (!vr || !vr->audio_dev) return;
     SDL_ClearQueuedAudio(vr->audio_dev);
-    if (vr->audio_ctx) avcodec_flush_buffers(vr->audio_ctx);
+    if (vr->audio_ctx && !vr->passthrough_active) avcodec_flush_buffers(vr->audio_ctx);
+    if (vr->spdif_bsf) av_bsf_flush(vr->spdif_bsf);
     vr->audio_clock_base = target_time;
     vr->audio_base_samples = 0;
     vr->audio_samples_written = 0;
@@ -1630,6 +1875,61 @@ void vr_set_volume(VideoRenderer* vr, float volume) {
     vr->audio_volume = volume;
 }
 
+void vr_set_os_passthrough(VideoRenderer* vr, int enabled) {
+    if (!vr) return;
+    enabled = enabled ? 1 : 0;
+    if (vr->os_passthrough == enabled) return;
+    vr->os_passthrough = enabled;
+    if (vr->current_audio >= 0) {
+        vr_select_audio_track(vr, vr->current_audio);
+    }
+}
+
+int vr_get_os_passthrough(VideoRenderer* vr) {
+    return vr ? vr->os_passthrough : 0;
+}
+
+int vr_is_os_passthrough_active(VideoRenderer* vr) {
+    return vr ? vr->passthrough_active : 0;
+}
+
+void vr_set_night_mode(VideoRenderer* vr, int enabled) {
+    if (!vr) return;
+    vr->night_mode = enabled ? 1 : 0;
+    if (!vr->night_mode) {
+        vr->night_env = 0.0f;
+        vr->night_gain = 1.0f;
+    }
+}
+
+int vr_get_night_mode(VideoRenderer* vr) {
+    return vr ? vr->night_mode : 0;
+}
+
+void vr_set_ambient_glow(VideoRenderer* vr, int enabled) {
+    if (!vr) return;
+    vr->ambient_glow = enabled ? 1 : 0;
+}
+
+int vr_get_ambient_glow(VideoRenderer* vr) {
+    return vr ? vr->ambient_glow : 0;
+}
+
+void vr_get_ambient_colors(VideoRenderer* vr, SDL_Color top[AMBIENT_ZONES], SDL_Color bottom[AMBIENT_ZONES], SDL_Color left[AMBIENT_ZONES], SDL_Color right[AMBIENT_ZONES]) {
+    SDL_Color zero = {0, 0, 0, 255};
+    if (!vr) {
+        if (top)    for (int i = 0; i < AMBIENT_ZONES; i++) top[i]    = zero;
+        if (bottom) for (int i = 0; i < AMBIENT_ZONES; i++) bottom[i] = zero;
+        if (left)   for (int i = 0; i < AMBIENT_ZONES; i++) left[i]   = zero;
+        if (right)  for (int i = 0; i < AMBIENT_ZONES; i++) right[i]  = zero;
+        return;
+    }
+    if (top)    memcpy(top,    vr->ambient_top,    sizeof(vr->ambient_top));
+    if (bottom) memcpy(bottom, vr->ambient_bottom, sizeof(vr->ambient_bottom));
+    if (left)   memcpy(left,   vr->ambient_left,   sizeof(vr->ambient_left));
+    if (right)  memcpy(right,  vr->ambient_right,  sizeof(vr->ambient_right));
+}
+
 void vr_set_subtitle_style_override(VideoRenderer* vr, uint32_t color_rgb, int size, int margin_bottom) {
     if (!vr) return;
     vr->subtitle_override_color_rgb = color_rgb & 0xFFFFFF;
@@ -1710,6 +2010,7 @@ void vr_select_audio_track(VideoRenderer* vr, int idx) {
     if (vr->audio_dev) { SDL_CloseAudioDevice(vr->audio_dev); vr->audio_dev = 0; }
     if (vr->audio_ctx) { avcodec_free_context(&vr->audio_ctx); vr->audio_ctx = NULL; }
     if (vr->swr_ctx)   { swr_free(&vr->swr_ctx); vr->swr_ctx = NULL; }
+    if (vr->spdif_bsf) { av_bsf_free(&vr->spdif_bsf); vr->spdif_bsf = NULL; }
     if (vr->audio_frame) { av_frame_free(&vr->audio_frame); vr->audio_frame = NULL; }
 
     AVStream* stream = vr->fmt_ctx->streams[vr->audio_stream_index];
@@ -1726,10 +2027,11 @@ void vr_select_audio_track(VideoRenderer* vr, int idx) {
 
     SDL_AudioSpec want;
     SDL_zero(want);
-    want.freq = vr->audio_ctx->sample_rate;
+    vr->passthrough_active = vr_audio_should_passthrough(vr);
+    want.freq = vr->passthrough_active ? 48000 : vr->audio_ctx->sample_rate;
     want.format = AUDIO_S16SYS;
     want.channels = 2;
-    want.samples = 1024;
+    want.samples = vr->passthrough_active ? 2048 : 1024;
     want.callback = NULL;
     vr->audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &vr->audio_spec,
                                          SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
@@ -1739,15 +2041,32 @@ void vr_select_audio_track(VideoRenderer* vr, int idx) {
     }
     SDL_PauseAudioDevice(vr->audio_dev, 0);
 
-    AVChannelLayout in_layout = vr->audio_ctx->ch_layout;
-    AVChannelLayout out_layout;
-    av_channel_layout_default(&out_layout, 2);
-    swr_alloc_set_opts2(&vr->swr_ctx,
-        &out_layout, AV_SAMPLE_FMT_S16, vr->audio_spec.freq,
-        &in_layout, vr->audio_ctx->sample_fmt, vr->audio_ctx->sample_rate,
-        0, NULL);
-    swr_init(vr->swr_ctx);
-    vr->audio_frame = av_frame_alloc();
+    if (vr->passthrough_active) {
+        const AVBitStreamFilter* spdif = av_bsf_get_by_name("spdif");
+        if (!spdif || av_bsf_alloc(spdif, &vr->spdif_bsf) < 0) {
+            vr->passthrough_active = 0;
+        } else {
+            if (avcodec_parameters_copy(vr->spdif_bsf->par_in, stream->codecpar) < 0
+                || av_bsf_init(vr->spdif_bsf) < 0) {
+                av_bsf_free(&vr->spdif_bsf);
+                vr->spdif_bsf = NULL;
+                vr->passthrough_active = 0;
+            }
+            vr->spdif_bsf->time_base_in = stream->time_base;
+        }
+    }
+
+    if (!vr->passthrough_active) {
+        AVChannelLayout in_layout = vr->audio_ctx->ch_layout;
+        AVChannelLayout out_layout;
+        av_channel_layout_default(&out_layout, 2);
+        swr_alloc_set_opts2(&vr->swr_ctx,
+            &out_layout, AV_SAMPLE_FMT_S16, vr->audio_spec.freq,
+            &in_layout, vr->audio_ctx->sample_fmt, vr->audio_ctx->sample_rate,
+            0, NULL);
+        swr_init(vr->swr_ctx);
+        vr->audio_frame = av_frame_alloc();
+    }
 
     if (vr->fmt_ctx && vr->video_stream_index >= 0) {
         AVStream* video_st = vr->fmt_ctx->streams[vr->video_stream_index];

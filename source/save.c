@@ -9,32 +9,17 @@
 #include "../thirdparty/nob.h"
 
 typedef enum {
-    /* FontSettings */
-    FIELD_FONT_SIZE             = 0x0001,
-    FIELD_FONT_OUTLINE_SIZE     = 0x0002,
-    FIELD_FONT_COLOR            = 0x0003,
-    FIELD_FONT_OUTLINE_COLOR    = 0x0004,
+    FIELD_FONT_SIZE             = 0x0001,   /* static-size */
+    FIELD_FONT_OUTLINE_SIZE     = 0x0002,   /* static-size */
+    FIELD_FONT_COLOR            = 0x0003,   /* static-size */
+    FIELD_FONT_OUTLINE_COLOR    = 0x0004,   /* static-size */
     FIELD_FONT_PATH             = 0x0005,   /* variable-length */
-
-    /* recent files list */
     FIELD_RECENT_FILES          = 0x0010,   /* variable-length */
-
-    /* remembered FileConfig array */
     FIELD_REMEMBERED_FILES      = 0x0020,   /* variable-length */
-
-    /* per-file bookmarks */
     FIELD_BOOKMARKS             = 0x0021,   /* variable-length */
-
-    /* per-file display config (AR + window size) */
     FIELD_PER_FILE_DISPLAY      = 0x0022,   /* variable-length */
-
-    /* hardware-decoder cache */
     FIELD_HW_CACHE              = 0x0030,   /* variable-length */
-
-    /* global state */
     FIELD_GLOBAL                = 0x0040,   /* static-size */
-
-    /* sentinel - must stay last */
     FIELD_SENTINEL              = 0xFFFF,
 } FieldTag;
 
@@ -95,6 +80,10 @@ typedef struct {
     char theme[256];
     int32_t win_x;
     int32_t win_y;
+    int32_t audio_os_passthrough;
+    int32_t night_mode;
+    int32_t blackout_mode;
+    int32_t ambient_glow;
 } Global;
 
 static const LayoutField CURRENT_LAYOUT[] = {
@@ -975,6 +964,10 @@ static void debug_save_state(const SaveState* state) {
     printf("  Paused: %d\n", state->global.paused);
     printf("  Theme: %s\n", state->global.theme);
     printf("  Win Pos: %d, %d\n", state->global.win_x, state->global.win_y);
+    printf("  Audio OS Passthrough: %d\n", state->global.audio_os_passthrough);
+    printf("  Night Mode: %d\n", state->global.night_mode);
+    printf("  Blackout Mode: %d\n", state->global.blackout_mode);
+    printf("  Ambient Glow: %d\n", state->global.ambient_glow);
 }
 
 static void update_bookmarks_in_save_state(SaveState* state,

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.9.0
+
+- Added `Audio OS Passthrough` for supported codecs (AC3, EAC3, DTS and TrueHD) on supported platforms (windows and linux)
+- Added `Night Mode` audio compressor to suppress loud peaks and keep dialogue audible at low volume
+- Added `Blackout Mode` to black out other monitors with borderless windows when fullscreen
+- Added `Ambient Glow` ambilight effect that samples edge colors from the video frame and projects a smooth gradient glow onto the letterbox bars
+- Added `SetThreadExecutionState` to prevent the system from sleeping while amp is running on windows
+- Made the recent files have an icon
+
 ## 1.8.3
 
 - Fixed distribution to have a loader `./amp.exe` which loads `./dll/amp.exe`
