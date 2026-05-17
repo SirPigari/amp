@@ -9,6 +9,8 @@
 #include <commdlg.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <mmdeviceapi.h>
+#include <propsys.h>
 #endif
 #include "../thirdparty/SDL2/SDL.h"
 #include "../thirdparty/SDL2/SDL_ttf.h"
@@ -2928,7 +2930,7 @@ int main(int argc, char** argv) {
                 paused = save_state.global.paused;
             }
         #endif
-        if (save_state.global.win_x != 0 || save_state.global.win_y != 0) {
+        if (!maximized && !fullscreen && (save_state.global.win_x != 0 || save_state.global.win_y != 0)) {
             SDL_SetWindowPosition(win, save_state.global.win_x, save_state.global.win_y);
         }
     #endif
@@ -4707,10 +4709,20 @@ int main(int argc, char** argv) {
                                         vr_set_os_passthrough(vr, audio_os_passthrough ? 1 : 0);
                                     }
                                     if (audio_os_passthrough && vr && !vr_is_os_passthrough_active(vr)) {
-                                        snprintf(flash_text, sizeof(flash_text), "Passthrough unavailable for this track/output");
-                                        nob_log(NOB_WARNING, "Passthrough unavailable: track %d codec '%s' not in (ac3/eac3/dts/truehd)",
-                                            vr->current_audio,
-                                            vr->audio_ctx ? avcodec_get_name(vr->audio_ctx->codec_id) : "<unavailable>");
+                                        const char* _cn = vr->audio_ctx ? avcodec_get_name(vr->audio_ctx->codec_id) : "<unavailable>";
+                                        int _cs = vr->audio_ctx ? vr_audio_codec_supports_passthrough(vr->audio_ctx->codec_id) : 0;
+                                        if (!_cs) {
+                                            snprintf(flash_text, sizeof(flash_text), "Passthrough: codec '%s' not supported", _cn);
+                                            nob_log(NOB_WARNING, "Passthrough unavailable: track %d codec '%s' not supported (need ac3/eac3/dts/truehd)",
+                                                vr->current_audio, _cn);
+                                        } else if (vr->passthrough_no_digital_device) {
+                                            snprintf(flash_text, sizeof(flash_text), "Passthrough: not a digital audio output");
+                                            nob_log(NOB_WARNING, "Passthrough unavailable: output is not a digital audio device (need HDMI/S-PDIF)");
+                                        } else {
+                                            snprintf(flash_text, sizeof(flash_text), "Passthrough unavailable: BSF/init failed");
+                                            nob_log(NOB_WARNING, "Passthrough unavailable: track %d codec '%s' is supported but SPDIF BSF or audio device init failed",
+                                                vr->current_audio, _cn);
+                                        }
                                     } else {
                                         snprintf(flash_text, sizeof(flash_text), "Audio OS Passthrough: %s", audio_os_passthrough ? "ON" : "OFF");
                                     }

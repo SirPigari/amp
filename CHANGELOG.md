@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.9.1
+
+- Fixed a bug with window position
+- Fixed a bug with audio os passthrough
+
 ## 1.9.0
 
 - Added `Audio OS Passthrough` for supported codecs (AC3, EAC3, DTS and TrueHD) on supported platforms (windows and linux)

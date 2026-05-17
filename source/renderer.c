@@ -56,6 +56,7 @@ typedef struct {
     int audio_stream_index;
     SwrContext* swr_ctx;
     AVBSFContext* spdif_bsf;
+    int spdif_manual;
     SDL_AudioDeviceID audio_dev;
     SDL_AudioSpec audio_spec;
     AVFrame* audio_frame;
@@ -73,6 +74,7 @@ typedef struct {
     double last_time;
     int os_passthrough;
     int passthrough_active;
+    int passthrough_no_digital_device;
     int night_mode;
     float night_env;
     float night_gain;
@@ -198,7 +200,85 @@ static int pkt_queue_pop(PacketQueue* q, AVPacket* out) {
     return 1;
 }
 
-static int vr_audio_codec_supports_passthrough(enum AVCodecID codec_id) {
+#ifdef _WIN32
+static int amp_audio_device_supports_passthrough(void) {
+    static const CLSID s_CLSID_MMDeviceEnumerator =
+        {0xBCDE0395u,0xE52F,0x467C,{0x8E,0x3D,0xC4,0x57,0x92,0x91,0x69,0x2E}};
+    static const IID s_IID_IMMDeviceEnumerator =
+        {0xA95664D2u,0x9614,0x4F35,{0xA7,0x46,0xDE,0x8D,0xB6,0x36,0x17,0xE6}};
+    static const PROPERTYKEY s_PKEY_FormFactor = {
+        {0x1DA5D803u,0xD492,0x4EDD,{0x8C,0x23,0xE0,0xC0,0xFF,0xEE,0x7F,0x0E}}, 0
+    };
+    IMMDeviceEnumerator* enumerator = NULL;
+    IMMDevice* device = NULL;
+    IPropertyStore* props = NULL;
+    PROPVARIANT var;
+    int result = 0;
+    HRESULT hr;
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    hr = CoCreateInstance(&s_CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
+                          &s_IID_IMMDeviceEnumerator, (void**)&enumerator);
+    if (FAILED(hr)) goto done;
+    hr = enumerator->lpVtbl->GetDefaultAudioEndpoint(enumerator, eRender, eMultimedia, &device);
+    if (FAILED(hr)) goto done;
+    hr = device->lpVtbl->OpenPropertyStore(device, STGM_READ, &props);
+    if (FAILED(hr)) goto done;
+    PropVariantInit(&var);
+    hr = props->lpVtbl->GetValue(props, &s_PKEY_FormFactor, &var);
+    if (SUCCEEDED(hr) && var.vt == VT_UI4) {
+        result = (var.uintVal == 7 || var.uintVal == 8 || var.uintVal == 9);
+    }
+    PropVariantClear(&var);
+done:
+    if (props)      props->lpVtbl->Release(props);
+    if (device)     device->lpVtbl->Release(device);
+    if (enumerator) enumerator->lpVtbl->Release(enumerator);
+    CoUninitialize();
+    return result;
+}
+#else
+static int amp_audio_device_supports_passthrough(void) { return 0; }
+#endif
+
+static int amp_iec61937_wrap(enum AVCodecID codec_id, const uint8_t *data, int size,
+                             uint8_t *out_buf, int out_buf_size) {
+    int frame_size, data_type;
+    switch (codec_id) {
+        case AV_CODEC_ID_AC3:   frame_size = 6144;  data_type = 1;  break;
+        case AV_CODEC_ID_EAC3:  frame_size = 24576; data_type = 21; break;
+        case AV_CODEC_ID_DTS:
+            if      (size <= 512)  { frame_size = 2048;  data_type = 11; }
+            else if (size <= 1024) { frame_size = 4096;  data_type = 12; }
+            else                   { frame_size = 8192;  data_type = 13; }
+            break;
+        default: return 0;
+    }
+    if (out_buf_size < frame_size || size + 8 > frame_size) return 0;
+
+    memset(out_buf, 0, frame_size);
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+    out_buf[0] = 0xF8; out_buf[1] = 0x72;
+    out_buf[2] = 0x4E; out_buf[3] = 0x1F;
+    out_buf[4] = (data_type >> 8) & 0xFF; out_buf[5] = data_type & 0xFF;
+    int lb = size * 8;
+    out_buf[6] = (lb >> 8) & 0xFF;        out_buf[7] = lb & 0xFF;
+    memcpy(out_buf + 8, data, size);
+#else
+    out_buf[0] = 0x72; out_buf[1] = 0xF8;
+    out_buf[2] = 0x1F; out_buf[3] = 0x4E;
+    out_buf[4] = data_type & 0xFF; out_buf[5] = (data_type >> 8) & 0xFF;
+    int lb = size * 8;
+    out_buf[6] = lb & 0xFF;        out_buf[7] = (lb >> 8) & 0xFF;
+    for (int i = 0; i < size - 1; i += 2) {
+        out_buf[8 + i]     = data[i + 1];
+        out_buf[8 + i + 1] = data[i];
+    }
+    if (size & 1) { out_buf[8 + size - 1] = 0; out_buf[8 + size] = data[size - 1]; }
+#endif
+    return frame_size;
+}
+
+int vr_audio_codec_supports_passthrough(enum AVCodecID codec_id) {
     switch (codec_id) {
         case AV_CODEC_ID_AC3:
         case AV_CODEC_ID_EAC3:
@@ -615,6 +695,17 @@ static void vr_queue_passthrough_packet(VideoRenderer* vr, const AVPacket* pkt) 
             av_packet_unref(out_pkt);
         }
         av_packet_free(&out_pkt);
+    } else if (vr->spdif_manual && pkt->size > 0) {
+        int max_frame = 65536;
+        uint8_t* frame = (uint8_t*)malloc(max_frame);
+        if (frame) {
+            int fsz = amp_iec61937_wrap(
+                vr->audio_ctx ? vr->audio_ctx->codec_id : AV_CODEC_ID_NONE,
+                pkt->data, pkt->size, frame, max_frame);
+            if (fsz > 0)
+                SDL_QueueAudio(vr->audio_dev, frame, (Uint32)fsz);
+            free(frame);
+        }
     } else if (pkt->size > 0) {
         SDL_QueueAudio(vr->audio_dev, pkt->data, (Uint32)pkt->size);
     }
@@ -1125,16 +1216,31 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
 
             if (vr->passthrough_active) {
                 const AVBitStreamFilter* spdif = av_bsf_get_by_name("spdif");
-                if (!spdif || av_bsf_alloc(spdif, &vr->spdif_bsf) < 0) {
+                if (!spdif) {
+                    if (amp_audio_device_supports_passthrough()) {
+                        nob_log(NOB_INFO, "Passthrough: SPDIF BSF unavailable, using manual IEC 61937 framing");
+                        vr->spdif_manual = 1;
+                    } else {
+                        nob_log(NOB_WARNING, "Passthrough: SPDIF BSF unavailable, output is not a digital audio device");
+                        vr->passthrough_active = 0;
+                        vr->passthrough_no_digital_device = 1;
+                    }
+                } else if (av_bsf_alloc(spdif, &vr->spdif_bsf) < 0) {
+                    nob_log(NOB_WARNING, "Passthrough: av_bsf_alloc failed, passthrough disabled");
                     vr->passthrough_active = 0;
                 } else {
-                    if (avcodec_parameters_copy(vr->spdif_bsf->par_in, stream->codecpar) < 0
-                        || av_bsf_init(vr->spdif_bsf) < 0) {
+                    vr->spdif_bsf->time_base_in = stream->time_base;
+                    if (avcodec_parameters_copy(vr->spdif_bsf->par_in, stream->codecpar) < 0) {
+                        nob_log(NOB_WARNING, "Passthrough: avcodec_parameters_copy failed");
+                        av_bsf_free(&vr->spdif_bsf);
+                        vr->spdif_bsf = NULL;
+                        vr->passthrough_active = 0;
+                    } else if (av_bsf_init(vr->spdif_bsf) < 0) {
+                        nob_log(NOB_WARNING, "Passthrough: av_bsf_init failed");
                         av_bsf_free(&vr->spdif_bsf);
                         vr->spdif_bsf = NULL;
                         vr->passthrough_active = 0;
                     }
-                    vr->spdif_bsf->time_base_in = stream->time_base;
                 }
             }
 
@@ -2011,6 +2117,8 @@ void vr_select_audio_track(VideoRenderer* vr, int idx) {
     if (vr->audio_ctx) { avcodec_free_context(&vr->audio_ctx); vr->audio_ctx = NULL; }
     if (vr->swr_ctx)   { swr_free(&vr->swr_ctx); vr->swr_ctx = NULL; }
     if (vr->spdif_bsf) { av_bsf_free(&vr->spdif_bsf); vr->spdif_bsf = NULL; }
+    vr->spdif_manual = 0;
+    vr->passthrough_no_digital_device = 0;
     if (vr->audio_frame) { av_frame_free(&vr->audio_frame); vr->audio_frame = NULL; }
 
     AVStream* stream = vr->fmt_ctx->streams[vr->audio_stream_index];
@@ -2043,16 +2151,31 @@ void vr_select_audio_track(VideoRenderer* vr, int idx) {
 
     if (vr->passthrough_active) {
         const AVBitStreamFilter* spdif = av_bsf_get_by_name("spdif");
-        if (!spdif || av_bsf_alloc(spdif, &vr->spdif_bsf) < 0) {
+        if (!spdif) {
+            if (amp_audio_device_supports_passthrough()) {
+                nob_log(NOB_INFO, "Passthrough: SPDIF BSF unavailable, using manual IEC 61937 framing");
+                vr->spdif_manual = 1;
+            } else {
+                nob_log(NOB_WARNING, "Passthrough: SPDIF BSF unavailable, output is not a digital audio device");
+                vr->passthrough_active = 0;
+                vr->passthrough_no_digital_device = 1;
+            }
+        } else if (av_bsf_alloc(spdif, &vr->spdif_bsf) < 0) {
+            nob_log(NOB_WARNING, "Passthrough: av_bsf_alloc failed, passthrough disabled");
             vr->passthrough_active = 0;
         } else {
-            if (avcodec_parameters_copy(vr->spdif_bsf->par_in, stream->codecpar) < 0
-                || av_bsf_init(vr->spdif_bsf) < 0) {
+            vr->spdif_bsf->time_base_in = stream->time_base;
+            if (avcodec_parameters_copy(vr->spdif_bsf->par_in, stream->codecpar) < 0) {
+                nob_log(NOB_WARNING, "Passthrough: avcodec_parameters_copy failed");
+                av_bsf_free(&vr->spdif_bsf);
+                vr->spdif_bsf = NULL;
+                vr->passthrough_active = 0;
+            } else if (av_bsf_init(vr->spdif_bsf) < 0) {
+                nob_log(NOB_WARNING, "Passthrough: av_bsf_init failed");
                 av_bsf_free(&vr->spdif_bsf);
                 vr->spdif_bsf = NULL;
                 vr->passthrough_active = 0;
             }
-            vr->spdif_bsf->time_base_in = stream->time_base;
         }
     }
 
