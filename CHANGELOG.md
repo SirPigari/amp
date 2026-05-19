@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.2
+
+- Fixed bugs with distribution
+- Added `installed_version` to registry on windows to install new version right when launched
+- Made the save file have a hash table index so indexing files is faster now
+
 ## 1.9.1
 
 - Fixed a bug with window position

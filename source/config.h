@@ -2,7 +2,7 @@
 #define CONFIG_H
 
 /* Build config */
-#define AMP_VERSION 0x010901 /* 1.9.1 */
+#define AMP_VERSION 0x010902 /* 1.9.2 */
 
 #define THEMES_DIR "assets/themes/"
 #define USE_THEMES 1
@@ -23,7 +23,11 @@
 #define INITIAL_WINDOW_WIDTH 960
 #define INITIAL_WINDOW_HEIGHT 540
 #define SAVE_FILE 1
+#ifndef DIST
 #define SAVE_FILE_PATH "./amp_save.dat"
+#else
+#define SAVE_FILE_PATH "../amp_save.dat"
+#endif
 #define HW_CACHE_SIZE 16
 #define HASH_SIZE 256
 #define USE_SAVE_IN_SAVE_FILE 0
@@ -77,7 +81,7 @@
 #define MAX_BLACKOUT_WINDOWS 16
 #define AMBIENT_FADE_ROWS 8
 #define AMBIENT_ZONES 8
-#define BLACKOUT_MODE_TURN_OFF_MONITOR 1
+#define BLACKOUT_MODE_TURN_OFF_MONITOR 0
 
 /* Colors */
 /*      Format is                 R,   G,   B */

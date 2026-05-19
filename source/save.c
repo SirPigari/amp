@@ -7,6 +7,10 @@
 #include "config.h"
 #include "../thirdparty/tinyfd.c"
 #include "../thirdparty/nob.h"
+#include "../thirdparty/ht.h"
+
+typedef struct { uint8_t bytes[HASH_SIZE]; } FileHashKey;
+typedef Ht(FileHashKey, int64_t) FileIndexTable;
 
 typedef enum {
     FIELD_FONT_SIZE             = 0x0001,   /* static-size */
@@ -112,8 +116,9 @@ typedef struct {
     char* recent_files[MAX_RECENT];
     uint64_t recent_files_count;
 
-    FileConfig* remembered_files;
-    uint64_t remembered_count;
+    FileConfig*    remembered_files;
+    uint64_t       remembered_count;
+    FileIndexTable file_index_ht;
 
     FontSettings font_settings;
     HWCache hw_cache;
@@ -288,6 +293,15 @@ static LayoutDiffResult diff_layouts(const LayoutField* stored, uint32_t stored_
 
 static void init_default_save_state(SaveState* s) {
     memset(s, 0, sizeof(*s));
+}
+
+static void rebuild_file_index_ht(SaveState* s) {
+    ht_reset(&s->file_index_ht);
+    for (uint64_t i = 0; i < s->remembered_count; i++) {
+        FileHashKey key;
+        memcpy(key.bytes, s->remembered_files[i].file_hash, HASH_SIZE);
+        *ht_put(&s->file_index_ht, key) = (int64_t)i;
+    }
 }
 
 static int write_save_state(const char* path, SaveState* state) {
@@ -760,6 +774,8 @@ static int load_save_state(const char* path, SaveState* s) {
         return 0;
     }
 
+    rebuild_file_index_ht(s);
+
     for (int i = 0; i < s->hw_cache.count; i++)
         hw_cache_mark_success(s->hw_cache.entries[i]);
 
@@ -795,16 +811,11 @@ static int64_t get_remembered_file_index(SaveState* state,
                                           const char* video_path,
                                           uint8_t video_hash[HASH_SIZE]) {
     if (!state || (!video_path && !video_hash)) return -1;
-    uint8_t hash[HASH_SIZE];
-    if (video_path)       hash_file(video_path, hash);
-    else if (video_hash)  memcpy(hash, video_hash, HASH_SIZE);
-    else                  return -1;
-
-    for (uint64_t i = 0; i < state->remembered_count; i++) {
-        if (memcmp(state->remembered_files[i].file_hash, hash, HASH_SIZE) == 0)
-            return (int64_t)i;
-    }
-    return -1;
+    FileHashKey key;
+    if (video_path)  hash_file(video_path, key.bytes);
+    else             memcpy(key.bytes, video_hash, HASH_SIZE);
+    int64_t* slot = ht_find(&state->file_index_ht, key);
+    return slot ? *slot : -1;
 }
 
 static void fill_save_state_from_vr_idx(VideoRenderer* vr,
@@ -862,6 +873,9 @@ static void fill_save_state_from_vr(VideoRenderer* vr,
         if (tmp) {
             state->remembered_files = tmp;
             state->remembered_files[state->remembered_count] = config;
+            FileHashKey key;
+            memcpy(key.bytes, hash, HASH_SIZE);
+            *ht_put(&state->file_index_ht, key) = (int64_t)state->remembered_count;
             state->remembered_count++;
         } else {
             free(config.video_path);
@@ -916,6 +930,7 @@ static void free_save_state(SaveState* state) {
         free(state->font_settings.font_path);
         state->font_settings.font_path = NULL;
     }
+    ht_free(&state->file_index_ht);
 }
 
 static void debug_save_state(const SaveState* state) {

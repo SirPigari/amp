@@ -17,7 +17,7 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "FileDescription", "simple media player"
+      VALUE "FileDescription", "amp - a media player"
       VALUE "ProductName", "amp"
       VALUE "InternalName", "amp"
       VALUE "OriginalFilename", AMP_ORIG_FILE

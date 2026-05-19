@@ -932,8 +932,12 @@ static void create_shortcut(const char* target) {
     char dir[PATH_MAX];
     get_self_dir(dir, sizeof(dir));
 
-    char path[PATH_MAX+8];
+    char path[PATH_MAX+16];
+    #ifndef DIST
     snprintf(path, sizeof(path), "%s\\amp.lnk", dir);
+    #else
+    snprintf(path, sizeof(path), "%s\\..\\amp.lnk", dir);
+    #endif
 
     CoInitialize(NULL);
 
@@ -1015,6 +1019,21 @@ static void reg_set(HKEY root, const char* subkey,
     }
 }
 
+static void reg_set_dword(HKEY root, const char* subkey,
+    const char* name, DWORD value) {
+
+    HKEY key;
+
+    if (RegCreateKeyExA(root, subkey, 0, NULL, 0,
+        KEY_WRITE, NULL, &key, NULL) == ERROR_SUCCESS) {
+
+        RegSetValueExA(key, name, 0, REG_DWORD,
+            (const BYTE*)&value, sizeof(value));
+
+        RegCloseKey(key);
+    }
+}
+
 static void reg_delete_value(HKEY root, const char* subkey, const char* name) {
     HKEY key;
 
@@ -1022,6 +1041,24 @@ static void reg_delete_value(HKEY root, const char* subkey, const char* name) {
         RegDeleteValueA(key, name);
         RegCloseKey(key);
     }
+}
+
+static int reg_get_int(HKEY root, const char* subkey, const char* name) {
+    HKEY key;
+
+    if (RegOpenKeyExA(root, subkey, 0, KEY_READ, &key) != ERROR_SUCCESS)
+        return 0;
+
+    DWORD value = 0;
+    DWORD size = sizeof(value);
+
+    if (RegQueryValueExA(key, name, NULL, NULL,
+        (BYTE*)&value, &size) != ERROR_SUCCESS) {
+        value = 0;
+    }
+
+    RegCloseKey(key);
+    return (int)value;
 }
 
 static int reg_get_bool(HKEY root, const char* subkey, const char* name) {
@@ -1112,10 +1149,14 @@ static void clear_fileext_cache(const char* ext) {
     RegDeleteTreeA(HKEY_CURRENT_USER, key);
 }
 
+static bool amp_should_register(const char* flag_key) {
+    return !reg_get_bool(HKEY_CURRENT_USER, flag_key, "installed") ||
+           reg_get_int(HKEY_CURRENT_USER, flag_key, "installed_version") < AMP_VERSION;
+}
+
 void amp_register(bool reregister) {
     const char* flag_key = "Software\\amp";
-
-    if (reg_get_bool(HKEY_CURRENT_USER, flag_key, "installed") && !reregister)
+    if (!amp_should_register(flag_key) && !reregister)
         return;
 
     char exe[PATH_MAX];
@@ -1141,6 +1182,7 @@ void amp_register(bool reregister) {
         "FriendlyAppName", "amp");
 
     reg_set(HKEY_CURRENT_USER, flag_key, "installed", "1");
+    reg_set_dword(HKEY_CURRENT_USER, flag_key, "installed_version", (DWORD)AMP_VERSION);
 
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);
 
