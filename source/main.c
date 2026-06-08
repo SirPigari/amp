@@ -1098,8 +1098,11 @@ static void register_progid_for_ext(const char* exe, const char* ext) {
     char* last = strrchr(dir, '\\');
     if (last) *last = '\0';
 
-    char ico[PATH_MAX+16];
+    char tmp[PATH_MAX+16];
+    char ico[PATH_MAX+20];
     snprintf(ico, sizeof(ico), "%s\\assets\\file.ico", dir);
+    abspath(ico, tmp, sizeof(tmp));
+    snprintf(ico, sizeof(ico), "\"%s\"", tmp);
 
     char key[256];
     char cmd[512];

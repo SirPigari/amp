@@ -176,6 +176,17 @@ extern int hw_cache_has(const char* name);
 extern void hw_cache_mark_success(const char* name);
 void vr_select_audio_track(VideoRenderer* vr, int idx);
 
+extern char flash_text[256];
+extern Uint32 flash_until;
+extern float flash_alpha;
+
+static void vr_flash_major_error(const char* msg) {
+    if (!msg || !msg[0]) return;
+    snprintf(flash_text, sizeof(flash_text), "%s", msg);
+    flash_until = SDL_GetTicks() + 1400;
+    flash_alpha = 1.0f;
+}
+
 static int pkt_queue_is_full(PacketQueue* q) {
     return q && q->size >= q->capacity;
 }
@@ -201,6 +212,8 @@ static int pkt_queue_pop(PacketQueue* q, AVPacket* out) {
 }
 
 #ifdef _WIN32
+#include <wtypes.h>
+#include <mmdeviceapi.h>
 static int amp_audio_device_supports_passthrough(void) {
     static const CLSID s_CLSID_MMDeviceEnumerator =
         {0xBCDE0395u,0xE52F,0x467C,{0x8E,0x3D,0xC4,0x57,0x92,0x91,0x69,0x2E}};
@@ -215,7 +228,10 @@ static int amp_audio_device_supports_passthrough(void) {
     PROPVARIANT var;
     int result = 0;
     HRESULT hr;
-    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+
+    hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) goto done;
+
     hr = CoCreateInstance(&s_CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
                           &s_IID_IMMDeviceEnumerator, (void**)&enumerator);
     if (FAILED(hr)) goto done;
@@ -260,20 +276,20 @@ static int amp_iec61937_wrap(enum AVCodecID codec_id, const uint8_t *data, int s
     out_buf[0] = 0xF8; out_buf[1] = 0x72;
     out_buf[2] = 0x4E; out_buf[3] = 0x1F;
     out_buf[4] = (data_type >> 8) & 0xFF; out_buf[5] = data_type & 0xFF;
-    int lb = size * 8;
+    unsigned int lb = (unsigned int)size * 8;
     out_buf[6] = (lb >> 8) & 0xFF;        out_buf[7] = lb & 0xFF;
     memcpy(out_buf + 8, data, size);
 #else
     out_buf[0] = 0x72; out_buf[1] = 0xF8;
     out_buf[2] = 0x1F; out_buf[3] = 0x4E;
     out_buf[4] = data_type & 0xFF; out_buf[5] = (data_type >> 8) & 0xFF;
-    int lb = size * 8;
+    unsigned int lb = (unsigned int)size * 8;
     out_buf[6] = lb & 0xFF;        out_buf[7] = (lb >> 8) & 0xFF;
     for (int i = 0; i < size - 1; i += 2) {
         out_buf[8 + i]     = data[i + 1];
         out_buf[8 + i + 1] = data[i];
     }
-    if (size & 1) { out_buf[8 + size - 1] = 0; out_buf[8 + size] = data[size - 1]; }
+    if (size & 1) { out_buf[8 + size - 1] = data[size - 1]; out_buf[8 + size] = 0; }
 #endif
     return frame_size;
 }
@@ -998,6 +1014,7 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
     if (avformat_open_input(&vr->fmt_ctx, filename, NULL, &open_opts) != 0) {
         av_dict_free(&open_opts);
         nob_log(NOB_ERROR, "Failed to open video: %s", filename);
+        vr_flash_major_error("Failed to open video file");
         return 0;
     }
     av_dict_free(&open_opts);
@@ -1005,6 +1022,7 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
     if (avformat_find_stream_info(vr->fmt_ctx, NULL) < 0) {
         nob_log(NOB_ERROR, "Failed to find stream info");
         vr_reset_stream(vr);
+        vr_flash_major_error("Failed to parse video streams");
         return 0;
     }
 
@@ -1031,6 +1049,10 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
             }
             
             vr->video_ctx = avcodec_alloc_context3(codec);
+            if (!vr->video_ctx) {
+                nob_log(NOB_ERROR, "Failed to allocate video decoder context for stream %u", i);
+                continue;
+            }
             avcodec_parameters_to_context(vr->video_ctx, stream->codecpar);
             
             int hw_tried = 0;
@@ -1052,6 +1074,10 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
                     vr->hw_device_name[0] = '\0';
                     
                     vr->video_ctx = avcodec_alloc_context3(codec);
+                    if (!vr->video_ctx) {
+                        nob_log(NOB_ERROR, "Failed to allocate software decoder context for stream %u", i);
+                        continue;
+                    }
                     avcodec_parameters_to_context(vr->video_ctx, stream->codecpar);
                     
                     if (avcodec_open2(vr->video_ctx, (AVCodec*)codec, NULL) < 0) {
@@ -1112,6 +1138,10 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
                         vr->hw_device_name[0] = '\0';
 
                         vr->video_ctx = avcodec_alloc_context3(codec);
+                        if (!vr->video_ctx) {
+                            nob_log(NOB_ERROR, "Failed to allocate fallback decoder context for stream %u", i);
+                            continue;
+                        }
                         avcodec_parameters_to_context(vr->video_ctx, stream->codecpar);
                         if (avcodec_open2(vr->video_ctx, (AVCodec*)codec, NULL) < 0) {
                             nob_log(NOB_ERROR, "Failed to open software decoder after HW probe failure");
@@ -1135,6 +1165,12 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
             vr->texture = SDL_CreateTexture(vr->renderer,
                 SDL_PIXELFORMAT_YV12, SDL_TEXTUREACCESS_STREAMING,
                 vr->width, vr->height);
+            if (!vr->texture) {
+                nob_log(NOB_ERROR, "Failed to create video texture: %s", SDL_GetError());
+                avcodec_free_context(&vr->video_ctx);
+                vr->video_ctx = NULL;
+                continue;
+            }
             
             SDL_SetTextureScaleMode(vr->texture, SDL_ScaleModeLinear);
 
@@ -1146,10 +1182,41 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
 
             vr->frame = av_frame_alloc();
             vr->yuv_frame = av_frame_alloc();
+            if (!vr->frame || !vr->yuv_frame) {
+                nob_log(NOB_ERROR, "Failed to allocate video frame buffers");
+                if (vr->frame) av_frame_free(&vr->frame);
+                if (vr->yuv_frame) av_frame_free(&vr->yuv_frame);
+                SDL_DestroyTexture(vr->texture);
+                vr->texture = NULL;
+                avcodec_free_context(&vr->video_ctx);
+                vr->video_ctx = NULL;
+                continue;
+            }
             vr->yuv_buffer = (uint8_t*)malloc(
                 av_image_get_buffer_size(AV_PIX_FMT_YUV420P, vr->width, vr->height, 1));
-            av_image_fill_arrays(vr->yuv_frame->data, vr->yuv_frame->linesize,
-                vr->yuv_buffer, AV_PIX_FMT_YUV420P, vr->width, vr->height, 1);
+            if (!vr->yuv_buffer) {
+                nob_log(NOB_ERROR, "Failed to allocate YUV conversion buffer (%dx%d)", vr->width, vr->height);
+                av_frame_free(&vr->frame);
+                av_frame_free(&vr->yuv_frame);
+                SDL_DestroyTexture(vr->texture);
+                vr->texture = NULL;
+                avcodec_free_context(&vr->video_ctx);
+                vr->video_ctx = NULL;
+                continue;
+            }
+            if (av_image_fill_arrays(vr->yuv_frame->data, vr->yuv_frame->linesize,
+                vr->yuv_buffer, AV_PIX_FMT_YUV420P, vr->width, vr->height, 1) < 0) {
+                nob_log(NOB_ERROR, "Failed to initialize YUV frame planes");
+                free(vr->yuv_buffer);
+                vr->yuv_buffer = NULL;
+                av_frame_free(&vr->frame);
+                av_frame_free(&vr->yuv_frame);
+                SDL_DestroyTexture(vr->texture);
+                vr->texture = NULL;
+                avcodec_free_context(&vr->video_ctx);
+                vr->video_ctx = NULL;
+                continue;
+            }
 
         } else if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
             char* name = vr_dup_stream_name(stream, "Audio");
@@ -1164,6 +1231,8 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
 
     if (vr->video_stream_index < 0 || !vr->video_ctx || !vr->fmt_ctx) {
         vr_reset_stream(vr);
+        nob_log(NOB_ERROR, "No decodable video stream found for %s", filename);
+        vr_flash_major_error("No decodable video stream");
         return 0;
     }
 
@@ -1180,10 +1249,14 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
         const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
         if (codec) {
             vr->audio_ctx = avcodec_alloc_context3(codec);
-            avcodec_parameters_to_context(vr->audio_ctx, stream->codecpar);
-            if (avcodec_open2(vr->audio_ctx, (AVCodec*)codec, NULL) < 0) {
-                avcodec_free_context(&vr->audio_ctx);
-                vr->audio_ctx = NULL;
+            if (!vr->audio_ctx) {
+                nob_log(NOB_ERROR, "Failed to allocate audio decoder context for stream %d", vr->audio_stream_index);
+            } else {
+                avcodec_parameters_to_context(vr->audio_ctx, stream->codecpar);
+                if (avcodec_open2(vr->audio_ctx, (AVCodec*)codec, NULL) < 0) {
+                    avcodec_free_context(&vr->audio_ctx);
+                    vr->audio_ctx = NULL;
+                }
             }
         }
 
@@ -1248,12 +1321,19 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
                 AVChannelLayout in_layout = vr->audio_ctx->ch_layout;
                 AVChannelLayout out_layout;
                 av_channel_layout_default(&out_layout, 2);
-                swr_alloc_set_opts2(&vr->swr_ctx,
+                if (swr_alloc_set_opts2(&vr->swr_ctx,
                     &out_layout, AV_SAMPLE_FMT_S16, vr->audio_spec.freq,
                     &in_layout, vr->audio_ctx->sample_fmt, vr->audio_ctx->sample_rate,
-                    0, NULL);
-                swr_init(vr->swr_ctx);
+                    0, NULL) < 0 || !vr->swr_ctx) {
+                    nob_log(NOB_ERROR, "Failed to allocate audio resampler");
+                } else if (swr_init(vr->swr_ctx) < 0) {
+                    nob_log(NOB_ERROR, "Failed to initialize audio resampler");
+                    swr_free(&vr->swr_ctx);
+                }
                 vr->audio_frame = av_frame_alloc();
+                if (!vr->audio_frame) {
+                    nob_log(NOB_ERROR, "Failed to allocate audio decode frame");
+                }
             }
         }
     }
@@ -1353,6 +1433,10 @@ static void vr_demux_packets(VideoRenderer* vr) {
 
 static void vr_decode_audio(VideoRenderer* vr) {
     if (!vr || !vr->audio_ctx || !vr->audio_dev) return;
+    if (!vr->audio_frame) {
+        nob_log(NOB_ERROR, "Audio decode frame is NULL");
+        return;
+    }
 
     if (vr->passthrough_active) {
         double queued_passthrough = vr_get_audio_queue_seconds(vr);
@@ -1379,13 +1463,18 @@ static void vr_decode_audio(VideoRenderer* vr) {
             queued = vr_get_audio_queue_seconds(vr);
             continue;
         }
-        if (recv != AVERROR(EAGAIN)) break;
+        if (recv != AVERROR(EAGAIN)) {
+            nob_log(NOB_WARNING, "Audio receive_frame failed: %d", recv);
+            break;
+        }
         if (pkt_queue_is_empty(&vr->audio_pktq)) break;
         AVPacket pkt;
         if (!pkt_queue_pop(&vr->audio_pktq, &pkt)) break;
         int send_ret = avcodec_send_packet(vr->audio_ctx, &pkt);
         av_packet_unref(&pkt);
-        (void)send_ret;
+        if (send_ret < 0 && send_ret != AVERROR(EAGAIN)) {
+            nob_log(NOB_WARNING, "Audio send_packet failed: %d", send_ret);
+        }
     }
 }
 
@@ -1570,6 +1659,10 @@ static void vr_sample_ambient_colors(VideoRenderer* vr) {
 
 int vr_render_frame(VideoRenderer* vr) {
     if (!vr || !vr->video_ctx) return 0;
+    if (!vr->frame || !vr->yuv_frame || !vr->yuv_buffer) {
+        nob_log(NOB_ERROR, "Video frame buffers are not initialized");
+        return 0;
+    }
 
     for (;;) {
         int recv = avcodec_receive_frame(vr->video_ctx, vr->frame);
@@ -1674,10 +1767,19 @@ int vr_render_frame(VideoRenderer* vr) {
                 }
             }
 
-            sws_scale(vr->sws_ctx,
+            int scaled_h = sws_scale(vr->sws_ctx,
                 (const uint8_t* const*)final_frame->data,
                 final_frame->linesize, 0, final_frame->height,
                 vr->yuv_frame->data, vr->yuv_frame->linesize);
+            if (scaled_h <= 0) {
+                nob_log(NOB_WARNING, "sws_scale failed for frame format=%d", final_frame->format);
+                if (final_frame == vr->filtered_frame) {
+                    av_frame_unref(vr->filtered_frame);
+                }
+                if (tmp_sw) av_frame_free(&tmp_sw);
+                av_frame_unref(vr->frame);
+                continue;
+            }
 
             if (final_frame == vr->filtered_frame) {
                 av_frame_unref(vr->filtered_frame);
@@ -1715,13 +1817,18 @@ int vr_render_frame(VideoRenderer* vr) {
             return 1;
         }
 
-        if (recv != AVERROR(EAGAIN)) break;
+        if (recv != AVERROR(EAGAIN)) {
+            nob_log(NOB_WARNING, "Video receive_frame failed: %d", recv);
+            break;
+        }
         if (pkt_queue_is_empty(&vr->video_pktq)) break;
         AVPacket pkt;
         if (!pkt_queue_pop(&vr->video_pktq, &pkt)) break;
         int send_ret = avcodec_send_packet(vr->video_ctx, &pkt);
         av_packet_unref(&pkt);
-        (void)send_ret;
+        if (send_ret < 0 && send_ret != AVERROR(EAGAIN)) {
+            nob_log(NOB_WARNING, "Video send_packet failed: %d", send_ret);
+        }
     }
     return 0;
 }
@@ -2125,6 +2232,10 @@ void vr_select_audio_track(VideoRenderer* vr, int idx) {
     const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
     if (!codec) return;
     vr->audio_ctx = avcodec_alloc_context3(codec);
+    if (!vr->audio_ctx) {
+        nob_log(NOB_ERROR, "Failed to allocate audio decoder context for selected track %d", idx);
+        return;
+    }
     avcodec_parameters_to_context(vr->audio_ctx, stream->codecpar);
     if (avcodec_open2(vr->audio_ctx, (AVCodec*)codec, NULL) < 0) {
         avcodec_free_context(&vr->audio_ctx);
@@ -2183,12 +2294,23 @@ void vr_select_audio_track(VideoRenderer* vr, int idx) {
         AVChannelLayout in_layout = vr->audio_ctx->ch_layout;
         AVChannelLayout out_layout;
         av_channel_layout_default(&out_layout, 2);
-        swr_alloc_set_opts2(&vr->swr_ctx,
+        if (swr_alloc_set_opts2(&vr->swr_ctx,
             &out_layout, AV_SAMPLE_FMT_S16, vr->audio_spec.freq,
             &in_layout, vr->audio_ctx->sample_fmt, vr->audio_ctx->sample_rate,
-            0, NULL);
-        swr_init(vr->swr_ctx);
+            0, NULL) < 0 || !vr->swr_ctx) {
+            nob_log(NOB_ERROR, "Failed to allocate resampler for selected audio track %d", idx);
+            return;
+        }
+        if (swr_init(vr->swr_ctx) < 0) {
+            nob_log(NOB_ERROR, "Failed to initialize resampler for selected audio track %d", idx);
+            swr_free(&vr->swr_ctx);
+            return;
+        }
         vr->audio_frame = av_frame_alloc();
+        if (!vr->audio_frame) {
+            nob_log(NOB_ERROR, "Failed to allocate audio frame for selected track %d", idx);
+            return;
+        }
     }
 
     if (vr->fmt_ctx && vr->video_stream_index >= 0) {
@@ -2271,10 +2393,14 @@ void vr_select_subtitle_track(VideoRenderer* vr, int idx) {
     const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
     if (codec) {
         vr->subtitle_ctx = avcodec_alloc_context3(codec);
-        avcodec_parameters_to_context(vr->subtitle_ctx, stream->codecpar);
-        if (avcodec_open2(vr->subtitle_ctx, (AVCodec*)codec, NULL) < 0) {
-            avcodec_free_context(&vr->subtitle_ctx);
-            vr->subtitle_ctx = NULL;
+        if (!vr->subtitle_ctx) {
+            nob_log(NOB_ERROR, "Failed to allocate subtitle decoder context for track %d", idx);
+        } else {
+            avcodec_parameters_to_context(vr->subtitle_ctx, stream->codecpar);
+            if (avcodec_open2(vr->subtitle_ctx, (AVCodec*)codec, NULL) < 0) {
+                avcodec_free_context(&vr->subtitle_ctx);
+                vr->subtitle_ctx = NULL;
+            }
         }
     }
 

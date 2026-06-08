@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.3
+
+- Fixed icon path
+- Fixed possible issues with audio passthrough
+- Fixed crashing with corupted files
+
 ## 1.9.2
 
 - Fixed bugs with distribution
