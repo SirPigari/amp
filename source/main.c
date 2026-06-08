@@ -1098,8 +1098,11 @@ static void register_progid_for_ext(const char* exe, const char* ext) {
     char* last = strrchr(dir, '\\');
     if (last) *last = '\0';
 
-    char ico[PATH_MAX+16];
+    char tmp[PATH_MAX+16];
+    char ico[PATH_MAX+20];
     snprintf(ico, sizeof(ico), "%s\\assets\\file.ico", dir);
+    abspath(ico, tmp, sizeof(tmp));
+    snprintf(ico, sizeof(ico), "\"%s\"", tmp);
 
     char key[256];
     char cmd[512];
@@ -3218,6 +3221,40 @@ int main(int argc, char** argv) {
                 overlay_target = 1.0f;
             }
 
+            if (e.type == SDL_WINDOWEVENT) {
+                if (e.window.event == SDL_WINDOWEVENT_RESIZED || e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+                    if (vr) {
+                        int new_w = e.window.data1;
+                        int new_h = e.window.data2;
+                        
+                        if (vr->ass_renderer) {
+                            ass_set_frame_size(vr->ass_renderer, new_w, new_h);
+                        }
+                        
+                        if (vr->ass_track) {
+                            vr->ass_track->PlayResX = new_w;
+                            vr->ass_track->PlayResY = new_h;
+                        }
+                        
+                        vr->subtitle_texture_valid = 0;
+                        
+                        if (vr->subtitle_texture) {
+                            SDL_DestroyTexture(vr->subtitle_texture);
+                            vr->subtitle_texture = NULL;
+                        }
+                    }
+                    
+                    if (draw_mode_active && draw_canvas) {
+                        SDL_DestroyTexture(draw_canvas);
+                        draw_canvas = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, e.window.data1, e.window.data2);
+                        if (draw_canvas) {
+                            SDL_SetTextureBlendMode(draw_canvas, SDL_BLENDMODE_BLEND);
+                            draw_state.needs_full_redraw = 1;
+                        }
+                    }
+                }
+            }
+
 #ifdef _WIN32
             if (e.type == SDL_SYSWMEVENT) {
                 SDL_SysWMmsg* sysmsg = e.syswm.msg;
@@ -4375,12 +4412,14 @@ int main(int argc, char** argv) {
                 if ((key == SDLK_MINUS || key == SDLK_KP_MINUS) && !(e.key.keysym.mod & KMOD_CTRL) && vr) {
                     int offset = (e.key.keysym.mod & KMOD_SHIFT) ? -100 : -1;
                     vr->subtitle_offset_ms += offset;
+                    vr->subtitle_texture_valid = 0;
                     snprintf(flash_text, sizeof(flash_text), "Shifted subtitles %dms (%+"PRId64")", offset, vr->subtitle_offset_ms);
                     flash_until = SDL_GetTicks() + 900;
                 }
                 if ((key == SDLK_PLUS || key == SDLK_KP_PLUS) && !(e.key.keysym.mod & KMOD_CTRL) && vr) {
                     int offset = (e.key.keysym.mod & KMOD_SHIFT) ? 100 : 1;
                     vr->subtitle_offset_ms += offset;
+                    vr->subtitle_texture_valid = 0;
                     snprintf(flash_text, sizeof(flash_text), "Shifted subtitles %dms (%+"PRId64")", offset, vr->subtitle_offset_ms);
                     flash_until = SDL_GetTicks() + 900;
                 }

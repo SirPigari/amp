@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.3
+
+- Fixed icon path on windows
+- Fixed possible issues with audio passthrough
+- Fixed crashing with corupted files
+- Fixed subtitle rerendering the same text over and over on the CPU without caching
+- Fixed subtitles not rendering for the first packet after switching to different subs track
+
 ## 1.9.2
 
 - Fixed bugs with distribution

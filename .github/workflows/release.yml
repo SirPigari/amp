@@ -172,10 +172,10 @@ jobs:
         shell: bash
         run: |
           echo "Release ID: ${{ steps.create_release.outputs.release_id }}"
-          echo "URL: https://uploads.github.com/repos/${{ github.repository }}/releases/${{ steps.create_release.outputs.release_id }}/assets?name=amp-win-x86_64.zip"
+          echo "URL: https://uploads.github.com/repos/${{ github.repository }}/releases/${{ steps.create_release.outputs.release_id }}/assets?name=amp-v${{ steps.version.outputs.version }}-win-x86_64.zip"
           
           curl -X POST \
             -H "Authorization: token ${{ secrets.RELEASE_TOKEN }}" \
             -H "Content-Type: application/zip" \
             --data-binary @dist.zip \
-            "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ steps.create_release.outputs.release_id }}/assets?name=amp-win-x86_64.zip"
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ steps.create_release.outputs.release_id }}/assets?name=amp-v${{ steps.version.outputs.version }}-win-x86_64.zip"
