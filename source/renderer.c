@@ -91,13 +91,15 @@ typedef struct {
     ASS_Track* ass_track;
     int subtitle_texture_valid;
 
-    double playback_speed;
-    double current_time;
-    Uint32 clock_start_ticks;
-    Uint32 clock_pause_ticks;
-    Uint32 clock_pause_accum;
+    double  playback_speed;
+    double  current_time;
+    Uint32  clock_start_ticks;
+    Uint32  clock_pause_ticks;
+    int64_t clock_pause_accum;
     int clock_paused;
     double clock_start_time;
+
+    int seeking;
 
     AVFrame* frame;
     AVFrame* yuv_frame;
@@ -325,15 +327,17 @@ static double vr_get_audio_queue_seconds(VideoRenderer* vr) {
 static double vr_get_audio_clock(VideoRenderer* vr) {
     if (!vr || !vr->audio_dev || !vr->audio_clock_valid) return 0.0;
     double queued_seconds = vr_get_audio_queue_seconds(vr);
-    double t = vr->audio_clock_pts - queued_seconds;
+    double queued_media = queued_seconds * vr->playback_speed;
+    double t = vr->audio_clock_pts - queued_media;
     return t < 0.0 ? 0.0 : t;
 }
 
 double vr_get_master_time(VideoRenderer* vr) {
     if (!vr) return 0.0;
     Uint32 now_ticks = vr->clock_paused ? vr->clock_pause_ticks : SDL_GetTicks();
-    Uint32 elapsed = now_ticks - vr->clock_start_ticks;
-    Uint32 active_ms = elapsed > vr->clock_pause_accum ? (elapsed - vr->clock_pause_accum) : 0;
+    int64_t elapsed   = (int64_t)now_ticks - (int64_t)vr->clock_start_ticks;
+    int64_t active_ms = elapsed - (int64_t)vr->clock_pause_accum;
+    if (active_ms < 0) active_ms = 0;
     double t = vr->clock_start_time + ((double)active_ms / 1000.0) * vr->playback_speed;
     return t < 0.0 ? 0.0 : t;
 }
@@ -1945,21 +1949,31 @@ int vr_render_subtitles(VideoRenderer* vr, double seconds) {
 void vr_seek(VideoRenderer* vr, double seconds) {
     if (!vr || !vr->fmt_ctx || vr->video_stream_index < 0) return;
 
-    AVStream* video_st = vr->fmt_ctx->streams[vr->video_stream_index];
-    int64_t ts = av_rescale_q((int64_t)(seconds * AV_TIME_BASE), AV_TIME_BASE_Q, video_st->time_base);
-    av_seek_frame(vr->fmt_ctx, vr->video_stream_index, ts, AVSEEK_FLAG_BACKWARD);
+    seconds = FFMAX(0.0, seconds);
+    if (vr->fmt_ctx->duration != AV_NOPTS_VALUE)
+        seconds = FFMIN(seconds, (double)vr->fmt_ctx->duration / AV_TIME_BASE);
+
+    int64_t ts      = (int64_t)llround(seconds * AV_TIME_BASE);
+    int64_t min_ts  = ts - 2 * AV_TIME_BASE;
+    int ret = avformat_seek_file(vr->fmt_ctx, -1, min_ts, ts, ts, 0);
+    if (ret < 0)
+        ret = av_seek_frame(vr->fmt_ctx, -1, ts, AVSEEK_FLAG_BACKWARD);
+    if (ret < 0) {
+        nob_log(NOB_WARNING, "vr_seek: seek to %.2f failed", seconds);
+        return;
+    }
 
     avcodec_flush_buffers(vr->video_ctx);
-    if (vr->audio_ctx) avcodec_flush_buffers(vr->audio_ctx);
+    if (vr->audio_ctx)    avcodec_flush_buffers(vr->audio_ctx);
     if (vr->subtitle_ctx) avcodec_flush_buffers(vr->subtitle_ctx);
-    if (vr->audio_dev) SDL_ClearQueuedAudio(vr->audio_dev);
-    
+    if (vr->audio_dev)    SDL_ClearQueuedAudio(vr->audio_dev);
+
     vr->subtitle_texture_valid = 0;
 
     if (vr->filter_graph) {
         avfilter_graph_free(&vr->filter_graph);
-        vr->filter_graph = NULL;
-        vr->buffersrc_ctx = NULL;
+        vr->filter_graph   = NULL;
+        vr->buffersrc_ctx  = NULL;
         vr->buffersink_ctx = NULL;
     }
 
@@ -1987,36 +2001,37 @@ void vr_seek(VideoRenderer* vr, double seconds) {
     pkt_queue_clear(&vr->video_pktq);
     pkt_queue_clear(&vr->audio_pktq);
 
-    vr->current_time = seconds;
-    vr->last_time = seconds;
-    vr->audio_clock_valid = 0;
-    vr->audio_clock_pts = 0.0;
-    vr->audio_base_samples = 0;
+    vr->current_time          = seconds;
+    vr->last_time             = seconds;
+    vr->seeking               = 1;
+    vr->audio_clock_valid     = 0;
+    vr->audio_clock_pts       = 0.0;
+    vr->audio_base_samples    = 0;
     vr->audio_samples_written = 0;
 
-    int was_paused = vr->clock_paused;
-    vr->clock_start_time = seconds;
-    vr->clock_start_ticks = SDL_GetTicks();
-    vr->clock_pause_accum = 0;
-    vr->clock_paused = was_paused;
+    int was_paused          = vr->clock_paused;
+    vr->clock_start_time    = seconds;
+    vr->clock_start_ticks   = SDL_GetTicks();
+    vr->clock_pause_accum   = 0;
+    vr->clock_paused        = was_paused;
     if (was_paused) vr->clock_pause_ticks = vr->clock_start_ticks;
 }
 
 double vr_get_time(VideoRenderer* vr) {
     if (!vr) return 0.0;
 
-    double master = vr_get_master_time(vr);
-
+    double t;
     if (vr->audio_dev && vr->audio_clock_valid) {
         double audio_time = vr_get_audio_clock(vr);
-        double t = audio_time > master ? audio_time : master;
-        if (t < vr->last_time) return vr->last_time;
-        vr->last_time = t;
-        return t;
+        double master     = vr_get_master_time(vr);
+        t = (master - audio_time > 1.0) ? master : audio_time;
+    } else {
+        double master = vr_get_master_time(vr);
+        t = master > vr->current_time ? master : vr->current_time;
     }
 
-    double t = master > vr->current_time ? master : vr->current_time;
-    if (t < vr->last_time) return vr->last_time;
+    if (!vr->seeking && t < vr->last_time) return vr->last_time;
+    vr->seeking  = 0;
     vr->last_time = t;
     return t;
 }
@@ -2405,9 +2420,7 @@ void vr_select_subtitle_track(VideoRenderer* vr, int idx) {
     const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
     if (codec) {
         vr->subtitle_ctx = avcodec_alloc_context3(codec);
-        if (!vr->subtitle_ctx) {
-            nob_log(NOB_ERROR, "Failed to allocate subtitle decoder context for track %d", idx);
-        } else {
+        if (vr->subtitle_ctx) {
             avcodec_parameters_to_context(vr->subtitle_ctx, stream->codecpar);
             if (avcodec_open2(vr->subtitle_ctx, (AVCodec*)codec, NULL) < 0) {
                 avcodec_free_context(&vr->subtitle_ctx);
@@ -2429,66 +2442,43 @@ void vr_select_subtitle_track(VideoRenderer* vr, int idx) {
         }
     }
 
-    double current_pos = vr_get_time(vr);
+    double current_pos = vr->current_time;
 
-    if (vr->fmt_ctx && vr->video_stream_index >= 0) {
-        AVStream* video_st = vr->fmt_ctx->streams[vr->video_stream_index];
-        int64_t ts = av_rescale_q((int64_t)(current_pos * AV_TIME_BASE), AV_TIME_BASE_Q, video_st->time_base);
-        av_seek_frame(vr->fmt_ctx, vr->video_stream_index, ts, AVSEEK_FLAG_BACKWARD);
-
-        if (vr->video_ctx)    avcodec_flush_buffers(vr->video_ctx);
-        if (vr->audio_ctx)    avcodec_flush_buffers(vr->audio_ctx);
-        if (vr->subtitle_ctx) avcodec_flush_buffers(vr->subtitle_ctx);
-        if (vr->audio_dev)    SDL_ClearQueuedAudio(vr->audio_dev);
-
-        if (vr->filter_graph) {
-            avfilter_graph_free(&vr->filter_graph);
-            vr->filter_graph = NULL;
-            vr->buffersrc_ctx = NULL;
-            vr->buffersink_ctx = NULL;
-        }
-
-        if (vr->pending_valid) {
-            av_packet_unref(&vr->pending_pkt);
-            vr->pending_valid = 0;
-        }
-        pkt_queue_clear(&vr->video_pktq);
-        pkt_queue_clear(&vr->audio_pktq);
-    }
+    vr_seek(vr, current_pos);
 
     AVPacket pkt;
     int reads = 0;
     while (reads < 200) {
         if (av_read_frame(vr->fmt_ctx, &pkt) < 0) break;
+        reads++;
+
         if (pkt.stream_index == vr->subtitle_stream_index) {
             double pkt_time = 0.0;
             if (pkt.pts != AV_NOPTS_VALUE) {
-                AVRational tb = vr->fmt_ctx->streams[pkt.stream_index]->time_base;
-                pkt_time = av_rescale_q(pkt.pts, tb, AV_TIME_BASE_Q) * av_q2d(AV_TIME_BASE_Q);
-                pkt_time -= vr->start_time;
+                pkt_time = (double)av_rescale_q(pkt.pts,
+                    vr->fmt_ctx->streams[pkt.stream_index]->time_base,
+                    AV_TIME_BASE_Q) / (double)AV_TIME_BASE;
+                if (vr->fmt_ctx->start_time != AV_NOPTS_VALUE)
+                    pkt_time -= (double)vr->fmt_ctx->start_time / AV_TIME_BASE;
             }
             vr_process_subtitle(vr, &pkt);
             av_packet_unref(&pkt);
             if (pkt_time > current_pos + 0.1) break;
         } else if (pkt.stream_index == vr->video_stream_index) {
-            if (!pkt_queue_is_full(&vr->video_pktq)) {
+            if (!pkt_queue_is_full(&vr->video_pktq))
                 pkt_queue_push(&vr->video_pktq, &pkt);
-            }
             av_packet_unref(&pkt);
         } else if (vr->audio_ctx && pkt.stream_index == vr->audio_stream_index) {
-            if (!pkt_queue_is_full(&vr->audio_pktq)) {
+            if (!pkt_queue_is_full(&vr->audio_pktq))
                 pkt_queue_push(&vr->audio_pktq, &pkt);
-            }
             av_packet_unref(&pkt);
         } else {
             av_packet_unref(&pkt);
         }
-        reads++;
     }
-    
-    if (vr->ass_renderer && vr->ass_track) {
+
+    if (vr->ass_renderer && vr->ass_track)
         vr_render_subtitles(vr, current_pos);
-    }
 }
 
 void vr_set_paused(VideoRenderer* vr, int paused) {

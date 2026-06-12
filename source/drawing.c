@@ -73,7 +73,7 @@ typedef struct {
     DrawTool  current_tool;
     SDL_Color current_color;
     SDL_Color custom_color;
-    int       brush_size;
+    uint32_t  brush_size;
 
     int   is_drawing;
     Point last_point;

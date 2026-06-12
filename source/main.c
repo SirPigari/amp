@@ -1,5 +1,7 @@
 #define NOB_IMPLEMENTATION
 #define NOB_UNSTRIP_PREFIX
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define PARSE_COLOR_IMPLEMENTATION
 #ifdef _WIN32
 #define _WIN32_WINNT 0x0601
 #include <windows.h>
@@ -19,8 +21,8 @@
 #endif
 #include "../thirdparty/nob.h"
 #include "../thirdparty/tinyfd.c"
-#define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "../thirdparty/stb_image_write.h"
+#include "../thirdparty/parse_color.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <time.h>
@@ -772,14 +774,13 @@ static void apply_window_size_for_video(SDL_Window* win, SDL_Texture* texture, i
 static float volume_percent_to_gain(float percent) {
     if (percent <= 0.0f) return 0.0f;
 
-    float db;
+    float t = percent / 100.0f;
 
-    if (percent <= 100.0f) {
-        float t = percent / 100.0f;
-        db = -50.0f * (1.0f - t);
+    float db;
+    if (t <= 1.0f) {
+        db = -60.0f * (1.0f - t);
     } else {
-        float t = (percent - 100.0f) / 100.0f;
-        db = t * 69.0f;
+        db = (t - 1.0f) * 10.0f;
     }
 
     return powf(10.0f, db / 20.0f);
@@ -1252,6 +1253,9 @@ void add_recent_file(const char* file) {
 }
 
 char* open_file_dialog(const char* filters[], int filter_count, const char* filter_desc, bool allow_multiple, const char* title, const char* default_path, bool (*validator)(const char* path)) {
+    #ifdef _WIN32
+    AllowSetForegroundWindow(ASFW_ANY);
+    #endif
     char const* filename = tinyfd_openFileDialog(
         title ? title : "Select File",
         default_path ? default_path : "",
@@ -1512,7 +1516,7 @@ static void seek_and_preview_if_paused(VideoRenderer* vr, double seconds, int pa
     vr_seek(vr, seconds);
     if (paused) {
         int rendered = 0;
-        for (int i = 0; i < 64 && !rendered; i++) {
+        for (int i = 0; i < 128 && !rendered; i++) {
             vr_demux_packets(vr);
             rendered = vr_render_frame(vr);
         }
@@ -2611,7 +2615,7 @@ int main(int argc, char** argv) {
     int history_pos   = -1;
 
     TextInputState ti = {0};
-    typedef enum { TI_NONE = 0, TI_BOOKMARK_RENAME, TI_GOTO_TIME, TI_SET_RESOLUTION, TI_SET_ASPECT_RATIO, TI_SET_ZOOM, TI_SET_SPEED } TIPurpose;
+    typedef enum { TI_NONE = 0, TI_BOOKMARK_RENAME, TI_GOTO_TIME, TI_SET_RESOLUTION, TI_SET_ASPECT_RATIO, TI_SET_ZOOM, TI_SET_SPEED, TI_SET_COLOR, TI_SET_BRUSH_SIZE } TIPurpose;
     TIPurpose ti_purpose = TI_NONE;
     int ti_bm_idx = -1;
     char ti_bm_old_name[BOOKMARK_NAME_MAX] = {0};
@@ -2867,19 +2871,29 @@ int main(int argc, char** argv) {
         wm_info.subsystem == SDL_SYSWM_WINDOWS) {
 
         HWND hwnd = wm_info.info.win.window;
+        DWORD current_thread = GetCurrentThreadId();
+        DWORD foreground_thread = GetWindowThreadProcessId(
+            GetForegroundWindow(), NULL
+        );
 
-        if (IsIconic(hwnd)) {
-            ShowWindow(hwnd, SW_SHOW);
+        bool attached = false;
+        if (foreground_thread && foreground_thread != current_thread) {
+            attached = AttachThreadInput(current_thread, foreground_thread, TRUE);
         }
+
+        if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
 
         SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-
         SetForegroundWindow(hwnd);
         SetActiveWindow(hwnd);
+        SetFocus(hwnd);
+
+        if (attached) {
+            AttachThreadInput(current_thread, foreground_thread, FALSE);
+        }
     }
     #endif
-
     SDL_RaiseWindow(win);
 
     if (requested_window_w > 0 && requested_window_h > 0) {
@@ -2889,6 +2903,9 @@ int main(int argc, char** argv) {
         SDL_SetWindowSize(win, startup_w, startup_h);
         SDL_SetWindowPosition(win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     }
+
+    SDL_PumpEvents();
+    
     /*
     if (maximized && !fullscreen) {
         SDL_MaximizeWindow(win);
@@ -3084,131 +3101,155 @@ int main(int argc, char** argv) {
             if (ti.active) {
                 text_input_handle_event(&ti, &e);
                 if (ti.done && !ti.cancelled) {
-                    if (ti_purpose == TI_BOOKMARK_RENAME) {
-                        if (ti_bm_idx >= 0 && ti_bm_idx < bookmark_count) {
-                            int before_cnt_ren = bookmark_count;
-                            Bookmark before_bms_ren[MAX_BOOKMARKS_PER_FILE];
-                            memcpy(before_bms_ren, bookmarks, sizeof(Bookmark) * (size_t)before_cnt_ren);
-                            int len = (int)strlen(ti.value);
-                            if (len >= BOOKMARK_NAME_MAX) len = BOOKMARK_NAME_MAX - 1;
-                            memcpy(bookmarks[ti_bm_idx].name, ti.value, len);
-                            bookmarks[ti_bm_idx].name[len] = '\0';
-                            char _d_ren[256];
-                            snprintf(_d_ren, sizeof(_d_ren), "bookmark rename %s -> %s", ti_bm_old_name, bookmarks[ti_bm_idx].name);
-                            hist_push_bookmark(history, &history_count, &history_pos, before_bms_ren, before_cnt_ren, bookmarks, bookmark_count, _d_ren);
-                            #if SAVE_FILE
-                            update_bookmarks_in_save_state(&save_state, video_file,
-                                                            bookmarks, bookmark_count);
-                            write_save_state(SAVE_FILE_PATH, &save_state);
-                            #endif
-                        }
-                    } else if (ti_purpose == TI_GOTO_TIME) {
-                        double t = 0.0;
-                        if (parse_time_string(ti.value, &t) && vr) {
-                            double dur = vr_get_duration(vr);
-                            if (t < 0.0) t = 0.0;
-                            if (dur > 0.0 && t > dur) t = dur;
-                            double bt_goto = vr ? vr_get_time(vr) : 0.0;
-                            seek_and_preview_if_paused(vr, t, paused);
-                            if (video_file) hist_push_seek(history, &history_count, &history_pos, video_file, bt_goto, video_file, t);
-                            snprintf(flash_text, sizeof(flash_text), "Jumped to %s",
-                                     format_time_temp(t));
-                            flash_until = SDL_GetTicks() + 900;
-                        } else {
-                            snprintf(flash_text, sizeof(flash_text),
-                                     "Invalid time format");
-                            flash_until = SDL_GetTicks() + 900;
-                        }
-                    } else if (ti_purpose == TI_SET_RESOLUTION) {
-                        int rw = 0, rh = 0;
-                        if (parse_custom_resolution(ti.value, &rw, &rh)) {
-                            if (fullscreen) {
-                                fullscreen = false;
-                                SDL_SetWindowFullscreen(win, 0);
-#ifdef _WIN32
-                                if (win_hwnd) { SetMenu(win_hwnd, g_current_win_menu); DrawMenuBar(win_hwnd); }
-#endif
-                            }
-                            SDL_RestoreWindow(win);
-                            maximized = false;
-                            requested_window_w = rw;
-                            requested_window_h = rh;
-                            if (vr) { vr->desired_win_w = rw; vr->desired_win_h = rh; }
-                            int tw = rw, th = rh;
-                            fit_window_to_display(&tw, &th);
-                            SDL_SetWindowSize(win, tw, th);
-                            SDL_SetWindowPosition(win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-                            snprintf(flash_text, sizeof(flash_text), "Resolution: %dx%d", rw, rh);
-#ifdef _WIN32
-                            if (vr && video_file) {
-                                fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
+                    switch (ti_purpose) {
+                        case TI_BOOKMARK_RENAME: {
+                            if (ti_bm_idx >= 0 && ti_bm_idx < bookmark_count) {
+                                int before_cnt_ren = bookmark_count;
+                                Bookmark before_bms_ren[MAX_BOOKMARKS_PER_FILE];
+                                memcpy(before_bms_ren, bookmarks, sizeof(Bookmark) * (size_t)before_cnt_ren);
+                                int len = (int)strlen(ti.value);
+                                if (len >= BOOKMARK_NAME_MAX) len = BOOKMARK_NAME_MAX - 1;
+                                memcpy(bookmarks[ti_bm_idx].name, ti.value, len);
+                                bookmarks[ti_bm_idx].name[len] = '\0';
+                                char _d_ren[256];
+                                snprintf(_d_ren, sizeof(_d_ren), "bookmark rename %s -> %s", ti_bm_old_name, bookmarks[ti_bm_idx].name);
+                                hist_push_bookmark(history, &history_count, &history_pos, before_bms_ren, before_cnt_ren, bookmarks, bookmark_count, _d_ren);
+                                #if SAVE_FILE
+                                update_bookmarks_in_save_state(&save_state, video_file,
+                                                                bookmarks, bookmark_count);
                                 write_save_state(SAVE_FILE_PATH, &save_state);
+                                #endif
+                            } 
+                        } break;
+                        case TI_GOTO_TIME: {
+                            double t = 0.0;
+                            if (parse_time_string(ti.value, &t) && vr) {
+                                double dur = vr_get_duration(vr);
+                                if (t < 0.0) t = 0.0;
+                                if (dur > 0.0 && t > dur) t = dur;
+                                double bt_goto = vr ? vr_get_time(vr) : 0.0;
+                                seek_and_preview_if_paused(vr, t, paused);
+                                if (video_file) hist_push_seek(history, &history_count, &history_pos, video_file, bt_goto, video_file, t);
+                                snprintf(flash_text, sizeof(flash_text), "Jumped to %s",
+                                        format_time_temp(t));
+                                flash_until = SDL_GetTicks() + 900;
+                            } else {
+                                snprintf(flash_text, sizeof(flash_text),
+                                        "Invalid time format");
+                                flash_until = SDL_GetTicks() + 900;
                             }
-#endif
-                        } else {
-                            snprintf(flash_text, sizeof(flash_text), "Invalid resolution (use WxH, W H, W,H or W-H)");
-                        }
-                        flash_until = SDL_GetTicks() + 900;
-                    } else if (ti_purpose == TI_SET_ASPECT_RATIO) {
-                        unsigned int ax = 0, ay = 0;
-                        if (parse_custom_aspect_ratio(ti.value, &ax, &ay)) {
-                            if (vr) {
-                                vr_set_aspect_ratio_mode(vr, ax, ay);
-#if SAVE_FILE
-                                if (video_file) {
+                        } break;
+                        case TI_SET_RESOLUTION: {
+                            int rw = 0, rh = 0;
+                            if (parse_custom_resolution(ti.value, &rw, &rh)) {
+                                if (fullscreen) {
+                                    fullscreen = false;
+                                    SDL_SetWindowFullscreen(win, 0);
+    #ifdef _WIN32
+                                    if (win_hwnd) { SetMenu(win_hwnd, g_current_win_menu); DrawMenuBar(win_hwnd); }
+    #endif
+                                }
+                                SDL_RestoreWindow(win);
+                                maximized = false;
+                                requested_window_w = rw;
+                                requested_window_h = rh;
+                                if (vr) { vr->desired_win_w = rw; vr->desired_win_h = rh; }
+                                int tw = rw, th = rh;
+                                fit_window_to_display(&tw, &th);
+                                SDL_SetWindowSize(win, tw, th);
+                                SDL_SetWindowPosition(win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+                                snprintf(flash_text, sizeof(flash_text), "Resolution: %dx%d", rw, rh);
+    #ifdef _WIN32
+                                if (vr && video_file) {
                                     fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
                                     write_save_state(SAVE_FILE_PATH, &save_state);
                                 }
-#endif
+    #endif
+                            } else {
+                                snprintf(flash_text, sizeof(flash_text), "Invalid resolution (use WxH, W H, W,H or W-H)");
                             }
-                            snprintf(flash_text, sizeof(flash_text), "Aspect Ratio: %u:%u", ax, ay);
-                        } else {
-                            snprintf(flash_text, sizeof(flash_text), "Invalid aspect ratio (use X:Y, X Y, X,Y or X-Y)");
-                        }
-                        flash_until = SDL_GetTicks() + 900;
-                    } else if (ti_purpose == TI_SET_ZOOM) {
-                        int new_zoom = 0;
-                        if (parse_zoom_input(ti.value, &new_zoom)) {
-                            if (vr) {
-                                vr_set_zoom(vr, new_zoom);
-#if SAVE_FILE
-                                if (video_file) {
-                                    fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
-                                    write_save_state(SAVE_FILE_PATH, &save_state);
+                            flash_until = SDL_GetTicks() + 900;
+                        } break;
+                        case TI_SET_ASPECT_RATIO: {
+                            unsigned int ax = 0, ay = 0;
+                            if (parse_custom_aspect_ratio(ti.value, &ax, &ay)) {
+                                if (vr) {
+                                    vr_set_aspect_ratio_mode(vr, ax, ay);
+    #if SAVE_FILE
+                                    if (video_file) {
+                                        fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
+                                        write_save_state(SAVE_FILE_PATH, &save_state);
+                                    }
+    #endif
                                 }
-#endif
+                                snprintf(flash_text, sizeof(flash_text), "Aspect Ratio: %u:%u", ax, ay);
+                            } else {
+                                snprintf(flash_text, sizeof(flash_text), "Invalid aspect ratio (use X:Y, X Y, X,Y or X-Y)");
                             }
-                            snprintf(flash_text, sizeof(flash_text), "Zoom: %d%%", vr ? vr->zoom_percent : new_zoom);
-                        } else {
-                            snprintf(flash_text, sizeof(flash_text), "Invalid zoom (use 150, 150%%, 2x, 2 times)");
-                        }
-                        flash_until = SDL_GetTicks() + 900;
-                    } else if (ti_purpose == TI_SET_SPEED) {
-                        float spd = 0.0f;
+                            flash_until = SDL_GetTicks() + 900;
+                        } break;
+                        case TI_SET_ZOOM: {
+                            int new_zoom = 0;
+                            if (parse_zoom_input(ti.value, &new_zoom)) {
+                                if (vr) {
+                                    vr_set_zoom(vr, new_zoom);
+    #if SAVE_FILE
+                                    if (video_file) {
+                                        fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
+                                        write_save_state(SAVE_FILE_PATH, &save_state);
+                                    }
+    #endif
+                                }
+                                snprintf(flash_text, sizeof(flash_text), "Zoom: %d%%", vr ? vr->zoom_percent : new_zoom);
+                            } else {
+                                snprintf(flash_text, sizeof(flash_text), "Invalid zoom (use 150, 150%%, 2x, 2 times)");
+                            }
+                            flash_until = SDL_GetTicks() + 900;
+                        } break;
+                        case TI_SET_SPEED: {
+                            float spd = 0.0f;
 
-                        char buf[256];
-                        snprintf(buf, sizeof(buf), "%s", ti.value);
+                            char buf[256];
+                            snprintf(buf, sizeof(buf), "%s", ti.value);
 
-                        size_t len = strlen(buf);
-                        if (len > 0 && (buf[len - 1] == 'x' || buf[len - 1] == 'X')) {
-                            buf[len - 1] = '\0';
-                        }
-
-                        if (sscanf(buf, "%f", &spd) == 1 && spd > 0.0f) {
-                            playback_speed = spd;
-
-                            if (vr) {
-                                vr_set_speed(vr, playback_speed);
-                                SDL_ClearQueuedAudio(vr->audio_dev);
-                                if (playback_speed > 2.0f) vr->audio_clock_valid = 0;
+                            size_t len = strlen(buf);
+                            if (len > 0 && (buf[len - 1] == 'x' || buf[len - 1] == 'X')) {
+                                buf[len - 1] = '\0';
                             }
 
-                            snprintf(flash_text, sizeof(flash_text), "Speed: %.6gx", (double)playback_speed);
-                        } else {
-                            snprintf(flash_text, sizeof(flash_text), "Invalid speed (must be > 0)");
-                        }
+                            if (sscanf(buf, "%f", &spd) == 1 && spd > 0.0f) {
+                                playback_speed = spd;
 
-                        flash_until = SDL_GetTicks() + 900;
+                                if (vr) {
+                                    vr_set_speed(vr, playback_speed);
+                                    SDL_ClearQueuedAudio(vr->audio_dev);
+                                    if (playback_speed > 2.0f) vr->audio_clock_valid = 0;
+                                }
+
+                                snprintf(flash_text, sizeof(flash_text), "Speed: %.6gx", (double)playback_speed);
+                            } else {
+                                snprintf(flash_text, sizeof(flash_text), "Invalid speed (must be > 0)");
+                            }
+
+                            flash_until = SDL_GetTicks() + 900;
+                        } break;
+                        case TI_SET_COLOR: {
+                            char color[256];
+                            snprintf(color, sizeof(color), "%s", ti.value);
+                            SDL_Color col;
+                            parse_color(color, &col);
+                            draw_state.custom_color = col;
+                            draw_state.current_color = col;
+                            snprintf(flash_text, sizeof(flash_text), "Color: #%02X%02X%02X", col.r, col.g, col.b);
+                            flash_until = SDL_GetTicks() + 900;
+                        } break;
+                        case TI_SET_BRUSH_SIZE: {
+                            int size = atoi(ti.value);
+                            draw_state.brush_size = size;
+                            snprintf(flash_text, sizeof(flash_text), "Brush size: %d", size);
+                            flash_until = SDL_GetTicks() + 900;
+                        } break;
+                        case TI_NONE: break;
                     }
                     ti_purpose = TI_NONE;
                     ti_bm_idx = -1;
@@ -3224,18 +3265,6 @@ int main(int argc, char** argv) {
             if (e.type == SDL_WINDOWEVENT) {
                 if (e.window.event == SDL_WINDOWEVENT_RESIZED || e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
                     if (vr) {
-                        int new_w = e.window.data1;
-                        int new_h = e.window.data2;
-                        
-                        if (vr->ass_renderer) {
-                            ass_set_frame_size(vr->ass_renderer, new_w, new_h);
-                        }
-                        
-                        if (vr->ass_track) {
-                            vr->ass_track->PlayResX = new_w;
-                            vr->ass_track->PlayResY = new_h;
-                        }
-                        
                         vr->subtitle_texture_valid = 0;
                         
                         if (vr->subtitle_texture) {
@@ -4527,6 +4556,38 @@ int main(int argc, char** argv) {
                         }
                         flash_until = SDL_GetTicks() + 900;
                     }
+
+                    if (key == SDLK_KP_MULTIPLY) {
+                        draw_state.brush_size += 1;
+                        if (draw_state.brush_size > DRAW_BRUSH_SIZE_MAX && !(SDL_GetModState() & KMOD_SHIFT)) draw_state.brush_size = DRAW_BRUSH_SIZE_MAX;
+                        snprintf(flash_text, sizeof(flash_text), "Brush Size: %d", draw_state.brush_size);
+                        flash_until = SDL_GetTicks() + 900;
+                    }
+
+                    if (key == SDLK_KP_DIVIDE) {
+                        draw_state.brush_size -= 1;
+                        if (draw_state.brush_size < DRAW_BRUSH_SIZE_MIN && !(SDL_GetModState() & KMOD_SHIFT)) draw_state.brush_size = DRAW_BRUSH_SIZE_MIN;
+                        snprintf(flash_text, sizeof(flash_text), "Brush Size: %d", draw_state.brush_size);
+                        flash_until = SDL_GetTicks() + 900;
+                    }
+
+                    if (key == SDLK_i && (e.key.keysym.mod & KMOD_ALT)) {
+                        char color_hint[16] = {0};
+                        snprintf(color_hint, sizeof(color_hint), "#%02X%02X%02X", draw_state.current_color.r, draw_state.current_color.g, draw_state.current_color.b);
+                        if (draw_state.current_color.a != 255) {
+                            size_t len = strlen(color_hint);
+                            snprintf(color_hint + len, sizeof(color_hint) - len, "%02X", draw_state.current_color.a);
+                        }
+                        text_input_open(&ti, "Color (e.g. #F5A9B8 or 'pastel pink'):", color_hint[0] ? color_hint : "", 16);
+                        ti_purpose = TI_SET_COLOR;
+                    }
+
+                    if (key == SDLK_b && (e.key.keysym.mod & KMOD_ALT)) {
+                        char size_hint[16] = {0};
+                        snprintf(size_hint, sizeof(size_hint), "%d", draw_state.brush_size);
+                        text_input_open(&ti, "Brush Size:", size_hint, 16);
+                        ti_purpose = TI_SET_BRUSH_SIZE;
+                    }
                     
                     if (key == SDLK_1) { draw_state.current_tool = TOOL_PEN; snprintf(flash_text, sizeof(flash_text), "Tool: Pen"); flash_until = SDL_GetTicks() + 900; }
                     if (key == SDLK_2) { draw_state.current_tool = TOOL_ERASER; snprintf(flash_text, sizeof(flash_text), "Tool: Eraser"); flash_until = SDL_GetTicks() + 900; }
@@ -5292,7 +5353,7 @@ int main(int argc, char** argv) {
         Uint32 now = SDL_GetTicks();
         float dt = (now - last_tick) / 1000.0f;
         last_tick = now;
-        if (!dragging_timeline && !volume_dragging && !menu_open && !audio_menu_open && !subtitle_menu_open && !theme_menu_open && !playback_menu_open && !subtitle_settings_menu_open && !subtitle_settings_value_menu_open) {
+        if (!dragging_timeline && !volume_dragging && !menu_open && !audio_menu_open && !subtitle_menu_open && !theme_menu_open && !playback_menu_open && !subtitle_settings_menu_open && !subtitle_settings_value_menu_open && !bm_ctx_open && !ti.active) {
             if (now - last_mouse_move > 3000) overlay_target = 0.0f;
         }
         
@@ -5390,6 +5451,7 @@ int main(int argc, char** argv) {
 
             double cur = vr ? (dragging_timeline ? drag_time : vr_get_time(vr)) : 0.0;
             double dur = vr ? vr_get_duration(vr) : 0.0;
+            cur = clampf((float)cur, 0.0f, (float)dur);
             float t = (dur > 0.0) ? (float)(cur / dur) : 0.0f;
             t = clampf(t, 0.0f, 1.0f);
 

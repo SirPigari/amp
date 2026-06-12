@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.9.4
+
+- Fixed current time (left time) overflowing after the end of the media
+- Fixed a bug with subtitles having the wrong position that was introduced in [1.9.3](#193)
+- Fixed the mouse going hidden when typing in text input
+- Added <kbd>Alt+I</kbd> and <kbd>Alt+B</kbd> for setting custom color and brush size accordingly
+- Added [parse_color.h](./thirdparty/parse_color.h) (its *technically* second party)
+- *hopefully* fixed the focusing issue
+- Finally fixed the issue with `-/+5s` sometimes not skipping and just going back to the start of the packet
+- Fixed a bug with subtitles shifting the time a little every time the sub track switched
+
 ## 1.9.3
 
 - Fixed icon path on windows
@@ -89,7 +100,7 @@
   - After entering you can draw on the current frame
   - Tools: Pen, Eraser, Marker (contrast), Line, Rectangle, Circle, Filled Rectangle, Filled Circle; to select any of these either use HMENU or press the key with the index + 1 of it (for example 1 for Pen, 3 for Marker)
   - Marker tool draws the contrast color to the pixel underneath (very slow, even with simd+O3)
-  - After pressing <kbd>E</kbd> (or <kbd>F3</kbd>) it asks to export the current frame with he drawings
+  - After pressing <kbd>E</kbd> (or <kbd>F3</kbd>) it asks to export the current frame with the drawings
   - You can export *only* the drawing with using shift with the export key (<kbd>Shift+E</kbd>)
   - You can use undo/redo (<kbd>Ctrl+Z</kbd> <kbd>Ctrl+Y</kbd>), different history than the default playback undo/redo
   - Clear canvas with <kbd>Ctrl+N</kbd>
