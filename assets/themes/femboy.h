@@ -16,7 +16,7 @@
 #define ACCENT_COLOR              255, 170, 210
 #define MUTED_COLOR               150, 130, 145
 #define SHADOW_COLOR              20,  20,  20
-#define LETTERBOX_COLOR           20,  20,  20
+#define LETTERBOX_COLOR            0,   0,  0
 #define OVERLAY_COLOR             80,  65,  78
 #define CHAPTER_MARKER_COLOR      255, 200, 225
 #define BOOKMARK_HOVER_BG_COLOR   36,  26,  38

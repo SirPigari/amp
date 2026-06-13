@@ -2,7 +2,7 @@
 #define CONFIG_H
 
 /* Build config */
-#define AMP_VERSION 0x010904 /* 1.9.4 */
+#define AMP_VERSION 0x010905 /* 1.9.5 */
 
 #define THEMES_DIR "assets/themes/"
 #define USE_THEMES 1
@@ -30,7 +30,7 @@
 #endif
 #define HW_CACHE_SIZE 16
 #define HASH_SIZE 256
-#define USE_SAVE_IN_SAVE_FILE 0
+#define USE_PAUSE_IN_SAVE_FILE 0
 #define MAX_BOOKMARKS_PER_FILE 64
 #define BOOKMARK_NAME_MAX 64
 #define TEXT_INPUT_MAX_LEN 256
@@ -40,7 +40,7 @@
 #define MAX_DRAW_STROKES 1024
 #define MAX_DRAW_UNDO_STACK 32
 #define DRAW_BRUSH_SIZE_MIN 1
-#define DRAW_BRUSH_SIZE_MAX 69
+#define DRAW_BRUSH_SIZE_MAX 69 /* it lags at big sizes */
 #define DRAW_BRUSH_SIZE_DEFAULT 5
 #define DRAW_SMOOTHING_ALPHA 0.25f
 

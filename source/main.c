@@ -59,12 +59,17 @@
 
 char* recent_files[MAX_RECENT] = {0};
 int recent_count = 0;
+static int recent_dirty = 0;
 
 char flash_text[256] = {0};
 Uint32 flash_until = 0;
 float flash_alpha = 0.0f;
 static char hw_option[32] = "auto";
 static FILE* log_file = NULL;
+
+static char   cached_right_time[32]  = "";
+static int    cached_right_time_w    = 0;
+static int    cached_right_time_h    = 0;
 
 typedef struct {
     Bookmark bms[MAX_BOOKMARKS_PER_FILE];
@@ -154,6 +159,8 @@ static const KbdEntry kbd_entries[] = {
     KBD_K(RIGHT, "Seek +5s"),
     KBD_K(UP, "Volume +5%"),
     KBD_K(DOWN, "Volume -5%"),
+    KBD_KS(SHIFT, UP, "Volume +1%"),
+    KBD_KS(SHIFT, DOWN, "Volume -1%"),
     KBD_KS(ALT, LEFT, "Previous Frame"),
     KBD_KS(ALT, RIGHT, "Next Frame"),
     KBD_KS(SHIFT, LEFT, "Previous Media"),
@@ -1222,10 +1229,13 @@ void amp_unregister(void) {
 #endif
 
 void add_recent_file(const char* file) {
-    nob_log(NOB_INFO, "Adding to recent files: %s", file);
+    char* abs = abspath_temp_safe(file);
+    if (!abs) return;
+    const char* norm = abs;
+    nob_log(NOB_INFO, "Adding to recent files: %s", norm);
 
     for (int i = 0; i < recent_count; i++) {
-        if (recent_files[i] && strcmp(recent_files[i], file) == 0) {
+        if (recent_files[i] && strcmp(recent_files[i], norm) == 0) {
             free(recent_files[i]);
             for (int j = i; j < recent_count - 1; j++) recent_files[j] = recent_files[j+1];
             recent_files[recent_count - 1] = NULL;
@@ -1242,8 +1252,9 @@ void add_recent_file(const char* file) {
     for (int i = recent_count; i > 0; i--) {
         recent_files[i] = recent_files[i-1];
     }
-    recent_files[0] = strdup(file);
+    recent_files[0] = strdup(norm);
     recent_count++;
+    recent_dirty = 1;
 
     sanitize_recent_files();
 
@@ -1308,6 +1319,8 @@ static int recent_path_exists(const char* path) {
 }
 
 static void sanitize_recent_files(void) {
+    if (!recent_dirty) return;
+    recent_dirty = 0;
     int write_idx = 0;
     for (int i = 0; i < recent_count && i < MAX_RECENT; i++) {
         char* path = recent_files[i];
@@ -1319,7 +1332,7 @@ static void sanitize_recent_files(void) {
 
         int duplicate = 0;
         for (int j = 0; j < write_idx; j++) {
-            if (path_equals(recent_files[j], path)) {
+            if (recent_files[j] && strcmp(recent_files[j], path) == 0) {
                 duplicate = 1;
                 break;
             }
@@ -1506,6 +1519,9 @@ static int load_media_file(
     apply_window_size_for_video(win, vr_get_texture(*vr), requested_window_w, requested_window_h);
     set_window_title_for_media(win, *vr, abs_path);
     add_recent_file(abs_path);
+
+    vr_set_paused(*vr, 1);
+    vr_set_paused(*vr, 0);
 
     *video_file = abs_path;
     return 1;
@@ -2151,8 +2167,8 @@ HMENU create_windows_menu(SDL_Window* window) {
 
     AppendMenu(hVolumeMenu, MF_STRING, MENU_VOLUME_UP, "Volume Up (by 5%)\tUp");
     AppendMenu(hVolumeMenu, MF_STRING, MENU_VOLUME_DOWN, "Volume Down (by 5%)\tDown");
-    AppendMenu(hVolumeMenu, MF_STRING, MENU_VOLUME_UP_FINE, "Volume Up (by 1%)\tAlt+Up");
-    AppendMenu(hVolumeMenu, MF_STRING, MENU_VOLUME_DOWN_FINE, "Volume Down (by 1%)\tAlt+Down");
+    AppendMenu(hVolumeMenu, MF_STRING, MENU_VOLUME_UP_FINE, "Volume Up (by 1%)\tShift+Up");
+    AppendMenu(hVolumeMenu, MF_STRING, MENU_VOLUME_DOWN_FINE, "Volume Down (by 1%)\tShift+Down");
     AppendMenu(hVolumeMenu, MF_STRING, MENU_SET_VOLUME0, "Mute (Set Volume to 0%)\tM");
     AppendMenu(hVolumeMenu, MF_STRING, MENU_SET_VOLUME100, "Set Volume to 100%\tCtrl+1");
     AppendMenu(hVolumeMenu, MF_STRING, MENU_SET_VOLUME200, "Set Volume to 200%\tCtrl+2");
@@ -2401,12 +2417,11 @@ static void take_screenshot(VideoRenderer* vr,
                             SDL_Window* win,
                             SDL_Renderer* ren,
                             char* flash_text,
-                            Uint32* flash_until)
+                            Uint32* flash_until,
+                            int win_w,
+                            int win_h)
 {
-    if (!vr || !win || !ren) return;
-
-    int win_w, win_h;
-    SDL_GetWindowSize(win, &win_w, &win_h);
+    if (!vr || !win || !ren || !flash_text || !flash_until || win_w <= 0 || win_h <= 0) return;
 
     SDL_Texture* frame_tex = vr_get_texture(vr);
     if (!frame_tex) {
@@ -2985,7 +3000,7 @@ int main(int argc, char** argv) {
                 get_bookmarks_from_save_state(&save_state, video_file,
                                                bookmarks, &bookmark_count);
         }
-        #if USE_SAVE_IN_SAVE_FILE
+        #if USE_PAUSE_IN_SAVE_FILE
             if (save_state.global.paused) {
                 vr_demux_packets(vr);
                 vr_render_frame(vr);
@@ -3024,7 +3039,7 @@ int main(int argc, char** argv) {
     SDL_Rect timeline_rect, timeline_hitbox, volume_rect, hamburger, menu_panel, audio_box, subtitle_box, theme_box, playback_box, subtitle_settings_box, overlay_rect;
     int overlay_h = 100;
     int margin = 24;
-    int w, h;
+    int win_w, win_h;
     int last_subtitle_track = -1;
 
     while(running) {
@@ -3069,19 +3084,19 @@ int main(int argc, char** argv) {
 #endif
 
         {
-            SDL_GetWindowSize(win, &w, &h);
-            overlay_rect = (SDL_Rect){ 0, h - overlay_h, w, overlay_h };
-            timeline_rect = (SDL_Rect){ margin, h - overlay_h + 12, w - margin * 2 - 40, THEME_TIMELINE_HEIGHT };
+            SDL_GetWindowSize(win, &win_w, &win_h);
+            overlay_rect = (SDL_Rect){ 0, win_h - overlay_h, win_w, overlay_h };
+            timeline_rect = (SDL_Rect){ margin, win_h - overlay_h + 12, win_w - margin * 2 - 40, THEME_TIMELINE_HEIGHT };
             timeline_hitbox = (SDL_Rect){ timeline_rect.x, timeline_rect.y - THEME_TIMELINE_HITBOX_PADDING, timeline_rect.w, THEME_TIMELINE_HEIGHT + THEME_TIMELINE_HITBOX_PADDING * 2 };
-            volume_rect = (SDL_Rect){ w - margin - 32, h - overlay_h + 40, 6, 50 };
-            hamburger = (SDL_Rect){ w - margin - 28, h - overlay_h + 12, 24, 20 };
+            volume_rect = (SDL_Rect){ win_w - margin - 32, win_h - overlay_h + 40, 6, 50 };
+            hamburger = (SDL_Rect){ win_w - margin - 28, win_h - overlay_h + 12, 24, 20 };
             
             int menu_x = hamburger.x - 250;
             if (menu_x < margin) menu_x = margin;
             int menu_row_count = subtitle_settings_applicable ? 5 : 4;
             int menu_h = 24 + menu_row_count * 28 + (menu_row_count - 1) * 10;
-            int menu_y = h - overlay_h - menu_h;
-            if (menu_y < margin) menu_y = h - overlay_h + 12;
+            int menu_y = win_h - overlay_h - menu_h;
+            if (menu_y < margin) menu_y = win_h - overlay_h + 12;
             menu_panel = (SDL_Rect){ menu_x, menu_y, 250, menu_h };
             int row_x = menu_panel.x + 12;
             int row_w = menu_panel.w - 24;
@@ -3771,15 +3786,13 @@ int main(int argc, char** argv) {
                             }
                             flash_until = SDL_GetTicks() + 900;
                         } else if (id == MENU_DRAW_SCREENSHOT && vr) {
-                            take_screenshot(vr, win, ren, flash_text, &flash_until);
+                            take_screenshot(vr, win, ren, flash_text, &flash_until, win_w, win_h);
                         } else if (id == MENU_DRAW_ENTER && vr) {
                             if (!draw_mode_active) {
                                 draw_mode_active = 1;
                                 draw_mode_was_paused = paused;
                                 paused = true;
                                 if (vr) vr_set_paused(vr, paused);
-                                int win_w, win_h;
-                                SDL_GetWindowSize(win, &win_w, &win_h);
                                 if (draw_canvas) SDL_DestroyTexture(draw_canvas);
                                 draw_canvas = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, win_w, win_h);
                                 SDL_SetTextureBlendMode(draw_canvas, SDL_BLENDMODE_BLEND);
@@ -3798,8 +3811,6 @@ int main(int argc, char** argv) {
                                 flash_until = SDL_GetTicks() + 900;
                             }
                         } else if (id == MENU_DRAW_EXPORT_WITH_FRAME && vr && draw_canvas && draw_mode_active) {
-                            int win_w, win_h;
-                            SDL_GetWindowSize(win, &win_w, &win_h);
                             SDL_Texture* frame_tex = vr_get_texture(vr);
                             SDL_Rect video_dst = {0, 0, win_w, win_h};
                             if (frame_tex) {
@@ -3812,8 +3823,6 @@ int main(int argc, char** argv) {
                             snprintf(flash_text, sizeof(flash_text), "Drawing exported");
                             flash_until = SDL_GetTicks() + 900;
                         } else if (id == MENU_DRAW_EXPORT_ONLY && draw_canvas && draw_mode_active) {
-                            int win_w, win_h;
-                            SDL_GetWindowSize(win, &win_w, &win_h);
                             draw_export(ren, draw_canvas, NULL, (SDL_Rect){0,0,0,0}, win_w, win_h, 0, &draw_state);
                             snprintf(flash_text, sizeof(flash_text), "Drawing exported");
                             flash_until = SDL_GetTicks() + 900;
@@ -3853,6 +3862,8 @@ int main(int argc, char** argv) {
                             draw_state.current_tool = TOOL_FILLED_CIRCLE;
                             snprintf(flash_text, sizeof(flash_text), "Tool: Filled Circle");
                             flash_until = SDL_GetTicks() + 900;
+                        } else if (id == MENU_KBD_OVERLAY) {
+                            kbd_overlay_open = !kbd_overlay_open;
                         }
                     }
                 }
@@ -3984,7 +3995,7 @@ int main(int argc, char** argv) {
                 #endif
 
                 if (key==SDLK_F2 && vr) {
-                    take_screenshot(vr, win, ren, flash_text, &flash_until);
+                    take_screenshot(vr, win, ren, flash_text, &flash_until, win_w, win_h);
                 }
                 
                 if (key==SDLK_F11 || (key==SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT))) {
@@ -4218,22 +4229,31 @@ int main(int argc, char** argv) {
                     flash_until = SDL_GetTicks() + 900;
                 }
                 if (key == SDLK_UP && vr) {
-                    int percent_step = (e.key.keysym.mod & KMOD_ALT) ? 1 : 5;
-                    float vol_before_up = volume_percent;
-                    volume_percent = clampf(volume_percent + (float)percent_step, 0.0f, 200.0f);
-                    vr_set_volume(vr, volume_percent_to_gain(volume_percent));
-                    hist_push_volume(history, &history_count, &history_pos, vol_before_up, volume_percent);
-                    snprintf(flash_text, sizeof(flash_text), "VOL %d", (int)volume_percent);
-                    flash_until = SDL_GetTicks() + 900;
+                    if (e.key.keysym.mod & KMOD_ALT && !(e.key.keysym.mod & KMOD_SHIFT) && kbd_overlay_open) {
+                        kbd_scroll -= 1;
+                        if (kbd_scroll < 0) kbd_scroll = 0;
+                    } else {
+                        int percent_step = (e.key.keysym.mod & KMOD_SHIFT) ? 1 : 5;
+                        float vol_before_up = volume_percent;
+                        volume_percent = clampf(volume_percent + (float)percent_step, 0.0f, 200.0f);
+                        vr_set_volume(vr, volume_percent_to_gain(volume_percent));
+                        hist_push_volume(history, &history_count, &history_pos, vol_before_up, volume_percent);
+                        snprintf(flash_text, sizeof(flash_text), "VOL %d", (int)volume_percent);
+                        flash_until = SDL_GetTicks() + 900;
+                    }
                 }
                 if (key == SDLK_DOWN && vr) {
-                    int percent_step = (e.key.keysym.mod & KMOD_ALT) ? 1 : 5;
-                    float vol_before_dn = volume_percent;
-                    volume_percent = clampf(volume_percent - (float)percent_step, 0.0f, 200.0f);
-                    vr_set_volume(vr, volume_percent_to_gain(volume_percent));
-                    hist_push_volume(history, &history_count, &history_pos, vol_before_dn, volume_percent);
-                    snprintf(flash_text, sizeof(flash_text), "VOL %d", (int)volume_percent);
-                    flash_until = SDL_GetTicks() + 900;
+                    if (e.key.keysym.mod & KMOD_ALT && !(e.key.keysym.mod & KMOD_SHIFT) && kbd_overlay_open) {
+                        kbd_scroll += 1;
+                    } else {
+                        int percent_step = (e.key.keysym.mod & KMOD_SHIFT) ? 1 : 5;
+                        float vol_before_dn = volume_percent;
+                        volume_percent = clampf(volume_percent - (float)percent_step, 0.0f, 200.0f);
+                        vr_set_volume(vr, volume_percent_to_gain(volume_percent));
+                        hist_push_volume(history, &history_count, &history_pos, vol_before_dn, volume_percent);
+                        snprintf(flash_text, sizeof(flash_text), "VOL %d", (int)volume_percent);
+                        flash_until = SDL_GetTicks() + 900;
+                    }
                 }
                 if (key == SDLK_z && (e.key.keysym.mod & KMOD_CTRL) && !(e.key.keysym.mod & KMOD_SHIFT) && vr && !draw_mode_active) {
                     if (!hist_undo(history, &history_count, &history_pos,
@@ -4275,7 +4295,7 @@ int main(int argc, char** argv) {
                     snprintf(flash_text, sizeof(flash_text), "VOL 200");
                     flash_until = SDL_GetTicks() + 900;
                 }
-                if (key == SDLK_c && !(e.key.keysym.mod & KMOD_CTRL) && vr) {
+                if (key == SDLK_c && !(e.key.keysym.mod & KMOD_CTRL) && !(e.key.keysym.mod & KMOD_ALT) && vr) {
                     int count = vr_get_subtitle_track_count(vr);
                     if (vr->current_subtitle >= 0) {
                         last_subtitle_track = vr->current_subtitle;
@@ -4296,8 +4316,12 @@ int main(int argc, char** argv) {
                     if (count <= 0) {
                         snprintf(flash_text, sizeof(flash_text), "No subtitles");
                     } else {
-                        int next = vr->current_subtitle + 1;
-                        if (next >= count) next = -1;
+                        int next = vr->current_subtitle + (e.key.keysym.mod & KMOD_SHIFT ? -1 : 1);
+                        if (e.key.keysym.mod & KMOD_SHIFT) {
+                            if (next < -1) next = count - 1;
+                        } else {
+                            if (next > count - 1) next = -1;
+                        }
                         vr_select_subtitle_track(vr, next);
                         if (next >= 0) {
                             last_subtitle_track = next;
@@ -4500,8 +4524,6 @@ int main(int argc, char** argv) {
                         paused = true;
                         if (vr) vr_set_paused(vr, paused);
                         
-                        int win_w, win_h;
-                        SDL_GetWindowSize(win, &win_w, &win_h);
                         if (draw_canvas) SDL_DestroyTexture(draw_canvas);
                         draw_canvas = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, win_w, win_h);
                         SDL_SetTextureBlendMode(draw_canvas, SDL_BLENDMODE_BLEND);
@@ -4517,8 +4539,6 @@ int main(int argc, char** argv) {
                 
                 if (draw_mode_active) {
                     if ((key == SDLK_e || key == SDLK_F3) && vr && draw_canvas) {
-                        int win_w, win_h;
-                        SDL_GetWindowSize(win, &win_w, &win_h);
                         SDL_Texture* frame_tex = vr_get_texture(vr);
                         SDL_Rect video_dst = {0, 0, win_w, win_h};
                         if (frame_tex) {
@@ -4672,13 +4692,13 @@ int main(int argc, char** argv) {
             if (kbd_overlay_open && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                 int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
                 int col_w = 360;
-                int cols = w > col_w * 2 + 80 ? 2 : 1;
+                int cols = win_w > col_w * 2 + 80 ? 2 : 1;
                 int rows = (kbd_entry_count + cols - 1) / cols;
                 int panel_w = col_w * cols + 24;
                 int panel_h = rows * item_h + 40;
-                if (panel_h > h - 40) panel_h = h - 40;
-                int panel_x = (w - panel_w) / 2;
-                int panel_y = (h - panel_h) / 2;
+                if (panel_h > win_h - 40) panel_h = win_h - 40;
+                int panel_x = (win_w - panel_w) / 2;
+                int panel_y = (win_h - panel_h) / 2;
                 SDL_Rect panel = { panel_x, panel_y, panel_w, panel_h };
                 int mx_k = e.button.x, my_k = e.button.y;
                 if (!point_in_rect(mx_k, my_k, panel)) {
@@ -4735,7 +4755,7 @@ int main(int argc, char** argv) {
                         dmx = (int)((mx - draw_zoom_ox) / draw_zoom);
                         dmy = (int)((my - draw_zoom_oy) / draw_zoom);
                     }
-                    if (!draw_palette_click(&draw_state, dmx, dmy, w, h)) {
+                    if (!draw_palette_click(&draw_state, dmx, dmy, win_w, win_h)) {
                         draw_begin_stroke(&draw_state, dmx, dmy, ren, draw_canvas);
                     }
                     click_processed = true;
@@ -4901,8 +4921,6 @@ int main(int argc, char** argv) {
                             item_h * display_count
                         };
                         if (list.x < margin) list.x = margin;
-                        int win_w, win_h;
-                        SDL_GetWindowSize(win, &win_w, &win_h);
                         if (list.y + list.h > win_h) {
                             list.y = win_h - list.h;
                             if (list.y < margin) list.y = margin;
@@ -5055,8 +5073,6 @@ int main(int argc, char** argv) {
                         int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
                         SDL_Rect list = { menu_panel.x - THEME_MENU_DROPDOWN_WIDTH, playback_box.y, THEME_MENU_DROPDOWN_WIDTH, item_h * 8 };
                         if (list.x < margin) list.x = margin;
-                        int win_w, win_h;
-                        SDL_GetWindowSize(win, &win_w, &win_h);
                         if (list.y + list.h > win_h) {
                             list.y = win_h - list.h;
                             if (list.y < 0) list.y = 0;
@@ -5083,8 +5099,6 @@ int main(int argc, char** argv) {
                         int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
                         SDL_Rect list = { menu_panel.x - THEME_MENU_DROPDOWN_WIDTH, subtitle_settings_box.y, THEME_MENU_DROPDOWN_WIDTH, item_h * subtitle_settings_row_count };
                         if (list.x < margin) list.x = margin;
-                        int win_w, win_h;
-                        SDL_GetWindowSize(win, &win_w, &win_h);
                         if (list.y + list.h > win_h) {
                             list.y = win_h - list.h;
                             if (list.y < margin) list.y = margin;
@@ -5149,8 +5163,8 @@ int main(int argc, char** argv) {
                     int ctx_w = 150, ctx_item_h = 26;
                     int total_h = ctx_item_h * 3 + 8;
                     int cx = bm_ctx_x, cy = bm_ctx_y;
-                    if (cx + ctx_w > w) cx = w - ctx_w;
-                    if (cy + total_h > h) cy = h - total_h;
+                    if (cx + ctx_w > win_w) cx = win_w - ctx_w;
+                    if (cy + total_h > win_h) cy = win_h - total_h;
                     if (point_in_rect(mx, my, (SDL_Rect){ cx, cy, ctx_w, total_h })) {
                         if (my < cy + ctx_item_h) ctx_item = 0;
                         else if (my < cy + ctx_item_h * 2) ctx_item = 1;
@@ -5376,17 +5390,13 @@ int main(int argc, char** argv) {
             }
         }
 
-        int window_w = 0;
-        int window_h = 0;
-        SDL_GetWindowSize(win, &window_w, &window_h);
-
         if (draw_mode_active) {
             int ztw = 0, zth = 0;
             if (draw_zoom_tex) SDL_QueryTexture(draw_zoom_tex, NULL, NULL, &ztw, &zth);
-            if (!draw_zoom_tex || ztw != window_w || zth != window_h) {
+            if (!draw_zoom_tex || ztw != win_w || zth != win_h) {
                 if (draw_zoom_tex) SDL_DestroyTexture(draw_zoom_tex);
                 draw_zoom_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888,
-                                                  SDL_TEXTUREACCESS_TARGET, window_w, window_h);
+                                                  SDL_TEXTUREACCESS_TARGET, win_w, win_h);
             }
         }
 
@@ -5397,7 +5407,7 @@ int main(int argc, char** argv) {
         SDL_SetRenderDrawColor(ren, THEME_LETTERBOX_COLOR[0], THEME_LETTERBOX_COLOR[1], THEME_LETTERBOX_COLOR[2], 255);
         SDL_RenderClear(ren);
 
-        SDL_Rect video_dst = {0, 0, window_w, window_h};
+        SDL_Rect video_dst = {0, 0, win_w, win_h};
         double   video_time = 0.0;
         if (vr) {
             if (!paused) {
@@ -5408,12 +5418,12 @@ int main(int argc, char** argv) {
                 int src_w = 0;
                 int src_h = 0;
                 SDL_QueryTexture(tex, NULL, NULL, &src_w, &src_h);
-                video_dst = compute_video_dst_rect(window_w, window_h, src_w, src_h, vr->ar_x, vr->ar_y);
-                video_dst = apply_zoom_to_rect(video_dst, window_w, window_h, vr->zoom_percent);
+                video_dst = compute_video_dst_rect(win_w, win_h, src_w, src_h, vr->ar_x, vr->ar_y);
+                video_dst = apply_zoom_to_rect(video_dst, win_w, win_h, vr->zoom_percent);
                 if (ambient_glow && vr_get_ambient_glow(vr)) {
                     SDL_Color ag_top[AMBIENT_ZONES], ag_bottom[AMBIENT_ZONES], ag_left[AMBIENT_ZONES], ag_right[AMBIENT_ZONES];
                     vr_get_ambient_colors(vr, ag_top, ag_bottom, ag_left, ag_right);
-                    draw_ambient_glow(ren, video_dst, window_w, window_h, ag_top, ag_bottom, ag_left, ag_right);
+                    draw_ambient_glow(ren, video_dst, win_w, win_h, ag_top, ag_bottom, ag_left, ag_right);
                 }
                 SDL_RenderCopy(ren, tex, NULL, &video_dst);
             }
@@ -5432,15 +5442,13 @@ int main(int argc, char** argv) {
                 lmx = (int)((mouse_x - draw_zoom_ox) / draw_zoom);
                 lmy = (int)((mouse_y - draw_zoom_oy) / draw_zoom);
             }
-            draw_render_all(ren, draw_canvas, &draw_state, (SDL_Rect){0, 0, window_w, window_h}, video_dst, video_time);
+            draw_render_all(ren, draw_canvas, &draw_state, (SDL_Rect){0, 0, win_w, win_h}, video_dst, video_time);
             draw_render_preview(ren, &draw_state, lmx, lmy);
-            draw_render_palette(ren, &draw_state, window_w, window_h);
+            draw_render_palette(ren, &draw_state, win_w, win_h);
         }
 
         if (overlay_alpha > 0.01f) {
             SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-            int w, h;
-            SDL_GetWindowSize(win, &w, &h);
 
             SDL_Color panel =  { THEME_PANEL_COLOR[0],  THEME_PANEL_COLOR[1],  THEME_PANEL_COLOR[2],  (Uint8)(200 * overlay_alpha) };
             SDL_Color text =   { THEME_TEXT_COLOR[0],   THEME_TEXT_COLOR[1],   THEME_TEXT_COLOR[2],   (Uint8)(255 * overlay_alpha) };
@@ -5514,7 +5522,7 @@ int main(int argc, char** argv) {
                         int hover_w = 0, hover_h = 0;
                         TTF_SizeUTF8(ui_font, hover_text, &hover_w, &hover_h);
                         int hover_x = mouse_x + 10, hover_y = base.y - hover_h - 14;
-                        if (hover_x + hover_w + 8 > w) hover_x = w - hover_w - 8;
+                        if (hover_x + hover_w + 8 > win_w) hover_x = win_w - hover_w - 8;
                         if (hover_x < margin) hover_x = margin;
                         if (hover_y < margin) hover_y = margin;
                         SDL_Rect hover_bg = { hover_x - 4, hover_y - 2, hover_w + 8, hover_h + 4 };
@@ -5536,7 +5544,7 @@ int main(int argc, char** argv) {
                             TTF_SizeUTF8(ui_font, hover_text, &hover_w, &hover_h);
                             int hover_x = mouse_x + 10;
                             int hover_y = base.y - hover_h - 14;
-                            if (hover_x + hover_w + 8 > w) hover_x = w - hover_w - 8;
+                            if (hover_x + hover_w + 8 > win_w) hover_x = win_w - hover_w - 8;
                             if (hover_x < margin) hover_x = margin;
                             if (hover_y < margin) hover_y = margin;
 
@@ -5552,10 +5560,13 @@ int main(int argc, char** argv) {
             char right_time[32];
             format_time(cur, left_time, sizeof(left_time));
             format_time(dur, right_time, sizeof(right_time));
-            draw_text_shadow(ren, margin, h - overlay_h + 24, left_time, text);
-            int right_w = 0, right_h = 0;
-            TTF_SizeUTF8(ui_font, right_time, &right_w, &right_h);
-            draw_text_shadow(ren, w - margin - right_w - 40, h - overlay_h + 24, right_time, text);
+            draw_text_shadow(ren, margin, win_h - overlay_h + 24, left_time, text);
+            if (strcmp(right_time, cached_right_time) != 0) {
+                snprintf(cached_right_time, sizeof(cached_right_time), "%s", right_time);
+                TTF_SizeUTF8(ui_font, right_time, &cached_right_time_w, &cached_right_time_h);
+            }
+            int right_w = cached_right_time_w;
+            draw_text_shadow(ren, win_w - margin - right_w - 40, win_h - overlay_h + 24, right_time, text);
 
             draw_rect(ren, volume_rect, (SDL_Color){ THEME_OVERLAY_COLOR[0], THEME_OVERLAY_COLOR[1], THEME_OVERLAY_COLOR[2], (Uint8)(180 * overlay_alpha) });
             float vol_t = clampf(volume_percent / 200.0f, 0.0f, 1.0f);
@@ -5711,8 +5722,6 @@ int main(int argc, char** argv) {
                     int max_scroll = (count + 1) > max_items ? (count + 1) - max_items : 0;
                     if (subtitle_scroll > max_scroll) subtitle_scroll = max_scroll;
                     if (subtitle_scroll < 0) subtitle_scroll = 0;
-                    int win_w, win_h;
-                    SDL_GetWindowSize(win, &win_w, &win_h);
                     if (list.y + list.h > win_h) {
                         list.y = win_h - list.h;
                         if (list.y < margin) list.y = margin;
@@ -5826,8 +5835,8 @@ int main(int argc, char** argv) {
                     int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
                     SDL_Rect list = { menu_panel.x - THEME_MENU_DROPDOWN_WIDTH, playback_box.y, THEME_MENU_DROPDOWN_WIDTH, item_h * count };
                     if (list.x < margin) list.x = margin;
-                    if (list.y + list.h > h) {
-                        list.y = h - list.h;
+                    if (list.y + list.h > win_h) {
+                        list.y = win_h - list.h;
                         if (list.y < 0) list.y = 0;
                     }
                     draw_rect(ren, list, (SDL_Color){ THEME_LIST_BG_COLOR[0], THEME_LIST_BG_COLOR[1], THEME_LIST_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
@@ -5845,8 +5854,8 @@ int main(int argc, char** argv) {
                     int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
                     SDL_Rect list = { menu_panel.x - THEME_MENU_DROPDOWN_WIDTH, subtitle_settings_box.y, THEME_MENU_DROPDOWN_WIDTH, item_h * subtitle_settings_row_count };
                     if (list.x < margin) list.x = margin;
-                    if (list.y + list.h > h) {
-                        list.y = h - list.h;
+                    if (list.y + list.h > win_h) {
+                        list.y = win_h - list.h;
                         if (list.y < 0) list.y = 0;
                     }
                     draw_rect(ren, list, (SDL_Color){ THEME_LIST_BG_COLOR[0], THEME_LIST_BG_COLOR[1], THEME_LIST_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
@@ -5870,8 +5879,8 @@ int main(int argc, char** argv) {
                         if (value_count > 0) {
                             SDL_Rect vlist = { list.x - THEME_MENU_DROPDOWN_WIDTH - 8, list.y, THEME_MENU_DROPDOWN_WIDTH, item_h * value_count };
                             if (vlist.x < margin) vlist.x = margin;
-                            if (vlist.y + vlist.h > h) {
-                                vlist.y = h - vlist.h;
+                            if (vlist.y + vlist.h > win_h) {
+                                vlist.y = win_h - vlist.h;
                                 if (vlist.y < 0) vlist.y = 0;
                             }
                             draw_rect(ren, vlist, (SDL_Color){ THEME_SUBTITLE_VLIST_BG_COLOR[0], THEME_SUBTITLE_VLIST_BG_COLOR[1], THEME_SUBTITLE_VLIST_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
@@ -5912,12 +5921,12 @@ int main(int argc, char** argv) {
         }
 
         Uint32 now_ticks = SDL_GetTicks();
-        if (flash_text[0]) {
-            if (now_ticks < flash_until) {
+        if (flash_text[0] || flash_alpha > 0.01f) {
+            if (flash_text[0] && now_ticks < flash_until) {
                 flash_alpha = lerpf(flash_alpha, 1.0f, clampf(dt * 8.0f, 0.0f, 1.0f));
             } else {
                 flash_alpha = lerpf(flash_alpha, 0.0f, clampf(dt * 6.0f, 0.0f, 1.0f));
-                if (flash_alpha < 0.01f) flash_text[0] = 0;
+                if (flash_alpha < 0.01f) { flash_text[0] = 0; flash_alpha = 0.0f; }
             }
             if (flash_alpha > 0.01f) {
                 SDL_Color fcol = { THEME_FLASH_TEXT_COLOR[0], THEME_FLASH_TEXT_COLOR[1], THEME_FLASH_TEXT_COLOR[2], (Uint8)(220 * flash_alpha) };
@@ -5935,8 +5944,8 @@ int main(int argc, char** argv) {
             #define CTX_W 150
             int total_h = CTX_ITEM_H * 3 + 8;
             int cx = bm_ctx_x, cy = bm_ctx_y;
-            if (cx + CTX_W > w) cx = w - CTX_W;
-            if (cy + total_h > h) cy = h - total_h;
+            if (cx + CTX_W > win_w) cx = win_w - CTX_W;
+            if (cy + total_h > win_h) cy = win_h - total_h;
             SDL_Rect ctxbg = { cx, cy, CTX_W, total_h };
             SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
             draw_rect(ren, ctxbg, (SDL_Color){ THEME_CONTEXT_MENU_BG_COLOR[0], THEME_CONTEXT_MENU_BG_COLOR[1], THEME_CONTEXT_MENU_BG_COLOR[2], 240 });
@@ -5967,13 +5976,13 @@ int main(int argc, char** argv) {
         if (kbd_overlay_open) {
             int item_h = THEME_MENU_DROPDOWN_ITEM_HEIGHT;
             int col_w = 360;
-            int cols = w > col_w * 2 + 80 ? 2 : 1;
+            int cols = win_w > col_w * 2 + 80 ? 2 : 1;
             int rows = (kbd_entry_count + cols - 1) / cols;
             int panel_w = col_w * cols + 24;
             int panel_h = rows * item_h + 40;
-            if (panel_h > h - 40) panel_h = h - 40;
-            int panel_x = (w - panel_w) / 2;
-            int panel_y = (h - panel_h) / 2;
+            if (panel_h > win_h - 40) panel_h = win_h - 40;
+            int panel_x = (win_w - panel_w) / 2;
+            int panel_y = (win_h - panel_h) / 2;
             SDL_Rect panel = { panel_x, panel_y, panel_w, panel_h };
             SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
             draw_rect(ren, panel, (SDL_Color){ THEME_CONTEXT_MENU_BG_COLOR[0], THEME_CONTEXT_MENU_BG_COLOR[1], THEME_CONTEXT_MENU_BG_COLOR[2], 240 });
@@ -6013,8 +6022,8 @@ int main(int argc, char** argv) {
             SDL_Rect dst = {
                 (int)draw_zoom_ox,
                 (int)draw_zoom_oy,
-                (int)(window_w * draw_zoom),
-                (int)(window_h * draw_zoom)
+                (int)(win_w * draw_zoom),
+                (int)(win_h * draw_zoom)
             };
             SDL_RenderCopy(ren, draw_zoom_tex, NULL, &dst);
         }

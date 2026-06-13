@@ -1861,10 +1861,11 @@ void vr_resync_audio(VideoRenderer* vr, double target_time) {
     SDL_ClearQueuedAudio(vr->audio_dev);
     if (vr->audio_ctx && !vr->passthrough_active) avcodec_flush_buffers(vr->audio_ctx);
     if (vr->spdif_bsf) av_bsf_flush(vr->spdif_bsf);
-    vr->audio_clock_base = target_time;
-    vr->audio_base_samples = 0;
+    vr->audio_clock_base      = target_time;
+    vr->audio_clock_pts       = 0.0;
+    vr->audio_base_samples    = 0;
     vr->audio_samples_written = 0;
-    vr->audio_clock_valid = 1;
+    vr->audio_clock_valid     = 0;
 }
 
 int vr_render_subtitles(VideoRenderer* vr, double seconds) {
@@ -2042,19 +2043,14 @@ void vr_next_frame(VideoRenderer* vr, int count) {
     int n = abs(count);
     double frame_duration = 0.04;
 
-    if (vr && vr->video_ctx && vr->video_time_base.num > 0 && vr->video_time_base.den > 0) {
-        AVRational tb = vr->video_time_base;
-        double fps = 0.0;
+    if (vr->video_ctx && vr->video_time_base.num > 0 && vr->video_time_base.den > 0) {
         if (vr->fmt_ctx && vr->video_stream_index >= 0) {
             AVStream* stream = vr->fmt_ctx->streams[vr->video_stream_index];
             if (stream->avg_frame_rate.num > 0 && stream->avg_frame_rate.den > 0) {
-                fps = av_q2d(stream->avg_frame_rate);
+                frame_duration = 1.0 / av_q2d(stream->avg_frame_rate);
+            } else {
+                frame_duration = av_q2d(vr->video_time_base);
             }
-        }
-        if (fps > 0.0) {
-            frame_duration = 1.0 / fps;
-        } else {
-            frame_duration = av_q2d(tb);
         }
     }
 
@@ -2089,6 +2085,7 @@ void vr_next_frame(VideoRenderer* vr, int count) {
         if (vr->clock_paused) {
             vr->clock_pause_ticks = vr->clock_start_ticks;
         }
+        vr->seeking = 1;
         vr_resync_audio(vr, vr->current_time);
     }
 }
@@ -2104,6 +2101,7 @@ void vr_set_speed(VideoRenderer* vr, double speed) {
     if (vr->clock_paused) {
         vr->clock_pause_ticks = vr->clock_start_ticks;
     }
+    vr->seeking = 1;
 }
 
 void vr_set_volume(VideoRenderer* vr, float volume) {
@@ -2339,54 +2337,7 @@ void vr_select_audio_track(VideoRenderer* vr, int idx) {
         }
     }
 
-    if (vr->fmt_ctx && vr->video_stream_index >= 0) {
-        AVStream* video_st = vr->fmt_ctx->streams[vr->video_stream_index];
-        int64_t ts = av_rescale_q((int64_t)(t * AV_TIME_BASE), AV_TIME_BASE_Q, video_st->time_base);
-        av_seek_frame(vr->fmt_ctx, vr->video_stream_index, ts, AVSEEK_FLAG_BACKWARD);
-
-        if (vr->video_ctx)    avcodec_flush_buffers(vr->video_ctx);
-        if (vr->audio_ctx)    avcodec_flush_buffers(vr->audio_ctx);
-        if (vr->subtitle_ctx) avcodec_flush_buffers(vr->subtitle_ctx);
-        if (vr->audio_dev)    SDL_ClearQueuedAudio(vr->audio_dev);
-
-        if (vr->filter_graph) {
-            avfilter_graph_free(&vr->filter_graph);
-            vr->filter_graph = NULL;
-            vr->buffersrc_ctx = NULL;
-            vr->buffersink_ctx = NULL;
-        }
-
-        if (vr->ass_track && vr->ass_lib) {
-            ass_free_track(vr->ass_track);
-            vr->ass_track = ass_new_track(vr->ass_lib);
-            if (vr->ass_track) {
-                vr->ass_track->PlayResX = vr->width;
-                vr->ass_track->PlayResY = vr->height;
-                if (vr->subtitle_stream_index >= 0) {
-                    AVStream* st = vr->fmt_ctx->streams[vr->subtitle_stream_index];
-                    if (st->codecpar->extradata_size > 0) {
-                        ass_process_codec_private(vr->ass_track,
-                            (char*)st->codecpar->extradata,
-                            st->codecpar->extradata_size);
-                    }
-                }
-            }
-        }
-
-        pkt_queue_clear(&vr->video_pktq);
-        pkt_queue_clear(&vr->audio_pktq);
-
-        vr->current_time  = t;
-        vr->last_time     = t;
-        vr->audio_clock_pts = 0.0;
-
-        int was_paused = vr->clock_paused;
-        vr->clock_start_time  = t;
-        vr->clock_start_ticks = SDL_GetTicks();
-        vr->clock_pause_accum = 0;
-        vr->clock_paused      = was_paused;
-        if (was_paused) vr->clock_pause_ticks = vr->clock_start_ticks;
-    }
+    vr_seek(vr, t);
 }
 
 void vr_select_subtitle_track(VideoRenderer* vr, int idx) {

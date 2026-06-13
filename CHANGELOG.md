@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.9.5
+
+- Fixed bugs in [renderer.c](./source/renderer.c) with `vr_seek` being used incorrectly in many functions
+- Renamed `USE_SAVE_IN_SAVE_FILE` -> `USE_PAUSE_IN_SAVE_FILE`
+- United `h` and `w` and `window_h` and `window_w` into `win_h` and `win_w`
+- Added dirty flag for recent files sanitization
+- Added caching for right time (duration)
+- Fixed kbd overlay from HMENU not working
+- Changed <kbd>Alt+Up/Down</kbd> to <kbd>Shift+Up/Down</kbd> (for volume by 1%)
+- Fixed <kbd>Alt+C</kbd> not cycling subtitles and added shift mod for this to cycle in the oposite direction
+
 ## 1.9.4
 
 - Fixed current time (left time) overflowing after the end of the media
