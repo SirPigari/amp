@@ -1885,7 +1885,7 @@ pc_bool parse_color(const char* s, SDL_Color* out) {
     {
         const char* p = buf;
         if (strncasecmp(p, "sdl_color", 9) == 0) {
-            char sub[256];
+            char sub[512];
             snprintf(sub, sizeof(sub), "%s", p + 9);
             pc__trim(sub, buf, sizeof(buf));
         }

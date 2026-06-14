@@ -51,6 +51,7 @@ static int THEME_HAMBURGER_LINE_HEIGHT        = HAMBURGER_LINE_HEIGHT;
 static int THEME_HAMBURGER_LINE_MARGIN        = HAMBURGER_LINE_MARGIN;
 static int THEME_SHADOW_OFFSET                = SHADOW_OFFSET;
 static int THEME_DEFAULT_BOOKMARK_COLOR       = DEFAULT_BOOKMARK_COLOR;
+static int THEME_AMBIENT_GLOW_ALPHA           = AMBIENT_GLOW_ALPHA;
 static int THEME_PANEL_COLOR[3]               = { PANEL_COLOR };
 static int THEME_TEXT_COLOR[3]                = { TEXT_COLOR };
 static int THEME_ACCENT_COLOR[3]              = { ACCENT_COLOR };
@@ -90,6 +91,9 @@ static int THEME_DRAW_PALETTE_COLOR_5[3]      = { DRAW_PALETTE_COLOR_5 };
 static int THEME_DRAW_PALETTE_COLOR_6[3]      = { DRAW_PALETTE_COLOR_6 };
 static int THEME_DRAW_PALETTE_COLOR_7[3]      = { DRAW_PALETTE_COLOR_7 };
 static int THEME_DRAW_PALETTE_COLOR_ALPHA     = DRAW_PALETTE_COLOR_ALPHA;
+
+static void get_exe_dir(char* buf, size_t buf_size);
+void fix_theme_font_path(void);
 
 typedef Ht(const char*, char*) ThemeDefines;
 
@@ -516,6 +520,7 @@ static bool theme_load(const char* theme_path) {
     theme_set_int(&defines, "HAMBURGER_LINE_MARGIN", &THEME_HAMBURGER_LINE_MARGIN);
     theme_set_int(&defines, "SHADOW_OFFSET", &THEME_SHADOW_OFFSET);
     theme_set_int(&defines, "DEFAULT_BOOKMARK_COLOR", &THEME_DEFAULT_BOOKMARK_COLOR);
+    theme_set_int(&defines, "AMBIENT_GLOW_ALPHA", &THEME_AMBIENT_GLOW_ALPHA);
     
     theme_set_color(&defines, "PANEL_COLOR", THEME_PANEL_COLOR);
     theme_set_color(&defines, "TEXT_COLOR", THEME_TEXT_COLOR);
@@ -591,14 +596,7 @@ static bool theme_load(const char* theme_path) {
             nob_log(NOB_INFO, "  Theme font: %s (%s)", THEME_FONT.name[0] ? THEME_FONT.name : "unnamed", THEME_FONT.path);
     }
 
-    #ifdef DIST
-    if (strncmp(THEME_FONT.path, "assets/", 7) == 0 ||
-           strncmp(THEME_FONT.path, "./assets/", 10) == 0) {
-        char temp[sizeof(THEME_FONT.path)];
-        snprintf(temp, sizeof(temp), "../%s", THEME_FONT.path);
-        memcpy(THEME_FONT.path, temp, sizeof(THEME_FONT.path));
-    }
-    #endif
+    fix_theme_font_path();
     
     ht_foreach(value, &defines) {
         free((void*)ht_key(&defines, value));
@@ -679,20 +677,7 @@ bool load_theme(const char* name) {
         strncpy(THEME_FILE, "config.h", sizeof(THEME_FILE) - 1);
         
         THEME_FONT = (ThemeFont)FONT;
-        #ifdef DIST
-        if (strncmp(THEME_FONT.path, "assets/", 7) == 0 ||
-            strncmp(THEME_FONT.path, "./assets/", 10) == 0) {
-
-            size_t len = strlen(THEME_FONT.path);
-
-            if (len + 3 < sizeof(THEME_FONT.path)) {
-                char temp[sizeof(THEME_FONT.path)];
-
-                snprintf(temp, sizeof(temp), "../%s", THEME_FONT.path);
-                memcpy(THEME_FONT.path, temp, sizeof(THEME_FONT.path));
-            }
-        }
-        #endif
+        fix_theme_font_path();
         
         THEME_MENU_DROPDOWN_ITEM_HEIGHT          = MENU_DROPDOWN_ITEM_HEIGHT;
         THEME_MENU_DROPDOWN_WIDTH                = MENU_DROPDOWN_WIDTH;
@@ -711,6 +696,7 @@ bool load_theme(const char* name) {
         THEME_HAMBURGER_LINE_MARGIN              = HAMBURGER_LINE_MARGIN;
         THEME_SHADOW_OFFSET                      = SHADOW_OFFSET;
         THEME_DEFAULT_BOOKMARK_COLOR             = DEFAULT_BOOKMARK_COLOR;
+        THEME_AMBIENT_GLOW_ALPHA                 = AMBIENT_GLOW_ALPHA;
         
         THEME_PANEL_COLOR[0]              = (int[]){ PANEL_COLOR }[0];
         THEME_PANEL_COLOR[1]              = (int[]){ PANEL_COLOR }[1];
@@ -825,6 +811,8 @@ bool load_theme(const char* name) {
         THEME_DRAW_PALETTE_COLOR_7[1]     = (int[]){ DRAW_PALETTE_COLOR_7 }[1];
         THEME_DRAW_PALETTE_COLOR_7[2]     = (int[]){ DRAW_PALETTE_COLOR_7 }[2];
         THEME_DRAW_PALETTE_COLOR_ALPHA    = DRAW_PALETTE_COLOR_ALPHA;
+
+        fix_theme_font_path();
         
         nob_log(NOB_INFO, "Default theme loaded successfully");
         return true;
@@ -847,6 +835,20 @@ bool load_theme(const char* name) {
     }
     
     return theme_load(theme_path);
+}
+
+void fix_theme_font_path(void) {
+    #ifdef DIST
+    if (strncmp(THEME_FONT.path, "assets/", 7) == 0 ||
+        strncmp(THEME_FONT.path, "./assets/", 9) == 0) {
+        char temp[sizeof(THEME_FONT.path) + 1024];
+        char exe_dir[512];
+        get_exe_dir(exe_dir, sizeof(exe_dir));
+        snprintf(temp, sizeof(temp), "%s\\..\\%s", exe_dir, THEME_FONT.path);
+        memcpy(THEME_FONT.path, temp, sizeof(THEME_FONT.path));
+    }
+    #endif
+    return;
 }
 
 bool load_theme_probe(const char* path) {

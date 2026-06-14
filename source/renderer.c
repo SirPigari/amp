@@ -919,6 +919,7 @@ static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVC
     int is_accel = strcmp(req, "accel") == 0;
 
     if (is_auto || is_accel) {
+#if SAVE_FILE
 #ifdef _WIN32
         const char* defaults[] = {"d3d11va", "dxva2", "vaapi"};
         for (int i = 0; i < (int)(sizeof(defaults)/sizeof(defaults[0])) && try_count < MAX_TRY; i++) {
@@ -939,6 +940,7 @@ static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVC
             if (!dup) try_list[try_count++] = defaults[i];
         }
         try_count = try_count > 0 ? try_count : 3;
+#endif
 #endif
     } else {
         try_list[0] = req; try_count = 1;
@@ -990,7 +992,9 @@ static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVC
         ctx->get_format = get_hw_format;
         nob_log(NOB_INFO, "HW decode enabled: %s (pixfmt %d)", name, pix);
         if (!vr->hw_backend_marked) {
+            #if SAVE_FILE
             hw_cache_mark_success(name);
+            #endif
             vr->hw_backend_marked = 1;
         }
         return 0;

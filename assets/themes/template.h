@@ -31,6 +31,7 @@
 
 #define SHADOW_OFFSET 2
 #define DEFAULT_BOOKMARK_COLOR 0x44A0FF
+#define AMBIENT_GLOW_ALPHA 255
 
 /* Colors */
 /*      Format is                 R,   G,   B */
@@ -77,4 +78,4 @@
 #define DRAW_PALETTE_COLOR_ALPHA 255
 
 /* Font */
-#define FONT { "Iosevka (bundled)", "assets/Iosevka-Regular.ttc" }
+#define FONT { "Iosevka (bundled)", "./assets/Iosevka-Regular.ttf" }
