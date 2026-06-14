@@ -13,12 +13,16 @@
 #include <shellapi.h>
 #include <mmdeviceapi.h>
 #include <propsys.h>
+#include <limits.h>
+#include <io.h>
+#include "../thirdparty/SDL2/SDL_syswm.h"
+#else
+#include <strings.h>
+#include <dirent.h>
+#include <unistd.h>
 #endif
 #include "../thirdparty/SDL2/SDL.h"
 #include "../thirdparty/SDL2/SDL_ttf.h"
-#ifdef _WIN32
-#include "../thirdparty/SDL2/SDL_syswm.h"
-#endif
 #include "../thirdparty/nob.h"
 #include "../thirdparty/tinyfd.c"
 #include "../thirdparty/stb_image_write.h"
@@ -29,16 +33,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
-#ifdef _WIN32
-#include <limits.h>
-#include <io.h>
-#else
-#include <unistd.h>
-#endif
-#ifndef _WIN32
-#include <strings.h>
-#include <dirent.h>
-#endif
 #undef NOB_IMPLEMENTATION
 
 #if !defined(PATH_MAX) && defined(MAX_PATH)
@@ -53,6 +47,14 @@
 
 #if SAVE_FILE
 #include "save.c"
+#else
+typedef struct {
+    double   time;
+    char     name[BOOKMARK_NAME_MAX];
+    uint32_t color_rgb;
+    int      is_default_color;
+} Bookmark;
+typedef struct { int __padding; } SaveState;
 #endif
 
 #include "drawing.c"
@@ -66,6 +68,7 @@ Uint32 flash_until = 0;
 float flash_alpha = 0.0f;
 static char hw_option[32] = "auto";
 static FILE* log_file = NULL;
+static bool force_playback = false;
 
 static char   cached_right_time[32]  = "";
 static int    cached_right_time_w    = 0;
@@ -434,7 +437,7 @@ static void draw_ambient_glow(SDL_Renderer* ren, SDL_Rect video_dst, int win_w, 
                 SDL_Vertex* v = &verts[zv*(AMBIENT_FADE_ROWS+1)+fv];
                 v->position.x = x;  v->position.y = t * (float)top_h;
                 v->color.r = r; v->color.g = g; v->color.b = b;
-                v->color.a = (Uint8)(t * t * 210.0f);
+                v->color.a = (Uint8)((t * t * 210.0f * (float)AMBIENT_GLOW_ALPHA) / 255.0f);
                 v->tex_coord.x = 0; v->tex_coord.y = 0;
             }
         }
@@ -455,7 +458,7 @@ static void draw_ambient_glow(SDL_Renderer* ren, SDL_Rect video_dst, int win_w, 
                 v->position.x = x;
                 v->position.y = (float)bot_y + (float)fv*(float)bot_h/(float)AMBIENT_FADE_ROWS;
                 v->color.r = r; v->color.g = g; v->color.b = b;
-                v->color.a = (Uint8)(t * t * 210.0f);
+                v->color.a = (Uint8)((t * t * 210.0f * (float)AMBIENT_GLOW_ALPHA) / 255.0f);
                 v->tex_coord.x = 0; v->tex_coord.y = 0;
             }
         }
@@ -474,7 +477,7 @@ static void draw_ambient_glow(SDL_Renderer* ren, SDL_Rect video_dst, int win_w, 
                 SDL_Vertex* v = &verts[zv*(AMBIENT_FADE_ROWS+1)+fv];
                 v->position.x = t * (float)left_w;  v->position.y = y;
                 v->color.r = r; v->color.g = g; v->color.b = b;
-                v->color.a = (Uint8)(t * t * 210.0f);
+                v->color.a = (Uint8)((t * t * 210.0f * (float)AMBIENT_GLOW_ALPHA) / 255.0f);
                 v->tex_coord.x = 0; v->tex_coord.y = 0;
             }
         }
@@ -495,7 +498,7 @@ static void draw_ambient_glow(SDL_Renderer* ren, SDL_Rect video_dst, int win_w, 
                 v->position.x = (float)right_x + (float)fv*(float)right_w/(float)AMBIENT_FADE_ROWS;
                 v->position.y = y;
                 v->color.r = r; v->color.g = g; v->color.b = b;
-                v->color.a = (Uint8)(t * t * 210.0f);
+                v->color.a = (Uint8)((t * t * 210.0f * (float)AMBIENT_GLOW_ALPHA) / 255.0f);
                 v->tex_coord.x = 0; v->tex_coord.y = 0;
             }
         }
@@ -801,6 +804,8 @@ static int point_in_rect(int x, int y, SDL_Rect r) {
 static bool is_supported_video_file(const char* path) {
     if (!path) return false;
 
+    if (force_playback) return true;
+
     av_log_set_level(AV_LOG_QUIET);
 
     AVFormatContext* ctx = NULL;
@@ -818,7 +823,8 @@ static bool is_supported_video_file(const char* path) {
     bool ok =
         (name && (
             strstr(name, "matroska") ||   /* mkv */
-            strstr(name, "mp4")           /* mp4/mov/m4a family */
+            strstr(name, "mp4") ||
+            strstr(name, "mov")
         ));
 
     avformat_close_input(&ctx);
@@ -830,12 +836,13 @@ static bool is_supported_video_file(const char* path) {
 #else
 static bool is_supported_video_file(const char* path) {
     if (!path) return false;
+    if (force_playback) return true;
     const char* ext = strrchr(path, '.');
     if (!ext || !ext[1]) return false;
 #ifdef _WIN32
-    return _stricmp(ext, ".mkv") == 0 || _stricmp(ext, ".mp4") == 0;
+    return _stricmp(ext, ".mkv") == 0 || _stricmp(ext, ".mp4") == 0 || _stricmp(ext, ".mov") == 0;
 #else
-    return strcasecmp(ext, ".mkv") == 0 || strcasecmp(ext, ".mp4") == 0;
+    return strcasecmp(ext, ".mkv") == 0 || strcasecmp(ext, ".mp4") == 0 || strcasecmp(ext, ".mov") == 0;
 #endif
 }
 #endif
@@ -893,7 +900,7 @@ void amp_log_handler(Nob_Log_Level level, const char* fmt, va_list args) {
 
 void usage(FILE* out, const char* prog_name) {
     fprintf(out, "Usage: %s [OPTIONS] [video_file]\n", prog_name);
-    fprintf(out, "Supported video formats: Matroska (MKV), MP4\n");
+    fprintf(out, "Supported video formats: Matroska (MKV), MP4, MOV\n");
     fprintf(out, "Options:\n");
     fprintf(out, "  -h, --help                   Show this help message and exit\n");
     fprintf(out, "  -v, --version                Show version information and exit\n");
@@ -911,6 +918,7 @@ void usage(FILE* out, const char* prog_name) {
     fprintf(out, "  --hw [auto|none|accel|TYPE]  Hardware decode backend (TYPE: vaapi [unix only], dxva2 [win only], d3d11va [win only])\n");
     fprintf(out, "  --log-file FILE              Log to a file in addition to stderr\n");
     fprintf(out, "  --audio-driver DRIVER        Set audio driver (e.g. pulseaudio, alsa, wasapi, directsound)\n");
+    fprintf(out, "  --force                      Force playback even if the file is not recognized as a supported video format\n");
     #ifdef _WIN32
     fprintf(out, "  --reregister                 Re-run Windows file association and shortcut setup\n");
     fprintf(out, "  --unregister                 Remove Windows file association\n");
@@ -1096,9 +1104,12 @@ static void register_progid_for_ext(const char* exe, const char* ext) {
     if (strcmp(ext, ".mp4") == 0) {
         snprintf(progid, sizeof(progid), "amp.mp4");
         snprintf(label, sizeof(label), "MP4 File");
-    } else {
+    } else if (strcmp(ext, ".mkv") == 0) {
         snprintf(progid, sizeof(progid), "amp.mkv");
         snprintf(label, sizeof(label), "MKV File");
+    } else if (strcmp(ext, ".mov") == 0) {
+        snprintf(progid, sizeof(progid), "amp.mov");
+        snprintf(label, sizeof(label), "MOV File");
     }
 
     char dir[PATH_MAX];
@@ -1129,7 +1140,7 @@ static void register_progid_for_ext(const char* exe, const char* ext) {
 static void register_openwith(const char* ext) {
     char progid[32];
     snprintf(progid, sizeof(progid),
-        strcmp(ext, ".mp4") == 0 ? "amp.mp4" : "amp.mkv");
+        strcmp(ext, ".mp4") == 0 ? "amp.mp4" : strcmp(ext, ".mkv") == 0 ? "amp.mkv" : "amp.mov");
 
     char key[256];
     snprintf(key, sizeof(key), "Software\\Classes\\%s\\OpenWithProgids", ext);
@@ -1139,7 +1150,7 @@ static void register_openwith(const char* ext) {
 static void register_ext(const char* ext) {
     char progid[32];
     snprintf(progid, sizeof(progid),
-        strcmp(ext, ".mp4") == 0 ? "amp.mp4" : "amp.mkv");
+        strcmp(ext, ".mp4") == 0 ? "amp.mp4" : strcmp(ext, ".mkv") == 0 ? "amp.mkv" : "amp.mov");
 
     char key[256];
 
@@ -1175,18 +1186,22 @@ void amp_register(bool reregister) {
 
     clear_fileext_cache(".mp4");
     clear_fileext_cache(".mkv");
+    clear_fileext_cache(".mov");
 
     create_shortcut(exe);
     create_startmenu_shortcut(exe);
 
     register_progid_for_ext(exe, ".mp4");
     register_progid_for_ext(exe, ".mkv");
+    register_progid_for_ext(exe, ".mov");
 
     register_openwith(".mp4");
     register_openwith(".mkv");
+    register_openwith(".mov");
 
     register_ext(".mp4");
     register_ext(".mkv");
+    register_ext(".mov");
 
     reg_set(HKEY_CURRENT_USER,
         "Software\\Classes\\Applications\\main.exe",
@@ -1197,17 +1212,20 @@ void amp_register(bool reregister) {
 
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);
 
-    nob_log(NOB_INFO, "amp registered as handler for .mp4 and .mkv files");
+    nob_log(NOB_INFO, "amp registered as handler for .mp4, .mov and .mkv files");
 }
 
 void amp_unregister(void) {
     RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\Classes\\amp.mp4");
     RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\Classes\\amp.mkv");
+    RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\Classes\\amp.mov");
 
     reg_delete_value(HKEY_CURRENT_USER,
         "Software\\Classes\\.mp4\\OpenWithProgids", "amp.mp4");
     reg_delete_value(HKEY_CURRENT_USER,
         "Software\\Classes\\.mkv\\OpenWithProgids", "amp.mkv");
+    reg_delete_value(HKEY_CURRENT_USER,
+        "Software\\Classes\\.mov\\OpenWithProgids", "amp.mov");
 
     reg_delete_value(HKEY_CURRENT_USER,
         "Software\\Classes\\Applications\\main.exe", "FriendlyAppName");
@@ -1218,13 +1236,15 @@ void amp_unregister(void) {
         "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.mp4");
     RegDeleteTreeA(HKEY_CURRENT_USER,
         "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.mkv");
+    RegDeleteTreeA(HKEY_CURRENT_USER,
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.mov");
 
     DeleteFileA(
         "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\amp.lnk");
 
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);
 
-    nob_log(NOB_INFO, "amp unregistered as handler for .mp4 and .mkv files");
+    nob_log(NOB_INFO, "amp unregistered as handler for .mp4, .mov and .mkv files");
 }
 #endif
 
@@ -1682,6 +1702,8 @@ static int hist_apply_entry(
             #if SAVE_FILE
             update_bookmarks_in_save_state(save_state, *video_file, bookmarks, *bookmark_count);
             write_save_state(SAVE_FILE_PATH, save_state);
+            #else
+            (void)save_state;
             #endif
             snprintf(flash_text, sizeof(flash_text), "%s: %.249s",
                 apply_before ? "Undo" : "Redo",
@@ -1800,6 +1822,10 @@ static int navigate_media(
         update_bookmarks_in_save_state(save_state, *video_file, bookmarks, *bookmark_count);
         write_save_state(SAVE_FILE_PATH, save_state);
     }
+    #else
+    (void)save_state;
+    (void)bookmarks;
+    (void)bookmark_count;
     #endif
 
     int ok = load_media_file(
@@ -2590,7 +2616,6 @@ int main(int argc, char** argv) {
     int blackout_last_display = -2;
     int blackout_last_fullscreen = -1;
     int blackout_last_mode = -1;
-    bool stay_awake = false;
     bool dragging_timeline = false;
     bool volume_dragging = false;
     float volume_drag_start = 100.0f;
@@ -2648,15 +2673,12 @@ int main(int argc, char** argv) {
     int draw_mode_active = 0;
     bool draw_mode_was_paused = false;
 
-    #ifndef _WIN32
-    char audio_driver[64] = "pulseaudio,alsa";
-    #else
-    char audio_driver[64] = "";
-    #endif
-
 #ifndef _WIN32
+    char audio_driver[64] = "pulseaudio,alsa";
     setenv("LIBVA_DRIVER_NAME", "", 1);
 #else
+    char audio_driver[64] = "";
+    bool stay_awake = false;
     int reregister = false;
 #endif
 
@@ -2789,6 +2811,8 @@ int main(int argc, char** argv) {
                 nob_log(NOB_WARNING, "Invalid audio driver name: %s", driver_name);
             }
             i++;
+        } else if (strcmp(argv[i], "--force") == 0) {
+            force_playback = true;
         } else if (argv[i][0] != '-') {
             video_file = abspath_temp_safe(argv[i]);
         } else {
@@ -2851,7 +2875,7 @@ int main(int argc, char** argv) {
     if (!video_file) {
         nob_log(NOB_INFO, "No video file specified. Opening file dialog...");
         video_file = open_file_dialog(
-            (const char*[]){"*.mkv", "*.mp4"}, 2, "Video Files (*.mkv, *.mp4)", false,
+            (const char*[]){"*.mkv", "*.mp4", "*.mov"}, 3, "Video Files (*.mkv, *.mp4, *.mov)", false,
             "Select Video File", NULL, &is_supported_video_file
         );
         if (!video_file || !is_supported_video_file(video_file)) {
@@ -2927,8 +2951,8 @@ int main(int argc, char** argv) {
     }
     */
 
+    SaveState save_state = {0};
     #if SAVE_FILE
-        SaveState save_state = {0};
         int load_save_state_result = load_save_state(abspath_temp(SAVE_FILE_PATH), &save_state);
         if (load_save_state_result == 0) {
             nob_log(NOB_INFO, "No save file found, starting with default settings");
@@ -3174,12 +3198,12 @@ int main(int argc, char** argv) {
                                 SDL_SetWindowSize(win, tw, th);
                                 SDL_SetWindowPosition(win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
                                 snprintf(flash_text, sizeof(flash_text), "Resolution: %dx%d", rw, rh);
-    #ifdef _WIN32
+#if defined(_WIN32) && SAVE_FILE
                                 if (vr && video_file) {
                                     fill_save_state_from_vr(vr, &save_state, video_file, paused, volume_percent);
                                     write_save_state(SAVE_FILE_PATH, &save_state);
                                 }
-    #endif
+#endif
                             } else {
                                 snprintf(flash_text, sizeof(flash_text), "Invalid resolution (use WxH, W H, W,H or W-H)");
                             }
@@ -3307,7 +3331,7 @@ int main(int argc, char** argv) {
                         int id = LOWORD(sysmsg->msg.win.wParam);
                         if (id == MENU_OPEN) {
                             char* f = open_file_dialog(
-                                (const char*[]){"*.mkv", "*.mp4"}, 2, "Video Files (*.mkv, *.mp4)", false,
+                                (const char*[]){"*.mkv", "*.mp4", "*.mov"}, 3, "Video Files (*.mkv, *.mp4, *.mov)", false,
                                 "Select Video File", NULL, &is_supported_video_file
                             );
                             if (f) {
@@ -3391,7 +3415,9 @@ int main(int argc, char** argv) {
                                     set_window_title_for_media(win, vr, video_file);
                                     nob_log(NOB_INFO, "Loaded %s", video_file);
                                     hist_push_seek(history, &history_count, &history_pos, old_file_recent, old_time_recent, video_file, 0.0);
+                                    #if SAVE_FILE
                                     paused = save_state.global.paused;
+                                    #endif
                                 } else {
                                     nob_log(NOB_ERROR, "Failed to load %s", video_file);
                                 }
@@ -3917,7 +3943,7 @@ int main(int argc, char** argv) {
                 SDL_Keycode key = e.key.keysym.sym;
                 if ((key==SDLK_o)&&(e.key.keysym.mod & KMOD_CTRL)) {
                     char* f = open_file_dialog(
-                        (const char*[]){"*.mkv", "*.mp4"}, 2, "Video Files (*.mkv, *.mp4)", false,
+                        (const char*[]){"*.mkv", "*.mp4", "*.mov"}, 3, "Video Files (*.mkv, *.mp4, *.mov)", false,
                         "Select Video File", NULL, &is_supported_video_file
                     );
                     if (f) {
@@ -4983,9 +5009,11 @@ int main(int argc, char** argv) {
                                     if (!load_ui_font(THEME_SYSTEM_DEFAULT_FONT.path, THEME_SYSTEM_DEFAULT_FONT.name[0] ? THEME_SYSTEM_DEFAULT_FONT.name : THEME_NAME))
                                         nob_log(NOB_WARNING, "System default font not available: %s", THEME_SYSTEM_DEFAULT_FONT.path);
                                 }
+                                #if SAVE_FILE
                                 strncpy(save_state.global.theme, theme_names[idx], sizeof(save_state.global.theme) - 1);
                                 save_state.global.theme[sizeof(save_state.global.theme) - 1] = '\0';
                                 write_save_state(SAVE_FILE_PATH, &save_state);
+                                #endif
                             } else if (idx == theme_count) {
                                 const char* filters[] = { "*.h" };
                                 char* chosen = open_file_dialog(filters, 1, "Theme files (*.h)", false, "Select Theme File", NULL, NULL);
@@ -5039,9 +5067,11 @@ int main(int argc, char** argv) {
                                             size_t tid_len = strlen(theme_id);
                                             if (tid_len > 2 && strcmp(theme_id + tid_len - 2, ".h") == 0)
                                                 theme_id[tid_len - 2] = '\0';
+                                            #if SAVE_FILE
                                             strncpy(save_state.global.theme, theme_id, sizeof(save_state.global.theme) - 1);
                                             save_state.global.theme[sizeof(save_state.global.theme) - 1] = '\0';
                                             write_save_state(SAVE_FILE_PATH, &save_state);
+                                            #endif
                                             nob_log(NOB_INFO, "Custom theme installed: %s", dest_path);
                                         }
                                     }

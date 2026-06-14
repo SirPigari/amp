@@ -51,6 +51,7 @@ static int THEME_HAMBURGER_LINE_HEIGHT        = HAMBURGER_LINE_HEIGHT;
 static int THEME_HAMBURGER_LINE_MARGIN        = HAMBURGER_LINE_MARGIN;
 static int THEME_SHADOW_OFFSET                = SHADOW_OFFSET;
 static int THEME_DEFAULT_BOOKMARK_COLOR       = DEFAULT_BOOKMARK_COLOR;
+static int THEME_AMBIENT_GLOW_ALPHA           = AMBIENT_GLOW_ALPHA;
 static int THEME_PANEL_COLOR[3]               = { PANEL_COLOR };
 static int THEME_TEXT_COLOR[3]                = { TEXT_COLOR };
 static int THEME_ACCENT_COLOR[3]              = { ACCENT_COLOR };
@@ -516,6 +517,7 @@ static bool theme_load(const char* theme_path) {
     theme_set_int(&defines, "HAMBURGER_LINE_MARGIN", &THEME_HAMBURGER_LINE_MARGIN);
     theme_set_int(&defines, "SHADOW_OFFSET", &THEME_SHADOW_OFFSET);
     theme_set_int(&defines, "DEFAULT_BOOKMARK_COLOR", &THEME_DEFAULT_BOOKMARK_COLOR);
+    theme_set_int(&defines, "AMBIENT_GLOW_ALPHA", &THEME_AMBIENT_GLOW_ALPHA);
     
     theme_set_color(&defines, "PANEL_COLOR", THEME_PANEL_COLOR);
     theme_set_color(&defines, "TEXT_COLOR", THEME_TEXT_COLOR);
@@ -711,6 +713,7 @@ bool load_theme(const char* name) {
         THEME_HAMBURGER_LINE_MARGIN              = HAMBURGER_LINE_MARGIN;
         THEME_SHADOW_OFFSET                      = SHADOW_OFFSET;
         THEME_DEFAULT_BOOKMARK_COLOR             = DEFAULT_BOOKMARK_COLOR;
+        THEME_AMBIENT_GLOW_ALPHA                 = AMBIENT_GLOW_ALPHA;
         
         THEME_PANEL_COLOR[0]              = (int[]){ PANEL_COLOR }[0];
         THEME_PANEL_COLOR[1]              = (int[]){ PANEL_COLOR }[1];

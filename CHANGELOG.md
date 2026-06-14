@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.9.6
+
+- Added support for MOV files
+- Added `--force` flag to force playback of the file
+- Added `AMBIENT_GLOW_ALPHA` to themes (default 255)
+- Replaced `Iosevka-Regular.ttc` with [Iosevka-Regular.ttf](./assets/Iosevka-Regular.ttf)
+- Fixed issues with `SAVE_FILE` define
+- Removed unused `USE_THEMES` define from config
+
 ## 1.9.5
 
 - Fixed bugs in [renderer.c](./source/renderer.c) with `vr_seek` being used incorrectly in many functions

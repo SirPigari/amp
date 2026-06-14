@@ -1,3 +1,5 @@
+#ifndef ASCII_H
+#define ASCII_H
 const char ascii_art[] =
 "                AMP                 \n"
 "                          NH2       \n"
@@ -22,9 +24,6 @@ const char ascii_art_note[] =
 
 #include <stdio.h>
 
-#ifndef ASCII_H
-#define ASCII_H
-
 /// @brief Prints the amp ASCII art to the console.
 /// This is just for fun and has no functional purpose in the media player.
 /// @author markofwitch
@@ -35,4 +34,4 @@ void print_ascii_art(void) {
     return;
 }
 
-#endif
+#endif /* ASCII_H */

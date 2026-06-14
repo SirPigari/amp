@@ -6,7 +6,7 @@ amp is a simple media player built using C and SDL2.
 
 ## Features
 
-- Basic playback for MKV and MP4 media files
+- Basic playback for MKV, MOV and MP4 media files
 - Support for ASS and SRT subtitles
 - Remember last playback position and settings for each video file
 - Playback history (<kbd>Ctrl+Z</kbd> <kbd>Ctrl+Y</kbd>)

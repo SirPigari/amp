@@ -2,10 +2,9 @@
 #define CONFIG_H
 
 /* Build config */
-#define AMP_VERSION 0x010905 /* 1.9.5 */
+#define AMP_VERSION 0x010906 /* 1.9.6 */
 
 #define THEMES_DIR "assets/themes/"
-#define USE_THEMES 1
 
 #define CC "gcc"
 #define CFLAGS         "-Wno-cast-function-type", "-Wall", "-Wextra"
@@ -76,12 +75,14 @@
 #define HAMBURGER_LINE_HEIGHT 2
 #define HAMBURGER_LINE_MARGIN 6
 
-#define SHADOW_OFFSET 2
-#define DEFAULT_BOOKMARK_COLOR 0x44A0FF
 #define MAX_BLACKOUT_WINDOWS 16
 #define AMBIENT_FADE_ROWS 8
 #define AMBIENT_ZONES 8
 #define BLACKOUT_MODE_TURN_OFF_MONITOR 0
+
+#define SHADOW_OFFSET 2
+#define DEFAULT_BOOKMARK_COLOR 0x44A0FF
+#define AMBIENT_GLOW_ALPHA 255
 
 /* Colors */
 /*      Format is                 R,   G,   B */
@@ -128,7 +129,7 @@
 #define DRAW_PALETTE_COLOR_ALPHA 255
 
 /* Font */
-#define FONT { "Iosevka (bundled)", "assets/Iosevka-Regular.ttc" }
+#define FONT { "Iosevka (bundled)", "./assets/Iosevka-Regular.ttf" }
 
 /* Default Theme End */
 
@@ -143,7 +144,7 @@
 
 #else
 
-#define SYSTEM_DEFAULT_FONT { "DejaVu Sans", "/usr/share/fonts/TTF/DejaVuSans.ttf" }
+#define SYSTEM_DEFAULT_FONT { "DejaVu Sans", "/usr/share/fonts/TTF/DejaVuSans.ttf" } /* on arch linux */
 
 #endif
 
