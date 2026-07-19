@@ -26,6 +26,7 @@ BEGIN
       VALUE "CompanyName", "Markofwitch"
       VALUE "LegalCopyright", "Copyright (c) 2026 Markofwitch"
       VALUE "LegalTrademarks", ""
+      VALUE "Comments", "small media player"
     END
   END
 

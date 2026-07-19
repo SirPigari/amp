@@ -14,6 +14,16 @@ static int ui_font_size = 18;
 static char ui_font_label[128] = "Iosevka";
 static char ui_font_path[260] = "";
 
+/* i just discovered this word it literally describes it perfectly */
+/* i feel like zozin */
+typedef struct {
+    float    offset;
+    Uint32   hover_start_ms;
+    int      is_hovered;
+} MarqueeState;
+
+static MarqueeState subtitle_marquee[64] = { 0 };
+
 static bool is_absolute_path(const char* path) {
 #ifdef _WIN32
     return (path[0] && path[1] == ':' && (path[2] == '\\' || path[2] == '/'));
@@ -70,6 +80,120 @@ static void draw_text_shadow(SDL_Renderer* ren, int x, int y, const char* text, 
     SDL_Color shadow = { THEME_SHADOW_COLOR[0], THEME_SHADOW_COLOR[1], THEME_SHADOW_COLOR[2], (Uint8)(color.a * 0.8f) };
     draw_text(ren, x + THEME_SHADOW_OFFSET, y + THEME_SHADOW_OFFSET, text, shadow);
     draw_text(ren, x, y, text, color);
+}
+
+static void draw_text_marquee(
+    SDL_Renderer* ren,
+    int x, int y,
+    int max_w,
+    const char* text,
+    SDL_Color color,
+    MarqueeState* ms,
+    int is_hovered,
+    Uint32 now_ms
+) {
+    if (!text || !ui_font) return;
+
+    int text_w = 0, text_h = 0;
+    TTF_SizeUTF8(ui_font, text, &text_w, &text_h);
+
+    if (text_w <= max_w) {
+        draw_text_shadow(ren, x, y, text, color);
+        ms->offset = 0;
+        ms->hover_start_ms = 0;
+        ms->is_hovered = 0;
+        return;
+    }
+
+    if (is_hovered && !ms->is_hovered) {
+        ms->hover_start_ms = now_ms;
+        ms->offset = 0;
+    }
+    if (!is_hovered) {
+        ms->offset = 0;
+        ms->hover_start_ms = 0;
+    }
+    ms->is_hovered = is_hovered;
+
+    int total_chars = 0;
+    const unsigned char* p = (const unsigned char*)text;
+    while (*p) {
+        if      ((*p & 0x80) == 0x00) p += 1;
+        else if ((*p & 0xE0) == 0xC0) p += 2;
+        else if ((*p & 0xF0) == 0xE0) p += 3;
+        else if ((*p & 0xF8) == 0xF0) p += 4;
+        else                           p += 1;
+        total_chars++;
+    }
+
+    #define BYTE_OFFSET_OF_CHAR(src, n, out_offset) do { \
+        const unsigned char* _p = (const unsigned char*)(src); \
+        int _i = 0; \
+        while (*_p && _i < (n)) { \
+            if      ((*_p & 0x80) == 0x00) _p += 1; \
+            else if ((*_p & 0xE0) == 0xC0) _p += 2; \
+            else if ((*_p & 0xF0) == 0xE0) _p += 3; \
+            else if ((*_p & 0xF8) == 0xF0) _p += 4; \
+            else                            _p += 1; \
+            _i++; \
+        } \
+        (out_offset) = (int)(_p - (const unsigned char*)(src)); \
+    } while(0)
+
+    if (is_hovered && now_ms - ms->hover_start_ms > MARQUEE_DELAY_MS) {
+        float elapsed_s = (float)(now_ms - ms->hover_start_ms - MARQUEE_DELAY_MS) / 1000.0f;
+        float raw = elapsed_s * MARQUEE_SPEED;
+        int cycle = total_chars + 1;
+        ms->offset = (float)((int)raw % cycle);
+    }
+
+    int char_skip = (int)ms->offset;
+
+    SDL_Rect clip = { x, y - 2, max_w, text_h + 4 };
+    SDL_RenderSetClipRect(ren, &clip);
+
+    if (!is_hovered || (now_ms - ms->hover_start_ms <= MARQUEE_DELAY_MS)) {
+        int ellipsis_w = 0, dummy_h = 0;
+        TTF_SizeUTF8(ui_font, MARQUEE_ELLIPSIS, &ellipsis_w, &dummy_h);
+        int budget = max_w - ellipsis_w;
+
+        int fit_bytes = 0;
+        const unsigned char* q = (const unsigned char*)text;
+        while (*q) {
+            int cb = 1;
+            if      ((*q & 0x80) == 0x00) cb = 1;
+            else if ((*q & 0xE0) == 0xC0) cb = 2;
+            else if ((*q & 0xF0) == 0xE0) cb = 3;
+            else if ((*q & 0xF8) == 0xF0) cb = 4;
+
+            char tmp[512];
+            int candidate = fit_bytes + cb;
+            if (candidate >= (int)sizeof(tmp) - 1) break;
+            memcpy(tmp, text, candidate);
+            tmp[candidate] = '\0';
+
+            int w = 0, h = 0;
+            TTF_SizeUTF8(ui_font, tmp, &w, &h);
+            if (w > budget) break;
+
+            fit_bytes = candidate;
+            q += cb;
+        }
+
+        char truncated[512];
+        memcpy(truncated, text, fit_bytes);
+        snprintf(truncated + fit_bytes, sizeof(truncated) - fit_bytes, "%s", MARQUEE_ELLIPSIS);
+        draw_text_shadow(ren, x, y, truncated, color);
+
+    } else {
+        int byte_start = 0;
+        BYTE_OFFSET_OF_CHAR(text, char_skip, byte_start);
+        draw_text_shadow(ren, x, y, text + byte_start, color);
+    }
+
+    SDL_RenderSetClipRect(ren, NULL);
+
+    #undef BYTE_OFFSET_OF_CHAR
 }
 
 bool is_valid_utf8(const char* s) {

@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.9.7
+
+- Added `ALLOW_CTRL_Q_ON_WINDOWS` define (default 0/false)
+- Tried to fix ambient glow on dark frames
+  - Added `AMBIENT_GLOW_ASCALE` (default 140.0) and `AMBIENT_GLOW_AMAX` (default 180.0)
+- Added subtitle [*marquee*](https://en.wikipedia.org/wiki/Marquee_(structure)) to fix the overflow issue when the subtitle name was too long
+- Added `DEBUG_SAVE_STATE` define (default 1/true)
+- Added highlighting for currently pressed key in `Keyboard Shortcuts` (<kbd>?</kbd>)
+- Added `Scroll Up` and `Scroll Down` (<kbd>Alt+Up/Down</kbd>) to kbds
+- Made the `KMOD_GUI` say `Win` on windows instead of `Super` (it isnt used anyway)
+- Moved default theme into [default.h](./assets/themes/default.h) and removed the `template.h` theme
+- Added `LICENSE.Iosevka.md` to distribution
+- Fixed custom theme selector to not crash
+
 ## 1.9.6
 
 - Added support for MOV files
@@ -128,7 +142,7 @@
 - Added screenshot (<kbd>F2</kbd>), you can export as: png, jpg, bmp and tga
 - Replaced `mconsole` with `mwindows` and added `attach_console_if_present` ([stackoverflow question](https://stackoverflow.com/questions/78920322/redirect-standard-output-to-console-in-gui-application))
 - Added [stb_image_write.h](thirdparty/stb_image_write.h) for writing the screenshot/draw export image
-- Added pallete colors to config.h themes
+- Added palette colors to config.h themes
 - Fixed an issue when sometimes it would not focus the window after `tinyfd_openFileDialog`
 - Added `distribute` mode, which creates a `dist.zip` file in root for it to distribute (windows only)
 

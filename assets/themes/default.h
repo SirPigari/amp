@@ -1,12 +1,17 @@
-/* 
-   This is a theme template with the default theme values
-   This file is IGNORED by amp
+/*
+   Default theme for amp
+   
+   This file is special because it is always loaded as first, meaning any value not provided 
+   will be set to the value from here.
+
    To create a new theme, copy this file and change the values as needed
-   It is NOT a perfect C header parser, so some stuff aren't supported (for example callable macros and // comments)
+   It is NOT a perfect C header parser, so some stuff aren't supported (for example callable macros and "//" comments)
+   
+   Colors were chosen by markofwitch.
 */
 
-#define THEME_NAME "Template"
-#define THEME_FILE "template.h"
+#define THEME_NAME "amp Default"
+#define THEME_FILE "default.h"
 
 /* Menu dimensions */
 #define MENU_DROPDOWN_ITEM_HEIGHT 28
@@ -29,9 +34,12 @@
 #define HAMBURGER_LINE_HEIGHT 2
 #define HAMBURGER_LINE_MARGIN 6
 
+/* Miscellaneous */
 #define SHADOW_OFFSET 2
 #define DEFAULT_BOOKMARK_COLOR 0x44A0FF
 #define AMBIENT_GLOW_ALPHA 255
+#define AMBIENT_GLOW_ASCALE 140.0f
+#define AMBIENT_GLOW_AMAX 180.0f
 
 /* Colors */
 /*      Format is                 R,   G,   B */

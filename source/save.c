@@ -933,6 +933,7 @@ static void free_save_state(SaveState* state) {
     ht_free(&state->file_index_ht);
 }
 
+#if DEBUG_SAVE_STATE
 static void debug_save_state(const SaveState* state) {
     if (!state) return;
     printf("Recent Files (%" PRIu64 "):\n", state->recent_files_count);
@@ -984,6 +985,7 @@ static void debug_save_state(const SaveState* state) {
     printf("  Blackout Mode: %d\n", state->global.blackout_mode);
     printf("  Ambient Glow: %d\n", state->global.ambient_glow);
 }
+#endif
 
 static void update_bookmarks_in_save_state(SaveState* state,
                                             const char* video_path,

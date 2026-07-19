@@ -358,6 +358,7 @@ int main(int argc, char** argv) {
     write_loader(out_dir);
 
     system("copy LICENSE dist\\LICENSE.txt /Y");
+    system("copy thirdparty\\LICENSE.Iosevka.md dist\\assets\\LICENSE.Iosevka.md /Y");
     system("copy CHANGELOG.md dist\\CHANGELOG.md /Y");
     write_readme(out_dir);
 

@@ -23,74 +23,76 @@
 #undef THEME_NAME
 #undef THEME_FILE
 
-static char THEME_NAME[256] = "AMP";
-static char THEME_FILE[256] = "config.h";
+static char THEME_NAME[256];
+static char THEME_FILE[256];
 
 typedef struct {
     char name[256];
     char path[512];
 } ThemeFont;
 
-static ThemeFont THEME_FONT = FONT;
+static ThemeFont THEME_FONT;
 static ThemeFont THEME_SYSTEM_DEFAULT_FONT = SYSTEM_DEFAULT_FONT;
 
-static int THEME_MENU_DROPDOWN_ITEM_HEIGHT = MENU_DROPDOWN_ITEM_HEIGHT;
-static int THEME_MENU_DROPDOWN_WIDTH = MENU_DROPDOWN_WIDTH;
-static int THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH = MENU_DROPDOWN_SCROLLBAR_WIDTH;
-static int THEME_MENU_DROPDOWN_TEXT_PADDING_X = MENU_DROPDOWN_TEXT_PADDING_X;
-static int THEME_MENU_DROPDOWN_TEXT_PADDING_Y = MENU_DROPDOWN_TEXT_PADDING_Y;
-static int THEME_MENU_MAX_VISIBLE_ITEMS = MENU_MAX_VISIBLE_ITEMS;
-static int THEME_TIMELINE_HEIGHT = TIMELINE_HEIGHT;
-static int THEME_TIMELINE_HITBOX_PADDING = TIMELINE_HITBOX_PADDING;
-static int THEME_TIMELINE_THUMB_SIZE = TIMELINE_THUMB_SIZE;
-static int THEME_TIMELINE_CHAPTER_MARKER_WIDTH = TIMELINE_CHAPTER_MARKER_WIDTH;
-static int THEME_TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH = TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH;
-static int THEME_TIMELINE_BOOKMARK_MARKER_WIDTH = TIMELINE_BOOKMARK_MARKER_WIDTH;
-static int THEME_TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH = TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH;
-static int THEME_HAMBURGER_LINE_HEIGHT        = HAMBURGER_LINE_HEIGHT;
-static int THEME_HAMBURGER_LINE_MARGIN        = HAMBURGER_LINE_MARGIN;
-static int THEME_SHADOW_OFFSET                = SHADOW_OFFSET;
-static int THEME_DEFAULT_BOOKMARK_COLOR       = DEFAULT_BOOKMARK_COLOR;
-static int THEME_AMBIENT_GLOW_ALPHA           = AMBIENT_GLOW_ALPHA;
-static int THEME_PANEL_COLOR[3]               = { PANEL_COLOR };
-static int THEME_TEXT_COLOR[3]                = { TEXT_COLOR };
-static int THEME_ACCENT_COLOR[3]              = { ACCENT_COLOR };
-static int THEME_MUTED_COLOR[3]               = { MUTED_COLOR };
-static int THEME_SHADOW_COLOR[3]              = { SHADOW_COLOR };
-static int THEME_LETTERBOX_COLOR[3]           = { LETTERBOX_COLOR };
-static int THEME_OVERLAY_COLOR[3]             = { OVERLAY_COLOR };
-static int THEME_CHAPTER_MARKER_COLOR[3]      = { CHAPTER_MARKER_COLOR };
-static int THEME_TIMELINE_THUMB_COLOR[3]      = { TIMELINE_THUMB_COLOR };
-static int THEME_MEDIA_TITLE_COLOR[3]         = { MEDIA_TITLE_COLOR };
-static int THEME_CHAPTER_HOVER_BG_COLOR[3]    = { CHAPTER_HOVER_BG_COLOR };
-static int THEME_BOOKMARK_HOVER_BG_COLOR[3]   = { BOOKMARK_HOVER_BG_COLOR };
-static int THEME_CONTEXT_MENU_BG_COLOR[3]     = { CONTEXT_MENU_BG_COLOR };
-static int THEME_CONTEXT_MENU_ITEM_HL[3]      = { CONTEXT_MENU_ITEM_HL };
-static int THEME_TEXT_INPUT_BG_COLOR[3]       = { TEXT_INPUT_BG_COLOR };
-static int THEME_TEXT_INPUT_PROMPT_COLOR[3]   = { TEXT_INPUT_PROMPT_COLOR };
-static int THEME_HAMBURGER_BG_COLOR[3]        = { HAMBURGER_BG_COLOR };
-static int THEME_MENU_PANEL_BG_COLOR[3]       = { MENU_PANEL_BG_COLOR };
-static int THEME_MENU_PANEL_ITEM_BG_COLOR[3]  = { MENU_PANEL_ITEM_BG_COLOR };
-static int THEME_LIST_BG_COLOR[3]             = { LIST_BG_COLOR };
-static int THEME_LIST_ITEM_BG_COLOR[3]        = { LIST_ITEM_BG_COLOR };
-static int THEME_SCROLLBAR_BG_COLOR[3]        = { SCROLLBAR_BG_COLOR };
-static int THEME_SCROLLBAR_THUMB_COLOR[3]     = { SCROLLBAR_THUMB_COLOR };
-static int THEME_SUBTITLE_VLIST_BG_COLOR[3]   = { SUBTITLE_VLIST_BG_COLOR };
-static int THEME_DRAW_PALETTE_BG_COLOR[3]     = { DRAW_PALETTE_BG_COLOR };
-static int THEME_DRAW_PALETTE_BORDER_COLOR[3] = { DRAW_PALETTE_BORDER_COLOR };
-static int THEME_DRAW_CANVAS_CLEAR_COLOR[3]   = { DRAW_CANVAS_CLEAR_COLOR };
-static int THEME_PAUSED_TEXT_COLOR[3]         = { PAUSED_TEXT_COLOR };
-static int THEME_FLASH_TEXT_COLOR[3]          = { FLASH_TEXT_COLOR };
-static int THEME_ACOL_TEXT_COLOR[3]           = { ACOL_TEXT_COLOR };
-static int THEME_ACOL_TEXT_ALPHA              = ACOL_TEXT_ALPHA;
-static int THEME_DRAW_PALETTE_COLOR_1[3]      = { DRAW_PALETTE_COLOR_1 };
-static int THEME_DRAW_PALETTE_COLOR_2[3]      = { DRAW_PALETTE_COLOR_2 };
-static int THEME_DRAW_PALETTE_COLOR_3[3]      = { DRAW_PALETTE_COLOR_3 };
-static int THEME_DRAW_PALETTE_COLOR_4[3]      = { DRAW_PALETTE_COLOR_4 };
-static int THEME_DRAW_PALETTE_COLOR_5[3]      = { DRAW_PALETTE_COLOR_5 };
-static int THEME_DRAW_PALETTE_COLOR_6[3]      = { DRAW_PALETTE_COLOR_6 };
-static int THEME_DRAW_PALETTE_COLOR_7[3]      = { DRAW_PALETTE_COLOR_7 };
-static int THEME_DRAW_PALETTE_COLOR_ALPHA     = DRAW_PALETTE_COLOR_ALPHA;
+static int THEME_MENU_DROPDOWN_ITEM_HEIGHT;
+static int THEME_MENU_DROPDOWN_WIDTH;
+static int THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH;
+static int THEME_MENU_DROPDOWN_TEXT_PADDING_X;
+static int THEME_MENU_DROPDOWN_TEXT_PADDING_Y;
+static int THEME_MENU_MAX_VISIBLE_ITEMS;
+static int THEME_TIMELINE_HEIGHT;
+static int THEME_TIMELINE_HITBOX_PADDING;
+static int THEME_TIMELINE_THUMB_SIZE;
+static int THEME_TIMELINE_CHAPTER_MARKER_WIDTH;
+static int THEME_TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH;
+static int THEME_TIMELINE_BOOKMARK_MARKER_WIDTH;
+static int THEME_TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH;
+static int THEME_HAMBURGER_LINE_HEIGHT;
+static int THEME_HAMBURGER_LINE_MARGIN;
+static int THEME_SHADOW_OFFSET;
+static int THEME_DEFAULT_BOOKMARK_COLOR;
+static int THEME_AMBIENT_GLOW_ALPHA;
+static float THEME_AMBIENT_GLOW_ASCALE;
+static float THEME_AMBIENT_GLOW_AMAX;
+static int THEME_PANEL_COLOR[3];
+static int THEME_TEXT_COLOR[3];
+static int THEME_ACCENT_COLOR[3];
+static int THEME_MUTED_COLOR[3];
+static int THEME_SHADOW_COLOR[3];
+static int THEME_LETTERBOX_COLOR[3];
+static int THEME_OVERLAY_COLOR[3];
+static int THEME_CHAPTER_MARKER_COLOR[3];
+static int THEME_TIMELINE_THUMB_COLOR[3];
+static int THEME_MEDIA_TITLE_COLOR[3];
+static int THEME_CHAPTER_HOVER_BG_COLOR[3];
+static int THEME_BOOKMARK_HOVER_BG_COLOR[3];
+static int THEME_CONTEXT_MENU_BG_COLOR[3];
+static int THEME_CONTEXT_MENU_ITEM_HL[3];
+static int THEME_TEXT_INPUT_BG_COLOR[3];
+static int THEME_TEXT_INPUT_PROMPT_COLOR[3];
+static int THEME_HAMBURGER_BG_COLOR[3];
+static int THEME_MENU_PANEL_BG_COLOR[3];
+static int THEME_MENU_PANEL_ITEM_BG_COLOR[3];
+static int THEME_LIST_BG_COLOR[3];
+static int THEME_LIST_ITEM_BG_COLOR[3];
+static int THEME_SCROLLBAR_BG_COLOR[3];
+static int THEME_SCROLLBAR_THUMB_COLOR[3];
+static int THEME_SUBTITLE_VLIST_BG_COLOR[3];
+static int THEME_DRAW_PALETTE_BG_COLOR[3];
+static int THEME_DRAW_PALETTE_BORDER_COLOR[3];
+static int THEME_DRAW_CANVAS_CLEAR_COLOR[3];
+static int THEME_PAUSED_TEXT_COLOR[3];
+static int THEME_FLASH_TEXT_COLOR[3];
+static int THEME_ACOL_TEXT_COLOR[3];
+static int THEME_ACOL_TEXT_ALPHA;
+static int THEME_DRAW_PALETTE_COLOR_1[3];
+static int THEME_DRAW_PALETTE_COLOR_2[3];
+static int THEME_DRAW_PALETTE_COLOR_3[3];
+static int THEME_DRAW_PALETTE_COLOR_4[3];
+static int THEME_DRAW_PALETTE_COLOR_5[3];
+static int THEME_DRAW_PALETTE_COLOR_6[3];
+static int THEME_DRAW_PALETTE_COLOR_7[3];
+static int THEME_DRAW_PALETTE_COLOR_ALPHA;
 
 static void get_exe_dir(char* buf, size_t buf_size);
 void fix_theme_font_path(void);
@@ -416,6 +418,18 @@ static void theme_set_int(ThemeDefines* defines, const char* name, int* target) 
     }
 }
 
+static void theme_set_float(ThemeDefines* defines, const char* name, float* target) {
+    char** value = ht_find(defines, name);
+    if (value && *value) {
+        char* endptr;
+        float val = strtof(*value, &endptr);
+        if (endptr != *value) {
+            *target = val;
+            nob_log(NOB_INFO, "  %s = %f", name, *target);
+        }
+    }
+}
+
 static void theme_set_color(ThemeDefines* defines, const char* name, int* target) {
     char** value = ht_find(defines, name);
     if (value && *value) {
@@ -521,6 +535,8 @@ static bool theme_load(const char* theme_path) {
     theme_set_int(&defines, "SHADOW_OFFSET", &THEME_SHADOW_OFFSET);
     theme_set_int(&defines, "DEFAULT_BOOKMARK_COLOR", &THEME_DEFAULT_BOOKMARK_COLOR);
     theme_set_int(&defines, "AMBIENT_GLOW_ALPHA", &THEME_AMBIENT_GLOW_ALPHA);
+    theme_set_float(&defines, "AMBIENT_GLOW_ASCALE", &THEME_AMBIENT_GLOW_ASCALE);
+    theme_set_float(&defines, "AMBIENT_GLOW_AMAX", &THEME_AMBIENT_GLOW_AMAX);
     
     theme_set_color(&defines, "PANEL_COLOR", THEME_PANEL_COLOR);
     theme_set_color(&defines, "TEXT_COLOR", THEME_TEXT_COLOR);
@@ -563,10 +579,10 @@ static bool theme_load(const char* theme_path) {
     theme_set_color(&defines, "DRAW_PALETTE_COLOR_7", THEME_DRAW_PALETTE_COLOR_7);
     theme_set_int(&defines, "DRAW_PALETTE_COLOR_ALPHA", &THEME_DRAW_PALETTE_COLOR_ALPHA);
     
-    THEME_FONT.name[0] = '\0';
-    THEME_FONT.path[0] = '\0';
     char** font_value = ht_find(&defines, "FONT");
     if (font_value && *font_value) {
+        THEME_FONT.name[0] = '\0';
+        THEME_FONT.path[0] = '\0';
         const char* raw = theme_expand_macros(&defines, *font_value);
         const char* p = raw;
         while (isspace((unsigned char)*p)) p++;
@@ -591,7 +607,6 @@ static bool theme_load(const char* theme_path) {
         if (THEME_FONT.path[0])
             nob_log(NOB_INFO, "  Theme font: %s (%s)", THEME_FONT.name[0] ? THEME_FONT.name : "unnamed", THEME_FONT.path);
     } else {
-        THEME_FONT = (ThemeFont)FONT;
         if (THEME_FONT.path[0])
             nob_log(NOB_INFO, "  Theme font: %s (%s)", THEME_FONT.name[0] ? THEME_FONT.name : "unnamed", THEME_FONT.path);
     }
@@ -642,10 +657,6 @@ static bool is_path(const char* name) {
 
 bool is_valid_theme_name(const char* name) {
     if (!name || !*name) return false;
-
-    if (strcmp(name, "default") == 0) {
-        return true;
-    }
     
     if (is_path(name)) {
         return file_exists(name);
@@ -670,154 +681,6 @@ bool load_theme(const char* name) {
         return false;
     }
 
-    if (strcmp(name, "default") == 0) {
-        nob_log(NOB_INFO, "Loading default theme");
-        
-        strncpy(THEME_NAME, "AMP", sizeof(THEME_NAME) - 1);
-        strncpy(THEME_FILE, "config.h", sizeof(THEME_FILE) - 1);
-        
-        THEME_FONT = (ThemeFont)FONT;
-        fix_theme_font_path();
-        
-        THEME_MENU_DROPDOWN_ITEM_HEIGHT          = MENU_DROPDOWN_ITEM_HEIGHT;
-        THEME_MENU_DROPDOWN_WIDTH                = MENU_DROPDOWN_WIDTH;
-        THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH      = MENU_DROPDOWN_SCROLLBAR_WIDTH;
-        THEME_MENU_DROPDOWN_TEXT_PADDING_X       = MENU_DROPDOWN_TEXT_PADDING_X;
-        THEME_MENU_DROPDOWN_TEXT_PADDING_Y       = MENU_DROPDOWN_TEXT_PADDING_Y;
-        THEME_MENU_MAX_VISIBLE_ITEMS             = MENU_MAX_VISIBLE_ITEMS;
-        THEME_TIMELINE_HEIGHT                    = TIMELINE_HEIGHT;
-        THEME_TIMELINE_HITBOX_PADDING            = TIMELINE_HITBOX_PADDING;
-        THEME_TIMELINE_THUMB_SIZE                = TIMELINE_THUMB_SIZE;
-        THEME_TIMELINE_CHAPTER_MARKER_WIDTH      = TIMELINE_CHAPTER_MARKER_WIDTH;
-        THEME_TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH = TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH;
-        THEME_TIMELINE_BOOKMARK_MARKER_WIDTH     = TIMELINE_BOOKMARK_MARKER_WIDTH;
-        THEME_TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH = TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH;
-        THEME_HAMBURGER_LINE_HEIGHT              = HAMBURGER_LINE_HEIGHT;
-        THEME_HAMBURGER_LINE_MARGIN              = HAMBURGER_LINE_MARGIN;
-        THEME_SHADOW_OFFSET                      = SHADOW_OFFSET;
-        THEME_DEFAULT_BOOKMARK_COLOR             = DEFAULT_BOOKMARK_COLOR;
-        THEME_AMBIENT_GLOW_ALPHA                 = AMBIENT_GLOW_ALPHA;
-        
-        THEME_PANEL_COLOR[0]              = (int[]){ PANEL_COLOR }[0];
-        THEME_PANEL_COLOR[1]              = (int[]){ PANEL_COLOR }[1];
-        THEME_PANEL_COLOR[2]              = (int[]){ PANEL_COLOR }[2];
-        THEME_TEXT_COLOR[0]               = (int[]){ TEXT_COLOR }[0];
-        THEME_TEXT_COLOR[1]               = (int[]){ TEXT_COLOR }[1];
-        THEME_TEXT_COLOR[2]               = (int[]){ TEXT_COLOR }[2];
-        THEME_ACCENT_COLOR[0]             = (int[]){ ACCENT_COLOR }[0];
-        THEME_ACCENT_COLOR[1]             = (int[]){ ACCENT_COLOR }[1];
-        THEME_ACCENT_COLOR[2]             = (int[]){ ACCENT_COLOR }[2];
-        THEME_MUTED_COLOR[0]              = (int[]){ MUTED_COLOR }[0];
-        THEME_MUTED_COLOR[1]              = (int[]){ MUTED_COLOR }[1];
-        THEME_MUTED_COLOR[2]              = (int[]){ MUTED_COLOR }[2];
-        THEME_SHADOW_COLOR[0]             = (int[]){ SHADOW_COLOR }[0];
-        THEME_SHADOW_COLOR[1]             = (int[]){ SHADOW_COLOR }[1];
-        THEME_SHADOW_COLOR[2]             = (int[]){ SHADOW_COLOR }[2];
-        THEME_LETTERBOX_COLOR[0]          = (int[]){ LETTERBOX_COLOR }[0];
-        THEME_LETTERBOX_COLOR[1]          = (int[]){ LETTERBOX_COLOR }[1];
-        THEME_LETTERBOX_COLOR[2]          = (int[]){ LETTERBOX_COLOR }[2];
-        THEME_OVERLAY_COLOR[0]            = (int[]){ OVERLAY_COLOR }[0];
-        THEME_OVERLAY_COLOR[1]            = (int[]){ OVERLAY_COLOR }[1];
-        THEME_OVERLAY_COLOR[2]            = (int[]){ OVERLAY_COLOR }[2];
-        THEME_CHAPTER_MARKER_COLOR[0]     = (int[]){ CHAPTER_MARKER_COLOR }[0];
-        THEME_CHAPTER_MARKER_COLOR[1]     = (int[]){ CHAPTER_MARKER_COLOR }[1];
-        THEME_CHAPTER_MARKER_COLOR[2]     = (int[]){ CHAPTER_MARKER_COLOR }[2];
-        THEME_TIMELINE_THUMB_COLOR[0]     = (int[]){ TIMELINE_THUMB_COLOR }[0];
-        THEME_TIMELINE_THUMB_COLOR[1]     = (int[]){ TIMELINE_THUMB_COLOR }[1];
-        THEME_TIMELINE_THUMB_COLOR[2]     = (int[]){ TIMELINE_THUMB_COLOR }[2];
-        THEME_MEDIA_TITLE_COLOR[0]        = (int[]){ MEDIA_TITLE_COLOR }[0];
-        THEME_MEDIA_TITLE_COLOR[1]        = (int[]){ MEDIA_TITLE_COLOR }[1];
-        THEME_MEDIA_TITLE_COLOR[2]        = (int[]){ MEDIA_TITLE_COLOR }[2];
-        THEME_CHAPTER_HOVER_BG_COLOR[0]   = (int[]){ CHAPTER_HOVER_BG_COLOR }[0];
-        THEME_CHAPTER_HOVER_BG_COLOR[1]   = (int[]){ CHAPTER_HOVER_BG_COLOR }[1];
-        THEME_CHAPTER_HOVER_BG_COLOR[2]   = (int[]){ CHAPTER_HOVER_BG_COLOR }[2];
-        THEME_BOOKMARK_HOVER_BG_COLOR[0]  = (int[]){ BOOKMARK_HOVER_BG_COLOR }[0];
-        THEME_BOOKMARK_HOVER_BG_COLOR[1]  = (int[]){ BOOKMARK_HOVER_BG_COLOR }[1];
-        THEME_BOOKMARK_HOVER_BG_COLOR[2]  = (int[]){ BOOKMARK_HOVER_BG_COLOR }[2];
-        THEME_CONTEXT_MENU_BG_COLOR[0]    = (int[]){ CONTEXT_MENU_BG_COLOR }[0];
-        THEME_CONTEXT_MENU_BG_COLOR[1]    = (int[]){ CONTEXT_MENU_BG_COLOR }[1];
-        THEME_CONTEXT_MENU_BG_COLOR[2]    = (int[]){ CONTEXT_MENU_BG_COLOR }[2];
-        THEME_CONTEXT_MENU_ITEM_HL[0]     = (int[]){ CONTEXT_MENU_ITEM_HL }[0];
-        THEME_CONTEXT_MENU_ITEM_HL[1]     = (int[]){ CONTEXT_MENU_ITEM_HL }[1];
-        THEME_CONTEXT_MENU_ITEM_HL[2]     = (int[]){ CONTEXT_MENU_ITEM_HL }[2];
-        THEME_TEXT_INPUT_BG_COLOR[0]      = (int[]){ TEXT_INPUT_BG_COLOR }[0];
-        THEME_TEXT_INPUT_BG_COLOR[1]      = (int[]){ TEXT_INPUT_BG_COLOR }[1];
-        THEME_TEXT_INPUT_BG_COLOR[2]      = (int[]){ TEXT_INPUT_BG_COLOR }[2];
-        THEME_TEXT_INPUT_PROMPT_COLOR[0]  = (int[]){ TEXT_INPUT_PROMPT_COLOR }[0];
-        THEME_TEXT_INPUT_PROMPT_COLOR[1]  = (int[]){ TEXT_INPUT_PROMPT_COLOR }[1];
-        THEME_TEXT_INPUT_PROMPT_COLOR[2]  = (int[]){ TEXT_INPUT_PROMPT_COLOR }[2];
-        THEME_HAMBURGER_BG_COLOR[0]       = (int[]){ HAMBURGER_BG_COLOR }[0];
-        THEME_HAMBURGER_BG_COLOR[1]       = (int[]){ HAMBURGER_BG_COLOR }[1];
-        THEME_HAMBURGER_BG_COLOR[2]       = (int[]){ HAMBURGER_BG_COLOR }[2];
-        THEME_MENU_PANEL_BG_COLOR[0]      = (int[]){ MENU_PANEL_BG_COLOR }[0];
-        THEME_MENU_PANEL_BG_COLOR[1]      = (int[]){ MENU_PANEL_BG_COLOR }[1];
-        THEME_MENU_PANEL_BG_COLOR[2]      = (int[]){ MENU_PANEL_BG_COLOR }[2];
-        THEME_MENU_PANEL_ITEM_BG_COLOR[0] = (int[]){ MENU_PANEL_ITEM_BG_COLOR }[0];
-        THEME_MENU_PANEL_ITEM_BG_COLOR[1] = (int[]){ MENU_PANEL_ITEM_BG_COLOR }[1];
-        THEME_MENU_PANEL_ITEM_BG_COLOR[2] = (int[]){ MENU_PANEL_ITEM_BG_COLOR }[2];
-        THEME_LIST_BG_COLOR[0]            = (int[]){ LIST_BG_COLOR }[0];
-        THEME_LIST_BG_COLOR[1]            = (int[]){ LIST_BG_COLOR }[1];
-        THEME_LIST_BG_COLOR[2]            = (int[]){ LIST_BG_COLOR }[2];
-        THEME_LIST_ITEM_BG_COLOR[0]       = (int[]){ LIST_ITEM_BG_COLOR }[0];
-        THEME_LIST_ITEM_BG_COLOR[1]       = (int[]){ LIST_ITEM_BG_COLOR }[1];
-        THEME_LIST_ITEM_BG_COLOR[2]       = (int[]){ LIST_ITEM_BG_COLOR }[2];
-        THEME_SCROLLBAR_BG_COLOR[0]       = (int[]){ SCROLLBAR_BG_COLOR }[0];
-        THEME_SCROLLBAR_BG_COLOR[1]       = (int[]){ SCROLLBAR_BG_COLOR }[1];
-        THEME_SCROLLBAR_BG_COLOR[2]       = (int[]){ SCROLLBAR_BG_COLOR }[2];
-        THEME_SCROLLBAR_THUMB_COLOR[0]    = (int[]){ SCROLLBAR_THUMB_COLOR }[0];
-        THEME_SCROLLBAR_THUMB_COLOR[1]    = (int[]){ SCROLLBAR_THUMB_COLOR }[1];
-        THEME_SCROLLBAR_THUMB_COLOR[2]    = (int[]){ SCROLLBAR_THUMB_COLOR }[2];
-        THEME_SUBTITLE_VLIST_BG_COLOR[0]  = (int[]){ SUBTITLE_VLIST_BG_COLOR }[0];
-        THEME_SUBTITLE_VLIST_BG_COLOR[1]  = (int[]){ SUBTITLE_VLIST_BG_COLOR }[1];
-        THEME_SUBTITLE_VLIST_BG_COLOR[2]  = (int[]){ SUBTITLE_VLIST_BG_COLOR }[2];
-        THEME_DRAW_PALETTE_BG_COLOR[0]    = (int[]){ DRAW_PALETTE_BG_COLOR }[0];
-        THEME_DRAW_PALETTE_BG_COLOR[1]    = (int[]){ DRAW_PALETTE_BG_COLOR }[1];
-        THEME_DRAW_PALETTE_BG_COLOR[2]    = (int[]){ DRAW_PALETTE_BG_COLOR }[2];
-        THEME_DRAW_PALETTE_BORDER_COLOR[0]= (int[]){ DRAW_PALETTE_BORDER_COLOR }[0];
-        THEME_DRAW_PALETTE_BORDER_COLOR[1]= (int[]){ DRAW_PALETTE_BORDER_COLOR }[1];
-        THEME_DRAW_PALETTE_BORDER_COLOR[2]= (int[]){ DRAW_PALETTE_BORDER_COLOR }[2];
-        THEME_DRAW_CANVAS_CLEAR_COLOR[0]  = (int[]){ DRAW_CANVAS_CLEAR_COLOR }[0];
-        THEME_DRAW_CANVAS_CLEAR_COLOR[1]  = (int[]){ DRAW_CANVAS_CLEAR_COLOR }[1];
-        THEME_DRAW_CANVAS_CLEAR_COLOR[2]  = (int[]){ DRAW_CANVAS_CLEAR_COLOR }[2];
-        THEME_PAUSED_TEXT_COLOR[0]        = (int[]){ PAUSED_TEXT_COLOR }[0];
-        THEME_PAUSED_TEXT_COLOR[1]        = (int[]){ PAUSED_TEXT_COLOR }[1];
-        THEME_PAUSED_TEXT_COLOR[2]        = (int[]){ PAUSED_TEXT_COLOR }[2];
-        THEME_FLASH_TEXT_COLOR[0]         = (int[]){ FLASH_TEXT_COLOR }[0];
-        THEME_FLASH_TEXT_COLOR[1]         = (int[]){ FLASH_TEXT_COLOR }[1];
-        THEME_FLASH_TEXT_COLOR[2]         = (int[]){ FLASH_TEXT_COLOR }[2];
-        THEME_ACOL_TEXT_COLOR[0]          = (int[]){ ACOL_TEXT_COLOR }[0];
-        THEME_ACOL_TEXT_COLOR[1]          = (int[]){ ACOL_TEXT_COLOR }[1];
-        THEME_ACOL_TEXT_COLOR[2]          = (int[]){ ACOL_TEXT_COLOR }[2];
-        THEME_ACOL_TEXT_ALPHA             = ACOL_TEXT_ALPHA;
-        THEME_DRAW_PALETTE_COLOR_1[0]     = (int[]){ DRAW_PALETTE_COLOR_1 }[0];
-        THEME_DRAW_PALETTE_COLOR_1[1]     = (int[]){ DRAW_PALETTE_COLOR_1 }[1];
-        THEME_DRAW_PALETTE_COLOR_1[2]     = (int[]){ DRAW_PALETTE_COLOR_1 }[2];
-        THEME_DRAW_PALETTE_COLOR_2[0]     = (int[]){ DRAW_PALETTE_COLOR_2 }[0];
-        THEME_DRAW_PALETTE_COLOR_2[1]     = (int[]){ DRAW_PALETTE_COLOR_2 }[1];
-        THEME_DRAW_PALETTE_COLOR_2[2]     = (int[]){ DRAW_PALETTE_COLOR_2 }[2];
-        THEME_DRAW_PALETTE_COLOR_3[0]     = (int[]){ DRAW_PALETTE_COLOR_3 }[0];
-        THEME_DRAW_PALETTE_COLOR_3[1]     = (int[]){ DRAW_PALETTE_COLOR_3 }[1];
-        THEME_DRAW_PALETTE_COLOR_3[2]     = (int[]){ DRAW_PALETTE_COLOR_3 }[2];
-        THEME_DRAW_PALETTE_COLOR_4[0]     = (int[]){ DRAW_PALETTE_COLOR_4 }[0];
-        THEME_DRAW_PALETTE_COLOR_4[1]     = (int[]){ DRAW_PALETTE_COLOR_4 }[1];
-        THEME_DRAW_PALETTE_COLOR_4[2]     = (int[]){ DRAW_PALETTE_COLOR_4 }[2];
-        THEME_DRAW_PALETTE_COLOR_5[0]     = (int[]){ DRAW_PALETTE_COLOR_5 }[0];
-        THEME_DRAW_PALETTE_COLOR_5[1]     = (int[]){ DRAW_PALETTE_COLOR_5 }[1];
-        THEME_DRAW_PALETTE_COLOR_5[2]     = (int[]){ DRAW_PALETTE_COLOR_5 }[2];
-        THEME_DRAW_PALETTE_COLOR_6[0]     = (int[]){ DRAW_PALETTE_COLOR_6 }[0];
-        THEME_DRAW_PALETTE_COLOR_6[1]     = (int[]){ DRAW_PALETTE_COLOR_6 }[1];
-        THEME_DRAW_PALETTE_COLOR_6[2]     = (int[]){ DRAW_PALETTE_COLOR_6 }[2];
-        THEME_DRAW_PALETTE_COLOR_7[0]     = (int[]){ DRAW_PALETTE_COLOR_7 }[0];
-        THEME_DRAW_PALETTE_COLOR_7[1]     = (int[]){ DRAW_PALETTE_COLOR_7 }[1];
-        THEME_DRAW_PALETTE_COLOR_7[2]     = (int[]){ DRAW_PALETTE_COLOR_7 }[2];
-        THEME_DRAW_PALETTE_COLOR_ALPHA    = DRAW_PALETTE_COLOR_ALPHA;
-
-        fix_theme_font_path();
-        
-        nob_log(NOB_INFO, "Default theme loaded successfully");
-        return true;
-    }
-    
     char theme_path[1024];
     
     if (is_path(name)) {
@@ -835,6 +698,23 @@ bool load_theme(const char* name) {
     }
     
     return theme_load(theme_path);
+}
+
+bool init_theme(void) {
+    nob_minimal_log_level = NOB_ERROR;
+    char theme_name_saved[256];
+    memcpy(theme_name_saved, THEME_NAME, sizeof(theme_name_saved));
+    char theme_file_saved[256];
+    memcpy(theme_file_saved, THEME_FILE, sizeof(theme_file_saved));
+    if (!load_theme(DEFAULT_THEME)) {
+        nob_minimal_log_level = NOB_INFO;
+        nob_log(NOB_ERROR, "Failed to load default theme: %s", DEFAULT_THEME);
+        return false;
+    }
+    memcpy(THEME_NAME, theme_name_saved, sizeof(THEME_NAME));
+    memcpy(THEME_FILE, theme_file_saved, sizeof(THEME_FILE));
+    nob_minimal_log_level = NOB_INFO;
+    return true;
 }
 
 void fix_theme_font_path(void) {
@@ -879,11 +759,6 @@ bool load_theme_file(const char* path) {
 
 int get_theme_list(char themes[][64], int max_count) {
     int count = 0;
-
-    if (count < max_count) {
-        snprintf(themes[count], 64, "%s", "default");
-        count++;
-    }
 
     char exe_dir[512];
     char themes_dir[1024];

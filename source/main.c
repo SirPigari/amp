@@ -204,6 +204,8 @@ static const KbdEntry kbd_entries[] = {
     KBD_K(KP_MINUS, "Subtitle -1ms"),
     KBD_KS(SHIFT, KP_PLUS, "Subtitle +100ms"),
     KBD_KS(SHIFT, KP_MINUS, "Subtitle -100ms"),
+    KBD_KS(ALT, UP, "Scroll up"),
+    KBD_KS(ALT, DOWN, "Scroll down"),
     KBD_TI("?", "Keyboard Shortcuts"),
     #ifdef _WIN32
     KBD_KS(ALT, F4, "Exit"),
@@ -217,6 +219,30 @@ static const int kbd_entry_count = (int)(sizeof(kbd_entries) / sizeof(kbd_entrie
 #undef KBD_KS
 #undef KBD_K
 #undef KBD_TI
+
+static bool is_kbd_pressed(KbdEntry* kbd, const SDL_Event* event) {
+    if (!kbd || !event) return false;
+    if (kbd->tag == KBD_ENTRY_KEYSYM) {
+        if (event->type == SDL_KEYDOWN || event->type == SDL_KEYUP) {
+            SDL_Keymod relevant = (SDL_Keymod)(KMOD_CTRL | KMOD_SHIFT | KMOD_ALT | KMOD_GUI);
+            SDL_Keymod raw = (SDL_Keymod)(event->key.keysym.mod);
+            SDL_Keymod normalized = (SDL_Keymod)(
+                ((raw & KMOD_CTRL)  ? KMOD_CTRL  : 0) |
+                ((raw & KMOD_SHIFT) ? KMOD_SHIFT : 0) |
+                ((raw & KMOD_ALT)   ? KMOD_ALT   : 0) |
+                ((raw & KMOD_GUI)   ? KMOD_GUI   : 0)
+            );
+            SDL_Keymod entry_mod = (SDL_Keymod)(kbd->key.keysym.mod & relevant);
+            return (event->key.keysym.sym == kbd->key.keysym.key &&
+                    normalized == entry_mod);
+        }
+    } else if (kbd->tag == KBD_ENTRY_TEXT_INPUT) {
+        if (event->type == SDL_TEXTINPUT) {
+            return strcmp(event->text.text, kbd->key.textinput) == 0;
+        }
+    }
+    return false;
+}
 
 static char* display_kbd(KbdEntry* kbd) {
     static char key[64];
@@ -232,7 +258,11 @@ static char* display_kbd(KbdEntry* kbd) {
         if (mod & KMOD_ALT)
             strncat(key, "Alt+", sizeof(key) - strlen(key) - 1);
         if (mod & KMOD_GUI)
+        #ifdef _WIN32
+            strncat(key, "Win+", sizeof(key) - strlen(key) - 1);
+        #else
             strncat(key, "Super+", sizeof(key) - strlen(key) - 1);
+        #endif
 
         const char* raw = SDL_GetKeyName(kbd->key.keysym.key);
 
@@ -415,29 +445,40 @@ static void draw_ambient_glow(SDL_Renderer* ren, SDL_Rect video_dst, int win_w, 
         }
     }
 
-#define ZONE_RGB(arr, p, vr, vg, vb) do { \
+#define ZONE_GLOW(arr, p, vr, vg, vb, va_scale) do { \
     float _f = (p) * (float)AMBIENT_ZONES - 0.5f; \
     if (_f < 0.0f) _f = 0.0f; \
     if (_f > (float)(AMBIENT_ZONES-1)) _f = (float)(AMBIENT_ZONES-1); \
     int _zi = (int)_f; float _zf = _f - (float)_zi; \
     int _zi2 = (_zi+1 < AMBIENT_ZONES) ? _zi+1 : _zi; \
-    (vr)=(Uint8)((float)(arr)[_zi].r + _zf*((float)(arr)[_zi2].r-(float)(arr)[_zi].r)); \
-    (vg)=(Uint8)((float)(arr)[_zi].g + _zf*((float)(arr)[_zi2].g-(float)(arr)[_zi].g)); \
-    (vb)=(Uint8)((float)(arr)[_zi].b + _zf*((float)(arr)[_zi2].b-(float)(arr)[_zi].b)); \
+    float _sr = (float)(arr)[_zi].r + _zf*((float)(arr)[_zi2].r-(float)(arr)[_zi].r); \
+    float _sg = (float)(arr)[_zi].g + _zf*((float)(arr)[_zi2].g-(float)(arr)[_zi].g); \
+    float _sb = (float)(arr)[_zi].b + _zf*((float)(arr)[_zi2].b-(float)(arr)[_zi].b); \
+    float _er = _sr - (float)THEME_LETTERBOX_COLOR[0]; if (_er < 0) _er = 0; \
+    float _eg = _sg - (float)THEME_LETTERBOX_COLOR[1]; if (_eg < 0) _eg = 0; \
+    float _eb = _sb - (float)THEME_LETTERBOX_COLOR[2]; if (_eb < 0) _eb = 0; \
+    (vr) = (Uint8)(THEME_LETTERBOX_COLOR[0] + _er); \
+    (vg) = (Uint8)(THEME_LETTERBOX_COLOR[1] + _eg); \
+    (vb) = (Uint8)(THEME_LETTERBOX_COLOR[2] + _eb); \
+    float _raw = (0.299f * _er + 0.587f * _eg + 0.114f * _eb) / 255.0f; \
+    (va_scale) = _raw * _raw; \
 } while(0)
 
     int top_h = video_dst.y;
     if (top_h > 0) {
         for (int zv = 0; zv <= AMBIENT_ZONES; zv++) {
             float p = (float)zv / (float)AMBIENT_ZONES;
-            Uint8 r, g, b; ZONE_RGB(top, p, r, g, b);
+            Uint8 r, g, b; float ascale;
+            ZONE_GLOW(top, p, r, g, b, ascale);
             float x = (float)video_dst.x + p * (float)video_dst.w;
             for (int fv = 0; fv <= AMBIENT_FADE_ROWS; fv++) {
                 float t = (float)fv / (float)AMBIENT_FADE_ROWS;
                 SDL_Vertex* v = &verts[zv*(AMBIENT_FADE_ROWS+1)+fv];
-                v->position.x = x;  v->position.y = t * (float)top_h;
+                v->position.x = x; v->position.y = t * (float)top_h;
                 v->color.r = r; v->color.g = g; v->color.b = b;
-                v->color.a = (Uint8)((t * t * 210.0f * (float)AMBIENT_GLOW_ALPHA) / 255.0f);
+                float a = (Uint8)(ascale * t * t * THEME_AMBIENT_GLOW_ASCALE * (float)THEME_AMBIENT_GLOW_ALPHA / 255.0f);
+                if (a > THEME_AMBIENT_GLOW_AMAX) a = THEME_AMBIENT_GLOW_AMAX;
+                v->color.a = (Uint8)a;
                 v->tex_coord.x = 0; v->tex_coord.y = 0;
             }
         }
@@ -450,7 +491,8 @@ static void draw_ambient_glow(SDL_Renderer* ren, SDL_Rect video_dst, int win_w, 
     if (bot_h > 0) {
         for (int zv = 0; zv <= AMBIENT_ZONES; zv++) {
             float p = (float)zv / (float)AMBIENT_ZONES;
-            Uint8 r, g, b; ZONE_RGB(bottom, p, r, g, b);
+            Uint8 r, g, b; float ascale;
+            ZONE_GLOW(bottom, p, r, g, b, ascale);
             float x = (float)video_dst.x + p * (float)video_dst.w;
             for (int fv = 0; fv <= AMBIENT_FADE_ROWS; fv++) {
                 float t = 1.0f - (float)fv / (float)AMBIENT_FADE_ROWS;
@@ -458,7 +500,9 @@ static void draw_ambient_glow(SDL_Renderer* ren, SDL_Rect video_dst, int win_w, 
                 v->position.x = x;
                 v->position.y = (float)bot_y + (float)fv*(float)bot_h/(float)AMBIENT_FADE_ROWS;
                 v->color.r = r; v->color.g = g; v->color.b = b;
-                v->color.a = (Uint8)((t * t * 210.0f * (float)AMBIENT_GLOW_ALPHA) / 255.0f);
+                float a = (Uint8)(ascale * t * t * THEME_AMBIENT_GLOW_ASCALE * (float)THEME_AMBIENT_GLOW_ALPHA / 255.0f);
+                if (a > THEME_AMBIENT_GLOW_AMAX) a = THEME_AMBIENT_GLOW_AMAX;
+                v->color.a = (Uint8)a;
                 v->tex_coord.x = 0; v->tex_coord.y = 0;
             }
         }
@@ -470,14 +514,17 @@ static void draw_ambient_glow(SDL_Renderer* ren, SDL_Rect video_dst, int win_w, 
     if (left_w > 0) {
         for (int zv = 0; zv <= AMBIENT_ZONES; zv++) {
             float p = (float)zv / (float)AMBIENT_ZONES;
-            Uint8 r, g, b; ZONE_RGB(left, p, r, g, b);
+            Uint8 r, g, b; float ascale;
+            ZONE_GLOW(left, p, r, g, b, ascale);
             float y = (float)video_dst.y + p * (float)video_dst.h;
             for (int fv = 0; fv <= AMBIENT_FADE_ROWS; fv++) {
                 float t = (float)fv / (float)AMBIENT_FADE_ROWS;
                 SDL_Vertex* v = &verts[zv*(AMBIENT_FADE_ROWS+1)+fv];
-                v->position.x = t * (float)left_w;  v->position.y = y;
+                v->position.x = t * (float)left_w; v->position.y = y;
                 v->color.r = r; v->color.g = g; v->color.b = b;
-                v->color.a = (Uint8)((t * t * 210.0f * (float)AMBIENT_GLOW_ALPHA) / 255.0f);
+                float a = (Uint8)(ascale * t * t * THEME_AMBIENT_GLOW_ASCALE * (float)THEME_AMBIENT_GLOW_ALPHA / 255.0f);
+                if (a > THEME_AMBIENT_GLOW_AMAX) a = THEME_AMBIENT_GLOW_AMAX;
+                v->color.a = (Uint8)a;
                 v->tex_coord.x = 0; v->tex_coord.y = 0;
             }
         }
@@ -490,7 +537,8 @@ static void draw_ambient_glow(SDL_Renderer* ren, SDL_Rect video_dst, int win_w, 
     if (right_w > 0) {
         for (int zv = 0; zv <= AMBIENT_ZONES; zv++) {
             float p = (float)zv / (float)AMBIENT_ZONES;
-            Uint8 r, g, b; ZONE_RGB(right, p, r, g, b);
+            Uint8 r, g, b; float ascale;
+            ZONE_GLOW(right, p, r, g, b, ascale);
             float y = (float)video_dst.y + p * (float)video_dst.h;
             for (int fv = 0; fv <= AMBIENT_FADE_ROWS; fv++) {
                 float t = 1.0f - (float)fv / (float)AMBIENT_FADE_ROWS;
@@ -498,7 +546,9 @@ static void draw_ambient_glow(SDL_Renderer* ren, SDL_Rect video_dst, int win_w, 
                 v->position.x = (float)right_x + (float)fv*(float)right_w/(float)AMBIENT_FADE_ROWS;
                 v->position.y = y;
                 v->color.r = r; v->color.g = g; v->color.b = b;
-                v->color.a = (Uint8)((t * t * 210.0f * (float)AMBIENT_GLOW_ALPHA) / 255.0f);
+                float a = (Uint8)(ascale * t * t * THEME_AMBIENT_GLOW_ASCALE * (float)THEME_AMBIENT_GLOW_ALPHA / 255.0f);
+                if (a > THEME_AMBIENT_GLOW_AMAX) a = THEME_AMBIENT_GLOW_AMAX;
+                v->color.a = (Uint8)a;
                 v->tex_coord.x = 0; v->tex_coord.y = 0;
             }
         }
@@ -506,7 +556,7 @@ static void draw_ambient_glow(SDL_Renderer* ren, SDL_Rect video_dst, int win_w, 
                            indices, AMBIENT_ZONES*AMBIENT_FADE_ROWS*6);
     }
 
-#undef ZONE_RGB
+#undef ZONE_GLOW
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_NONE);
 }
 
@@ -1905,9 +1955,9 @@ static void run_playback_tick(VideoRenderer* vr, float playback_speed) {
     if (playback_speed <= 2.0f) {
         vr_decode_audio(vr);
     }
-    vr_render_frame(vr);
 
     if (vr->audio_dev && playback_speed <= 2.0f) {
+        vr_render_frame(vr);
         double video_time = vr_get_video_time(vr);
         double audio_time = vr_get_audio_time(vr);
         double diff = video_time - audio_time;
@@ -2629,6 +2679,8 @@ int main(int argc, char** argv) {
     int subtitle_settings_value_menu_row = -1;
     bool kbd_overlay_open = false;
     int kbd_scroll = 0;
+    int kbd_last_pressed = -1;
+    Uint32 kbd_press_until = 0;
     double drag_time = 0.0;
     float overlay_alpha = 1.0f;
     float overlay_target = 1.0f;
@@ -2681,6 +2733,9 @@ int main(int argc, char** argv) {
     bool stay_awake = false;
     int reregister = false;
 #endif
+
+    strncpy(THEME_NAME, DEFAULT_THEME, sizeof(THEME_NAME) - 1);
+    THEME_NAME[sizeof(THEME_NAME) - 1] = '\0';
 
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--flash-debug") == 0) {
@@ -2789,12 +2844,12 @@ int main(int argc, char** argv) {
             return 0;
         } else if (strcmp(argv[i], "--theme") == 0) {
             if (i + 1 < argc) {
-                const char* theme_name = argv[i + 1];
-                if (is_valid_theme_name(theme_name)) {
-                    load_theme(theme_name);
-                    draw_init(&draw_state);
-                } else {
-                    nob_log(NOB_WARNING, "Invalid theme name: %s. Using default theme.", theme_name);
+                strncpy(THEME_NAME, argv[i + 1], sizeof(THEME_NAME) - 1);
+                THEME_NAME[sizeof(THEME_NAME) - 1] = '\0';
+                if (!is_valid_theme_name(THEME_NAME)) {
+                    nob_log(NOB_WARNING, "Invalid theme name: %s. Using default theme.", THEME_NAME);
+                    strncpy(THEME_NAME, DEFAULT_THEME, sizeof(THEME_NAME) - 1);
+                    THEME_NAME[sizeof(THEME_NAME) - 1] = '\0';
                 }
             } else {
                 nob_log(NOB_WARNING, "No theme name specified after --theme");
@@ -2837,31 +2892,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     nob_log(NOB_INFO, "SDL initialized successfully");
-    nob_log(NOB_INFO, "Using '%s' theme", THEME_NAME);
     nob_log(NOB_INFO, "HW option: %s", hw_option);
-    
-    bool font_loaded = false;
-    fix_theme_font_path();
-    if (THEME_FONT.name[0] && THEME_FONT.path[0]) {
-        if (load_ui_font(THEME_FONT.path, THEME_FONT.name[0] ? THEME_FONT.name : THEME_NAME)) {
-            nob_log(NOB_INFO, "Loaded theme font: %s (%s)", THEME_FONT.name[0] ? THEME_FONT.name : THEME_NAME, THEME_FONT.path);
-            font_loaded = true;
-        } else {
-            nob_log(NOB_WARNING, "Theme font not available: %s", THEME_FONT.path);
-        }
-    }
-    if (!font_loaded) {
-        if (load_ui_font(THEME_SYSTEM_DEFAULT_FONT.path, THEME_SYSTEM_DEFAULT_FONT.name[0] ? THEME_SYSTEM_DEFAULT_FONT.name : THEME_NAME)) {
-            nob_log(NOB_INFO, "Loaded system default font: %s", THEME_SYSTEM_DEFAULT_FONT.name[0] ? THEME_SYSTEM_DEFAULT_FONT.name : THEME_NAME);
-            font_loaded = true;
-        } else {
-            nob_log(NOB_WARNING, "System default font not available: %s", THEME_SYSTEM_DEFAULT_FONT.path);
-        }
-    }
-    if (!font_loaded) {
-        nob_log(NOB_ERROR, "Failed to load any UI font. Exiting.");
-        return 1;
-    }
 
 #ifdef _WIN32
     SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE);
@@ -2980,19 +3011,45 @@ int main(int argc, char** argv) {
             night_mode = save_state.global.night_mode ? true : false;
             blackout_mode = save_state.global.blackout_mode ? true : false;
             ambient_glow = save_state.global.ambient_glow ? true : false;
-            if (save_state.global.theme[0] && strcmp(THEME_FILE, "config.h") == 0) {
-                load_theme(save_state.global.theme);
-                draw_init(&draw_state);
-                if (THEME_FONT.path[0]) {
-                    if (!load_ui_font(THEME_FONT.path, THEME_FONT.name[0] ? THEME_FONT.name : THEME_NAME))
-                        nob_log(NOB_WARNING, "Saved theme font not available: %s", THEME_FONT.path);
-                } else {
-                    if (!load_ui_font(THEME_SYSTEM_DEFAULT_FONT.path, THEME_SYSTEM_DEFAULT_FONT.name[0] ? THEME_SYSTEM_DEFAULT_FONT.name : THEME_NAME))
-                        nob_log(NOB_WARNING, "System default font not available: %s", THEME_SYSTEM_DEFAULT_FONT.path);
+            if (save_state.global.theme[0]) {
+                strncpy(THEME_NAME, save_state.global.theme, sizeof(THEME_NAME) - 1);
+                THEME_NAME[sizeof(THEME_NAME) - 1] = '\0';
+                if (!is_valid_theme_name(THEME_NAME)) {
+                    nob_log(NOB_WARNING, "Invalid theme name in save file: %s. Using default theme.", THEME_NAME);
+                    strncpy(THEME_NAME, DEFAULT_THEME, sizeof(THEME_NAME) - 1);
+                    THEME_NAME[sizeof(THEME_NAME) - 1] = '\0';
                 }
             }
         }
     #endif
+
+    init_theme();
+    nob_log(NOB_INFO, "Using '%s' theme", THEME_NAME);
+    load_theme(THEME_NAME);
+    draw_init(&draw_state);
+
+    bool font_loaded = false;
+    fix_theme_font_path();
+    if (THEME_FONT.name[0] && THEME_FONT.path[0]) {
+        if (load_ui_font(THEME_FONT.path, THEME_FONT.name[0] ? THEME_FONT.name : THEME_NAME)) {
+            nob_log(NOB_INFO, "Loaded theme font: %s (%s)", THEME_FONT.name[0] ? THEME_FONT.name : THEME_NAME, THEME_FONT.path);
+            font_loaded = true;
+        } else {
+            nob_log(NOB_WARNING, "Theme font not available: %s", THEME_FONT.path);
+        }
+    }
+    if (!font_loaded) {
+        if (load_ui_font(THEME_SYSTEM_DEFAULT_FONT.path, THEME_SYSTEM_DEFAULT_FONT.name[0] ? THEME_SYSTEM_DEFAULT_FONT.name : THEME_NAME)) {
+            nob_log(NOB_INFO, "Loaded system default font: %s", THEME_SYSTEM_DEFAULT_FONT.name[0] ? THEME_SYSTEM_DEFAULT_FONT.name : THEME_NAME);
+            font_loaded = true;
+        } else {
+            nob_log(NOB_WARNING, "System default font not available: %s", THEME_SYSTEM_DEFAULT_FONT.path);
+        }
+    }
+    if (!font_loaded) {
+        nob_log(NOB_ERROR, "Failed to load any UI font. Exiting.");
+        return 1;
+    }
 
     if (video_file) {
         vr = vr_create(win, ren);
@@ -3899,6 +3956,15 @@ int main(int argc, char** argv) {
 
             if (e.type == SDL_TEXTINPUT && vr) {
                 const char* txt = e.text.text;
+                if (kbd_overlay_open) {
+                    for (int _ki = 0; _ki < kbd_entry_count; _ki++) {
+                        if (is_kbd_pressed((KbdEntry*)(&kbd_entries[_ki]), &e)) {
+                            kbd_last_pressed = _ki;
+                            kbd_press_until = SDL_GetTicks() + 300;
+                            break;
+                        }
+                    }
+                }
                 int go_next_ti = -1;
                 if (txt[0] == ']' && txt[1] == '\0') go_next_ti = 1;
                 else if (txt[0] == '[' && txt[1] == '\0') go_next_ti = 0;
@@ -3942,6 +4008,15 @@ int main(int argc, char** argv) {
 
             if (e.type == SDL_KEYDOWN) {
                 SDL_Keycode key = e.key.keysym.sym;
+                if (kbd_overlay_open) {
+                    for (int _ki = 0; _ki < kbd_entry_count; _ki++) {
+                        if (is_kbd_pressed((KbdEntry*)(&kbd_entries[_ki]), &e)) {
+                            kbd_last_pressed = _ki;
+                            kbd_press_until = SDL_GetTicks() + 300;
+                            break;
+                        }
+                    }
+                }
                 if ((key==SDLK_o)&&(e.key.keysym.mod & KMOD_CTRL)) {
                     char* f = open_file_dialog(
                         (const char*[]){"*.mkv", "*.mp4", "*.mov"}, 3, "Video Files (*.mkv, *.mp4, *.mov)", false,
@@ -4017,8 +4092,8 @@ int main(int argc, char** argv) {
                     }
                     flash_until = SDL_GetTicks() + 900;
                 } else if (key==SDLK_F4 && (e.key.keysym.mod & KMOD_ALT)) running=0;
-                #ifndef _WIN32
-                else if (key == SDLK_q && (e.key.keysym.mod & KMOD_CTRL) && !(e.key.keysym.mod & ~(KMOD_CTRL))) running=0;
+                #if !defined(_WIN32) || ALLOW_CTRL_Q_ON_WINDOWS
+                else if (key == SDLK_q && (e.key.keysym.mod & KMOD_CTRL) && !(e.key.keysym.mod & (KMOD_SHIFT | KMOD_ALT | KMOD_GUI))) running=0;
                 #endif
 
                 if (key==SDLK_F2 && vr) {
@@ -4208,6 +4283,7 @@ int main(int argc, char** argv) {
                         menu_open = false;
                         audio_menu_open = false;
                         subtitle_menu_open = false;
+                        memset(subtitle_marquee, 0, sizeof(subtitle_marquee));
                         theme_menu_open = false;
                         playback_menu_open = false;
                         subtitle_settings_menu_open = false;
@@ -4757,6 +4833,8 @@ int main(int argc, char** argv) {
                                 } break;
                             }
                             SDL_PushEvent(&ev);
+                            kbd_last_pressed = entry_idx;
+                            kbd_press_until = SDL_GetTicks() + 300;
                             snprintf(flash_text, sizeof(flash_text), "%s", kbd_entries[entry_idx].desc);
                             flash_until = SDL_GetTicks() + 700;
                             break;
@@ -4792,6 +4870,7 @@ int main(int argc, char** argv) {
                     menu_open = !menu_open;
                     audio_menu_open = false;
                     subtitle_menu_open = false;
+                    memset(subtitle_marquee, 0, sizeof(subtitle_marquee));
                     theme_menu_open = false;
                     playback_menu_open = false;
                     subtitle_settings_menu_open = false;
@@ -4805,6 +4884,7 @@ int main(int argc, char** argv) {
                     if (point_in_rect(mx, my, audio_box)) {
                         audio_menu_open = !audio_menu_open;
                         subtitle_menu_open = false;
+                        memset(subtitle_marquee, 0, sizeof(subtitle_marquee));
                         theme_menu_open = false;
                         playback_menu_open = false;
                         subtitle_settings_menu_open = false;
@@ -4824,6 +4904,7 @@ int main(int argc, char** argv) {
                         theme_menu_open = !theme_menu_open;
                         audio_menu_open = false;
                         subtitle_menu_open = false;
+                        memset(subtitle_marquee, 0, sizeof(subtitle_marquee));
                         playback_menu_open = false;
                         subtitle_settings_menu_open = false;
                         subtitle_settings_value_menu_open = false;
@@ -4833,6 +4914,7 @@ int main(int argc, char** argv) {
                         playback_menu_open = !playback_menu_open;
                         audio_menu_open = false;
                         subtitle_menu_open = false;
+                        memset(subtitle_marquee, 0, sizeof(subtitle_marquee));
                         theme_menu_open = false;
                         subtitle_settings_menu_open = false;
                         subtitle_settings_value_menu_open = false;
@@ -4855,6 +4937,7 @@ int main(int argc, char** argv) {
                         menu_open = false;
                         audio_menu_open = false;
                         subtitle_menu_open = false;
+                        memset(subtitle_marquee, 0, sizeof(subtitle_marquee));
                         theme_menu_open = false;
                         playback_menu_open = false;
                         subtitle_settings_menu_open = false;
@@ -4959,6 +5042,7 @@ int main(int argc, char** argv) {
                                 if (vr) vr_select_subtitle_track(vr, idx);
                             }
                             subtitle_menu_open = false;
+                            memset(subtitle_marquee, 0, sizeof(subtitle_marquee));
                             handled = true;
                         }
                     }
@@ -5024,57 +5108,11 @@ int main(int argc, char** argv) {
                                         snprintf(flash_text, sizeof(flash_text), "Invalid theme file");
                                         flash_until = SDL_GetTicks() + 2500;
                                     } else {
-                                        char exe_dir[512];
-                                        get_exe_dir(exe_dir, sizeof(exe_dir));
-                                        char dest_dir[1024];
-                                        snprintf(dest_dir, sizeof(dest_dir), "%s" D_ASSETS "themes", exe_dir);
-                                        const char* src_base = chosen;
-                                        for (const char* p = chosen; *p; p++)
-                                            if (*p == '/' || *p == '\\') src_base = p + 1;
-                                        char dest_path[1536];
-                                        snprintf(dest_path, sizeof(dest_path), "%s/%s", dest_dir, src_base);
-                                        bool copy_ok = false;
-                                        FILE* in = fopen(chosen, "rb");
-                                        FILE* out_f = in ? fopen(dest_path, "wb") : NULL;
-                                        if (in && out_f) {
-                                            char buf[4096];
-                                            size_t n;
-                                            while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
-                                                fwrite(buf, 1, n, out_f);
-                                            copy_ok = !ferror(in) && !ferror(out_f);
-                                        }
-                                        if (in)  fclose(in);
-                                        if (out_f) fclose(out_f);
-                                        if (!copy_ok) {
-                                            nob_log(NOB_ERROR, "Failed to copy theme to %s", dest_path);
-                                            snprintf(flash_text, sizeof(flash_text), "Failed to copy theme file");
-                                            flash_until = SDL_GetTicks() + 2500;
-                                        } else {
-                                            load_theme_file(dest_path);
-                                            draw_init(&draw_state);
-                                            if (THEME_FONT.path[0]) {
-                                                if (!load_ui_font(THEME_FONT.path, THEME_FONT.name[0] ? THEME_FONT.name : THEME_NAME)) {
-                                                    nob_log(NOB_WARNING, "Theme font not available: %s", THEME_FONT.path);
-                                                    snprintf(flash_text, sizeof(flash_text), "Theme font unavailable");
-                                                    flash_until = SDL_GetTicks() + 2500;
-                                                }
-                                            } else {
-                                                if (!load_ui_font(THEME_SYSTEM_DEFAULT_FONT.path, THEME_SYSTEM_DEFAULT_FONT.name[0] ? THEME_SYSTEM_DEFAULT_FONT.name : THEME_NAME))
-                                                    nob_log(NOB_WARNING, "System default font not available: %s", THEME_SYSTEM_DEFAULT_FONT.path);
-                                            }
-                                            char theme_id[64];
-                                            strncpy(theme_id, src_base, sizeof(theme_id) - 1);
-                                            theme_id[sizeof(theme_id) - 1] = '\0';
-                                            size_t tid_len = strlen(theme_id);
-                                            if (tid_len > 2 && strcmp(theme_id + tid_len - 2, ".h") == 0)
-                                                theme_id[tid_len - 2] = '\0';
-                                            #if SAVE_FILE
-                                            strncpy(save_state.global.theme, theme_id, sizeof(save_state.global.theme) - 1);
-                                            save_state.global.theme[sizeof(save_state.global.theme) - 1] = '\0';
-                                            write_save_state(SAVE_FILE_PATH, &save_state);
-                                            #endif
-                                            nob_log(NOB_INFO, "Custom theme installed: %s", dest_path);
-                                        }
+                                        strncpy(save_state.global.theme, chosen, sizeof(save_state.global.theme) - 1);
+                                        save_state.global.theme[sizeof(save_state.global.theme) - 1] = '\0';
+                                        load_theme(chosen);
+                                        draw_init(&draw_state);
+                                        nob_log(NOB_INFO, "Theme loaded from file: %s", chosen);
                                     }
                                 }
                             } else if (idx == theme_count + 2) {
@@ -5183,6 +5221,7 @@ int main(int argc, char** argv) {
                         menu_open = false;
                         audio_menu_open = false;
                         subtitle_menu_open = false;
+                        memset(subtitle_marquee, 0, sizeof(subtitle_marquee));
                         theme_menu_open = false;
                         playback_menu_open = false;
                         subtitle_settings_menu_open = false;
@@ -5743,6 +5782,7 @@ int main(int argc, char** argv) {
                     }
                 }
 
+                /* TODO: Put marquees into more menus */
                 if (subtitle_menu_open && vr) {
                     int count = vr_get_subtitle_track_count(vr);
                     int max_items = THEME_MENU_MAX_VISIBLE_ITEMS;
@@ -5758,28 +5798,68 @@ int main(int argc, char** argv) {
                         if (list.y < margin) list.y = margin;
                     }
                     draw_rect(ren, list, (SDL_Color){ THEME_LIST_BG_COLOR[0], THEME_LIST_BG_COLOR[1], THEME_LIST_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
+
+                    int mouse_x, mouse_y;
+                    SDL_GetMouseState(&mouse_x, &mouse_y);
+                    int scrollbar_w = ((count + 1) > max_items ? THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH : 0);
+                    int text_max_w = (list.w - scrollbar_w) - THEME_MENU_DROPDOWN_TEXT_PADDING_X * 2;
+
                     if (subtitle_scroll == 0) {
-                        SDL_Rect off_item = { list.x, list.y, list.w - ((count + 1) > max_items ? THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
-                        if (vr->current_subtitle < 0) draw_rect(ren, off_item, (SDL_Color){ THEME_LIST_ITEM_BG_COLOR[0], THEME_LIST_ITEM_BG_COLOR[1], THEME_LIST_ITEM_BG_COLOR[2], (Uint8)(180 * overlay_alpha) });
-                        draw_text_shadow(ren, off_item.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, off_item.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y, "Subtitles: Off", text);
+                        SDL_Rect off_item = { list.x, list.y, list.w - scrollbar_w, item_h };
+                        if (vr->current_subtitle < 0)
+                            draw_rect(ren, off_item, (SDL_Color){ THEME_LIST_ITEM_BG_COLOR[0], THEME_LIST_ITEM_BG_COLOR[1], THEME_LIST_ITEM_BG_COLOR[2], (Uint8)(180 * overlay_alpha) });
+                        {
+                            int item_hovered = (mouse_x >= off_item.x && mouse_x < off_item.x + off_item.w &&
+                                                mouse_y >= off_item.y && mouse_y < off_item.y + off_item.h);
+                            draw_text_marquee(ren,
+                                off_item.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X,
+                                off_item.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y,
+                                text_max_w, "Subtitles: Off", text,
+                                &subtitle_marquee[0], item_hovered, now);
+                        }
                         for (int i = 1; i < display_count; i++) {
                             int idx = (subtitle_scroll + i) - 1;
                             if (idx >= 0 && idx < count) {
-                                SDL_Rect item = { list.x, list.y + i * item_h, list.w - ((count + 1) > max_items ? THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
-                                if (vr->current_subtitle == idx) draw_rect(ren, item, (SDL_Color){ THEME_LIST_ITEM_BG_COLOR[0], THEME_LIST_ITEM_BG_COLOR[1], THEME_LIST_ITEM_BG_COLOR[2], (Uint8)(180 * overlay_alpha) });
-                                draw_text_shadow(ren, item.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, item.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y, vr_get_subtitle_track_name(vr, idx), text);
+                                SDL_Rect item = { list.x, list.y + i * item_h, list.w - scrollbar_w, item_h };
+                                if (vr->current_subtitle == idx)
+                                    draw_rect(ren, item, (SDL_Color){ THEME_LIST_ITEM_BG_COLOR[0], THEME_LIST_ITEM_BG_COLOR[1], THEME_LIST_ITEM_BG_COLOR[2], (Uint8)(180 * overlay_alpha) });
+                                int marquee_slot = idx + 1;
+                                if (marquee_slot < 64) {
+                                    int item_hovered = (mouse_x >= item.x && mouse_x < item.x + item.w &&
+                                                        mouse_y >= item.y && mouse_y < item.y + item.h);
+                                    draw_text_marquee(ren,
+                                        item.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X,
+                                        item.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y,
+                                        text_max_w, vr_get_subtitle_track_name(vr, idx), text,
+                                        &subtitle_marquee[marquee_slot], item_hovered, now);
+                                } else {
+                                    nob_log(NOB_ERROR, "Subtitle marquee slot %d exceeds max of 64", marquee_slot);
+                                }
                             }
                         }
                     } else {
                         for (int i = 0; i < display_count; i++) {
                             int idx = (subtitle_scroll + i) - 1;
                             if (idx >= 0 && idx < count) {
-                                SDL_Rect item = { list.x, list.y + i * item_h, list.w - ((count + 1) > max_items ? THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH : 0), item_h };
-                                if (vr->current_subtitle == idx) draw_rect(ren, item, (SDL_Color){ THEME_LIST_ITEM_BG_COLOR[0], THEME_LIST_ITEM_BG_COLOR[1], THEME_LIST_ITEM_BG_COLOR[2], (Uint8)(180 * overlay_alpha) });
-                                draw_text_shadow(ren, item.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X, item.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y, vr_get_subtitle_track_name(vr, idx), text);
+                                SDL_Rect item = { list.x, list.y + i * item_h, list.w - scrollbar_w, item_h };
+                                if (vr->current_subtitle == idx)
+                                    draw_rect(ren, item, (SDL_Color){ THEME_LIST_ITEM_BG_COLOR[0], THEME_LIST_ITEM_BG_COLOR[1], THEME_LIST_ITEM_BG_COLOR[2], (Uint8)(180 * overlay_alpha) });
+                                int marquee_slot = idx + 1;
+                                if (marquee_slot < 64) {
+                                    int item_hovered = (mouse_x >= item.x && mouse_x < item.x + item.w &&
+                                                        mouse_y >= item.y && mouse_y < item.y + item.h);
+                                    draw_text_marquee(ren,
+                                        item.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X,
+                                        item.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y,
+                                        text_max_w, vr_get_subtitle_track_name(vr, idx), text,
+                                        &subtitle_marquee[marquee_slot], item_hovered, now);
+                                } else {
+                                    nob_log(NOB_ERROR, "Subtitle marquee slot %d exceeds max of 64", marquee_slot);
+                                }
                             }
                         }
                     }
+
                     if ((count + 1) > max_items) {
                         SDL_Rect scrollbar_bg = { list.x + list.w - THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH, list.y, THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH, list.h };
                         draw_rect(ren, scrollbar_bg, (SDL_Color){ THEME_SCROLLBAR_BG_COLOR[0], THEME_SCROLLBAR_BG_COLOR[1], THEME_SCROLLBAR_BG_COLOR[2], (Uint8)(200 * overlay_alpha) });
@@ -5802,15 +5882,15 @@ int main(int argc, char** argv) {
                     };
                     if (list.x < margin) list.x = margin;
                     draw_rect(ren, list, (SDL_Color){ THEME_LIST_BG_COLOR[0], THEME_LIST_BG_COLOR[1], THEME_LIST_BG_COLOR[2], (Uint8)(220 * overlay_alpha) });
-                    char current_theme[256] = "default";
-                    if (strcmp(THEME_FILE, "config.h") != 0) {
-                        snprintf(current_theme, sizeof(current_theme), "%s", THEME_FILE);
-                        size_t cl = strlen(current_theme);
-                        if (cl > 2 && strcmp(current_theme + cl - 2, ".h") == 0)
-                            current_theme[cl - 2] = '\0';
-                    }
+                    char current_theme[256];
+                    snprintf(current_theme, sizeof(current_theme), "%s", THEME_FILE);
+                    size_t cl = strlen(current_theme);
+                    if (cl > 2 && strcmp(current_theme + cl - 2, ".h") == 0)
+                        current_theme[cl - 2] = '\0';
+                    bool theme_found = false;
                     for (int i = 0; i < theme_count; i++) {
                         if (strcmp(theme_names[i], current_theme) == 0) {
+                            theme_found = true;
                             SDL_Rect item = { list.x, list.y + i * item_h, list.w, item_h };
                             draw_rect(ren, item, (SDL_Color){ THEME_LIST_ITEM_BG_COLOR[0], THEME_LIST_ITEM_BG_COLOR[1], THEME_LIST_ITEM_BG_COLOR[2], (Uint8)(180 * overlay_alpha) });
                         }
@@ -5818,6 +5898,10 @@ int main(int argc, char** argv) {
                             list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X,
                             list.y + THEME_MENU_DROPDOWN_TEXT_PADDING_Y + item_h * i,
                             theme_names[i], text);
+                    }
+                    if (!theme_found) {
+                        SDL_Rect item = { list.x, list.y + theme_count * item_h, list.w, item_h };
+                        draw_rect(ren, item, (SDL_Color){ THEME_LIST_ITEM_BG_COLOR[0], THEME_LIST_ITEM_BG_COLOR[1], THEME_LIST_ITEM_BG_COLOR[2], (Uint8)(180 * overlay_alpha) });
                     }
                     draw_text_shadow(ren,
                         list.x + THEME_MENU_DROPDOWN_TEXT_PADDING_X,
@@ -6036,6 +6120,7 @@ int main(int argc, char** argv) {
                 int bx = panel_x + 12;
                 SDL_Rect btn = { bx, by + btn_y_pad, key_col_w, item_h - btn_y_pad * 2 };
                 if (point_in_rect(mx_r, my_r, btn)) draw_rect(ren, btn, kbd_hl);
+                else if (kbd_last_pressed == entry_idx && SDL_GetTicks() < kbd_press_until) draw_rect(ren, btn, kbd_hl);
                 else draw_rect(ren, btn, kbd_key_bg);
                 draw_text_shadow(ren, btn.x + 6, btn.y - 1, display_kbd((KbdEntry*)(&(kbd_entries[entry_idx]))), kbd_text);
                 draw_text_shadow(ren, bx + key_col_w + 10, by + btn_y_pad + 3, kbd_entries[entry_idx].desc, kbd_text);
@@ -6123,7 +6208,9 @@ int main(int argc, char** argv) {
         } else {
             nob_log(NOB_INFO, "Save state written to %s", save_path);
         }
+        #if DEBUG_SAVE_STATE
         debug_save_state(&save_state);
+        #endif
         free_save_state(&save_state);
     #endif
     nob_log(NOB_INFO, "Exited.");

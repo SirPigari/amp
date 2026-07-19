@@ -2032,7 +2032,13 @@ double vr_get_time(VideoRenderer* vr) {
         t = (master - audio_time > 1.0) ? master : audio_time;
     } else {
         double master = vr_get_master_time(vr);
-        t = master > vr->current_time ? master : vr->current_time;
+        double frame_dur = 1.0;
+        if (vr->fmt_ctx && vr->video_stream_index >= 0) {
+            AVStream* st = vr->fmt_ctx->streams[vr->video_stream_index];
+            if (st->avg_frame_rate.num > 0 && st->avg_frame_rate.den > 0)
+                frame_dur = (double)st->avg_frame_rate.den / (double)st->avg_frame_rate.num;
+        }
+        t = (master > vr->current_time + frame_dur) ? vr->current_time : (master > vr->current_time ? master : vr->current_time);
     }
 
     if (!vr->seeking && t < vr->last_time) return vr->last_time;
