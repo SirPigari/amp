@@ -26,7 +26,6 @@
 
 #define VIDEO_PKT_QUEUE_CAP 128
 #define AUDIO_PKT_QUEUE_CAP 256
-#define AUDIO_QUEUE_TARGET_SEC 0.25
 
 typedef struct {
     AVPacket* pkts;
@@ -147,6 +146,10 @@ typedef struct {
     unsigned int ar_x, ar_y;
     int zoom_percent;
     int desired_win_w, desired_win_h;
+
+    double audio_queue_target_sec;
+    int    avsync_delay_cap_ms;
+    Uint32 target_frame_ms;
 } VideoRenderer;
 
 static void pkt_queue_init(PacketQueue* q, int capacity) {
@@ -883,6 +886,11 @@ VideoRenderer* vr_create(SDL_Window* window, SDL_Renderer* renderer) {
     vr->zoom_percent = 100;
     vr->desired_win_w = 0;
     vr->desired_win_h = 0;
+
+    vr->audio_queue_target_sec = 0.50;
+    vr->avsync_delay_cap_ms = 33;
+    vr->target_frame_ms = 16;
+
     return vr;
 }
 
@@ -1004,6 +1012,47 @@ static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVC
         nob_log(NOB_WARNING, "HW accel requested but none available");
     }
     return -1;
+}
+
+static void vr_measure_device_params(VideoRenderer* vr) {
+    if (!vr) return;
+
+    double callback_sec = 0.0;
+    if (vr->audio_spec.freq > 0 && vr->audio_spec.samples > 0) {
+        callback_sec = (double)vr->audio_spec.samples / (double)vr->audio_spec.freq;
+    }
+    double target = callback_sec * 6.0;
+    if (target < 0.35) target = 0.35;
+    if (target > 1.50) target = 1.50;
+    vr->audio_queue_target_sec = target;
+
+    double frame_dur_ms = 33.3;
+    if (vr->fmt_ctx && vr->video_stream_index >= 0) {
+        AVStream* st = vr->fmt_ctx->streams[vr->video_stream_index];
+        if (st->avg_frame_rate.num > 0 && st->avg_frame_rate.den > 0) {
+            frame_dur_ms = 1000.0
+                * (double)st->avg_frame_rate.den
+                / (double)st->avg_frame_rate.num;
+        }
+    }
+    int cap = (int)frame_dur_ms;
+    if (cap < 8)  cap = 8;
+    if (cap > 50) cap = 50;
+    vr->avsync_delay_cap_ms = cap;
+
+    SDL_DisplayMode dm;
+    int refresh = 60;
+    if (SDL_GetCurrentDisplayMode(0, &dm) == 0 && dm.refresh_rate > 0) {
+        refresh = dm.refresh_rate;
+    }
+    vr->target_frame_ms = (Uint32)(1000 / refresh);
+    if (vr->target_frame_ms < 8)  vr->target_frame_ms = 8;
+    if (vr->target_frame_ms > 33) vr->target_frame_ms = 33;
+
+    nob_log(NOB_INFO,
+        "Device params: audio_queue=%.3fs  avsync_cap=%dms  frame_ms=%ums  callback=%.1fms",
+        vr->audio_queue_target_sec, vr->avsync_delay_cap_ms,
+        vr->target_frame_ms, callback_sec * 1000.0);
 }
 
 int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
@@ -1369,6 +1418,8 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
             i, vr->subtitle_names[i], vr->subtitle_streams[i]);
     }
 
+    vr_measure_device_params(vr);
+
     nob_log(NOB_INFO, "vr_load total: %u ms", SDL_GetTicks() - load_start);
     return 1;
 }
@@ -1450,9 +1501,9 @@ static void vr_decode_audio(VideoRenderer* vr) {
 
     if (vr->passthrough_active) {
         double queued_passthrough = vr_get_audio_queue_seconds(vr);
-        if (queued_passthrough >= AUDIO_QUEUE_TARGET_SEC) return;
+        if (queued_passthrough >= vr->audio_queue_target_sec) return;
 
-        while (queued_passthrough < AUDIO_QUEUE_TARGET_SEC) {
+        while (queued_passthrough < vr->audio_queue_target_sec) {
             if (pkt_queue_is_empty(&vr->audio_pktq)) break;
             AVPacket pkt;
             if (!pkt_queue_pop(&vr->audio_pktq, &pkt)) break;
@@ -1464,9 +1515,9 @@ static void vr_decode_audio(VideoRenderer* vr) {
     }
 
     double queued = vr_get_audio_queue_seconds(vr);
-    if (queued >= AUDIO_QUEUE_TARGET_SEC) return;
+    if (queued >= vr->audio_queue_target_sec) return;
 
-    while (queued < AUDIO_QUEUE_TARGET_SEC) {
+    while (queued < vr->audio_queue_target_sec) {
         int recv = avcodec_receive_frame(vr->audio_ctx, vr->audio_frame);
         if (recv == 0) {
             vr_queue_audio(vr, vr->audio_frame);

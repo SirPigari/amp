@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.8
+
+- Made AV-Sync parameters (audio queue target, AV-sync delay cap, and FPS cap) to be derived from device parameters not hardcoded
+- Removed `SDL_RENDERER_PRESENTVSYNC` flag from `SDL_CreateRenderer` and made the frame cap manual
+- Hopefully made the decoding faster with these changes
+
 ## 1.9.7
 
 - Added `ALLOW_CTRL_Q_ON_WINDOWS` define (default 0/false)

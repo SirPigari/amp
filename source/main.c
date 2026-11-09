@@ -1976,8 +1976,8 @@ static void run_playback_tick(VideoRenderer* vr, float playback_speed) {
             }
         } else if (diff > 0.01) {
             int delay_ms = (int)(diff * 1000.0);
-            if (delay_ms > 120) delay_ms = 120;
-            SDL_Delay(delay_ms);
+            if (delay_ms > vr->avsync_delay_cap_ms) delay_ms = vr->avsync_delay_cap_ms;
+            if (delay_ms > 0) SDL_Delay(delay_ms);
         }
     } else {
         double master_time = vr_get_master_time(vr);
@@ -2931,7 +2931,7 @@ int main(int argc, char** argv) {
 
     if (!win) { nob_log(NOB_ERROR, "SDL_CreateWindow failed: %s", SDL_GetError()); return 1; }
 
-    SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
     if (!ren) { SDL_DestroyWindow(win); nob_log(NOB_ERROR, "SDL_CreateRenderer failed: %s", SDL_GetError()); return 1; }
 
     #ifdef _WIN32
@@ -3125,6 +3125,7 @@ int main(int argc, char** argv) {
     int last_subtitle_track = -1;
 
     while(running) {
+        Uint32 frame_start_ticks = SDL_GetTicks();
         int subtitle_style_mode = vr ? vr_get_subtitle_style_mode(vr) : 0; /* 0 none, 1 text/srt, 2 ass/ssa */
         bool subtitle_settings_applicable = subtitle_style_mode == 1;
         int subtitle_settings_row_count = subtitle_style_mode == 1 ? 3 : 0;
@@ -6142,6 +6143,13 @@ int main(int argc, char** argv) {
                 (int)(win_h * draw_zoom)
             };
             SDL_RenderCopy(ren, draw_zoom_tex, NULL, &dst);
+        }
+
+        Uint32 vr_target_frame_ms = (vr && vr->target_frame_ms > 0)
+            ? vr->target_frame_ms : 16u;
+        Uint32 frame_ms = SDL_GetTicks() - frame_start_ticks;
+        if (frame_ms < vr_target_frame_ms) {
+            SDL_Delay(vr_target_frame_ms - frame_ms);
         }
 
         SDL_RenderPresent(ren);
