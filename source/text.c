@@ -7,12 +7,13 @@
 #else
 #include <iconv.h>
 #endif
-#include "../thirdparty/SDL2/SDL_ttf.h"
+#include "../thirdparty/SDL3/SDL_ttf.h"
 
 static TTF_Font* ui_font = NULL;
 static int ui_font_size = 18;
 static char ui_font_label[128] = "Iosevka";
 static char ui_font_path[260] = "";
+static SDL_Window* g_text_input_window = NULL;
 
 /* i just discovered this word it literally describes it perfectly */
 /* i feel like zozin */
@@ -66,13 +67,13 @@ static bool load_ui_font(const char* path, const char* label) {
 
 static void draw_text(SDL_Renderer* ren, int x, int y, const char* text, SDL_Color color) {
     if (!text || !ui_font) return;
-    SDL_Surface* surf = TTF_RenderUTF8_Blended(ui_font, text, color);
+    SDL_Surface* surf = TTF_RenderText_Blended(ui_font, text, strlen(text), color);
     if (!surf) return;
     SDL_Texture* tex = SDL_CreateTextureFromSurface(ren, surf);
-    if (!tex) { SDL_FreeSurface(surf); return; }
-    SDL_Rect dst = { x, y, surf->w, surf->h };
-    SDL_FreeSurface(surf);
-    SDL_RenderCopy(ren, tex, NULL, &dst);
+    if (!tex) { SDL_DestroySurface(surf); return; }
+    SDL_FRect dst = { (float)x, (float)y, (float)surf->w, (float)surf->h };
+    SDL_DestroySurface(surf);
+    SDL_RenderTexture(ren, tex, NULL, &dst);
     SDL_DestroyTexture(tex);
 }
 
@@ -95,7 +96,7 @@ static void draw_text_marquee(
     if (!text || !ui_font) return;
 
     int text_w = 0, text_h = 0;
-    TTF_SizeUTF8(ui_font, text, &text_w, &text_h);
+    TTF_GetStringSize(ui_font, text, strlen(text), &text_w, &text_h);
 
     if (text_w <= max_w) {
         draw_text_shadow(ren, x, y, text, color);
@@ -150,11 +151,11 @@ static void draw_text_marquee(
     int char_skip = (int)ms->offset;
 
     SDL_Rect clip = { x, y - 2, max_w, text_h + 4 };
-    SDL_RenderSetClipRect(ren, &clip);
+    SDL_SetRenderClipRect(ren, &clip);
 
     if (!is_hovered || (now_ms - ms->hover_start_ms <= MARQUEE_DELAY_MS)) {
         int ellipsis_w = 0, dummy_h = 0;
-        TTF_SizeUTF8(ui_font, MARQUEE_ELLIPSIS, &ellipsis_w, &dummy_h);
+        TTF_GetStringSize(ui_font, MARQUEE_ELLIPSIS, strlen(MARQUEE_ELLIPSIS), &ellipsis_w, &dummy_h);
         int budget = max_w - ellipsis_w;
 
         int fit_bytes = 0;
@@ -173,7 +174,7 @@ static void draw_text_marquee(
             tmp[candidate] = '\0';
 
             int w = 0, h = 0;
-            TTF_SizeUTF8(ui_font, tmp, &w, &h);
+            TTF_GetStringSize(ui_font, tmp, strlen(tmp), &w, &h);
             if (w > budget) break;
 
             fit_bytes = candidate;
@@ -191,7 +192,7 @@ static void draw_text_marquee(
         draw_text_shadow(ren, x, y, text + byte_start, color);
     }
 
-    SDL_RenderSetClipRect(ren, NULL);
+    SDL_SetRenderClipRect(ren, NULL);
 
     #undef BYTE_OFFSET_OF_CHAR
 }
@@ -398,21 +399,21 @@ static void text_input_open(TextInputState* ti, const char* prompt,
     }
     ti->max_len = (max_len > 0 && max_len < TEXT_INPUT_MAX_LEN)
                 ? max_len : (TEXT_INPUT_MAX_LEN - 1);
-    SDL_StartTextInput();
+    if (g_text_input_window) SDL_StartTextInput(g_text_input_window);
 }
 
 static void text_input_handle_event(TextInputState* ti, SDL_Event* e) {
     if (!ti->active) return;
-    if (e->type == SDL_KEYDOWN) {
-        SDL_Keycode k = e->key.keysym.sym;
+    if (e->type == SDL_EVENT_KEY_DOWN) {
+        SDL_Keycode k = e->key.key;
         if (k == SDLK_RETURN || k == SDLK_KP_ENTER) {
             ti->done     = 1;
             ti->active   = 0;
-            SDL_StopTextInput();
+            if (g_text_input_window) SDL_StopTextInput(g_text_input_window);
         } else if (k == SDLK_ESCAPE) {
             ti->cancelled = 1;
             ti->active    = 0;
-            SDL_StopTextInput();
+            if (g_text_input_window) SDL_StopTextInput(g_text_input_window);
         } else if (k == SDLK_BACKSPACE) {
             if (!ti->has_typed) {
                 ti->has_typed = 1;
@@ -422,7 +423,7 @@ static void text_input_handle_event(TextInputState* ti, SDL_Event* e) {
                 if (len > 0) ti->value[len - 1] = '\0';
             }
         }
-    } else if (e->type == SDL_TEXTINPUT) {
+    } else if (e->type == SDL_EVENT_TEXT_INPUT) {
         if (!ti->has_typed) {
             ti->value[0] = '\0';
             ti->has_typed = 1;
@@ -441,11 +442,11 @@ static void text_input_draw(SDL_Renderer* r, TextInputState* ti) {
     int px = 20, py = 20, padding = 6;
     
     int prompt_w = 0, prompt_h = 0;
-    TTF_SizeUTF8(ui_font, ti->prompt, &prompt_w, &prompt_h);
+    TTF_GetStringSize(ui_font, ti->prompt, strlen(ti->prompt), &prompt_w, &prompt_h);
     
     const char* content = ti->has_typed ? ti->value : ti->default_val;
     int content_w = 0, content_h = 0;
-    TTF_SizeUTF8(ui_font, content, &content_w, &content_h);
+    TTF_GetStringSize(ui_font, content, strlen(content), &content_w, &content_h);
     
     int total_w = prompt_w + padding + content_w + padding * 2;
     int total_h = prompt_h + padding;

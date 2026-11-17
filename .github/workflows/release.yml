@@ -5,38 +5,38 @@ on:
     branches: [ "main" ]
 
 jobs:
-  release:
-    runs-on: windows-latest
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      trigger: ${{ steps.version.outputs.trigger }}
+      version: ${{ steps.version.outputs.version }}
+      type: ${{ steps.version.outputs.type }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Get commit message
-        id: commit
-        run: |
-          echo "msg=$(git log -1 --pretty=%B)" >> $env:GITHUB_OUTPUT
-
       - name: Extract version
         id: version
-        shell: bash
         run: |
-            msg="${{ steps.commit.outputs.msg }}"
+          msg=$(git log -1 --pretty=%B)
 
-            if [[ "$msg" =~ (release|patch)[[:space:]]([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
-            type="${BASH_REMATCH[1]}"
-            ver="${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.${BASH_REMATCH[4]}"
-
+          if [[ "$msg" =~ (release|patch)[[:space:]]([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
             echo "trigger=true" >> $GITHUB_OUTPUT
-            echo "version=$ver" >> $GITHUB_OUTPUT
-            echo "type=$type" >> $GITHUB_OUTPUT
-            else
+            echo "version=${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.${BASH_REMATCH[4]}" >> $GITHUB_OUTPUT
+            echo "type=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+          else
             echo "trigger=false" >> $GITHUB_OUTPUT
-            fi
+          fi
 
-      - name: Stop if not release commit
-        if: steps.version.outputs.trigger != 'true'
-        run: exit 0
+  release:
+    needs: check
+    if: needs.check.outputs.trigger == 'true'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Get commit author
         id: author
@@ -49,26 +49,27 @@ jobs:
         with:
           update: true
           install: >
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-ffmpeg
-            mingw-w64-x86_64-SDL2
-            mingw-w64-x86_64-SDL2_ttf
-            mingw-w64-x86_64-libass
-            mingw-w64-x86_64-ntldd
-            mingw-w64-x86_64-freetype
-            mingw-w64-x86_64-harfbuzz
-            mingw-w64-x86_64-fribidi
-            mingw-w64-x86_64-binutils
-            mingw-w64-x86_64-7zip
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-SDL3
+            mingw-w64-ucrt-x86_64-SDL3_ttf
+            mingw-w64-ucrt-x86_64-libass
+            mingw-w64-ucrt-x86_64-ntldd
+            mingw-w64-ucrt-x86_64-freetype
+            mingw-w64-ucrt-x86_64-harfbuzz
+            mingw-w64-ucrt-x86_64-fribidi
+            mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-7zip
+          msystem: UCRT64
 
-      - name: Add mingw to PATH
-        run: echo "C:\msys64\mingw64\bin" >> $env:GITHUB_PATH
+      - name: Add ucrt64 to PATH
+        run: echo "C:\msys64\ucrt64\bin" >> $env:GITHUB_PATH
 
       - name: Extract changelog
         id: changelog
         shell: bash
         run: |
-          ver="${{ steps.version.outputs.version }}"
+          ver="${{ needs.check.outputs.version }}"
 
           awk -v ver="## $ver" '
             $0 == ver {flag=1; found=1; next}
@@ -115,7 +116,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/${{ github.repository }}/git/refs \
             -d '{
-              "ref": "refs/tags/v${{ steps.version.outputs.version }}",
+              "ref": "refs/tags/v${{ needs.check.outputs.version }}",
               "sha": "${{ github.sha }}"
             }')
           MSG=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('message',''))")
@@ -128,22 +129,21 @@ jobs:
         id: relname
         shell: bash
         run: |
-          if [ "${{ steps.version.outputs.type }}" = "patch" ]; then
-            echo "name=Patch ${{ steps.version.outputs.version }}" >> $GITHUB_OUTPUT
+          if [ "${{ needs.check.outputs.type }}" = "patch" ]; then
+            echo "name=Patch ${{ needs.check.outputs.version }}" >> $GITHUB_OUTPUT
           else
-            echo "name=Release ${{ steps.version.outputs.version }}" >> $GITHUB_OUTPUT
+            echo "name=Release ${{ needs.check.outputs.version }}" >> $GITHUB_OUTPUT
           fi
 
       - name: Create Release
         id: create_release
         shell: bash
         run: |
-          BODY=$(cat cleaned.txt | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
           PAYLOAD=$(python3 -c "
           import json
           body = open('cleaned.txt').read()
           print(json.dumps({
-            'tag_name': 'v${{ steps.version.outputs.version }}',
+            'tag_name': 'v${{ needs.check.outputs.version }}',
             'name': '${{ steps.relname.outputs.name }}',
             'body': body,
             'draft': False,
@@ -155,27 +155,24 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/${{ github.repository }}/releases \
             -d "$PAYLOAD")
-          
+
           RELEASE_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null)
-          
+
           if [[ -z "$RELEASE_ID" ]]; then
             RESPONSE=$(curl -s \
               -H "Authorization: token ${{ secrets.RELEASE_TOKEN }}" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${{ github.repository }}/releases/tags/v${{ steps.version.outputs.version }}")
+              "https://api.github.com/repos/${{ github.repository }}/releases/tags/v${{ needs.check.outputs.version }}")
             RELEASE_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
           fi
-          
+
           echo "release_id=$RELEASE_ID" >> $GITHUB_OUTPUT
 
       - name: Upload Asset
         shell: bash
         run: |
-          echo "Release ID: ${{ steps.create_release.outputs.release_id }}"
-          echo "URL: https://uploads.github.com/repos/${{ github.repository }}/releases/${{ steps.create_release.outputs.release_id }}/assets?name=amp-v${{ steps.version.outputs.version }}-win-x86_64.zip"
-          
           curl -X POST \
             -H "Authorization: token ${{ secrets.RELEASE_TOKEN }}" \
             -H "Content-Type: application/zip" \
             --data-binary @dist.zip \
-            "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ steps.create_release.outputs.release_id }}/assets?name=amp-v${{ steps.version.outputs.version }}-win-x86_64.zip"
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ steps.create_release.outputs.release_id }}/assets?name=amp-v${{ needs.check.outputs.version }}-win-x86_64.zip"

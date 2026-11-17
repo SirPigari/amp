@@ -12,7 +12,7 @@
 #else
 #define USE_SSE2_SIMD 0
 #endif
-#include "../thirdparty/SDL2/SDL.h"
+#include "../thirdparty/SDL3/SDL.h"
 #include "../thirdparty/tinyfd.h"
 #include "../thirdparty/nob.h"
 #include "config.h"
@@ -137,11 +137,7 @@ static int marker_buf_ensure(MarkerBatch* m, int w, int h, Uint32 fmt) {
     m->buf_w        = w;
     m->buf_h        = h;
     m->fmt          = fmt;
-    {
-        SDL_PixelFormat* pf = SDL_AllocFormat(fmt);
-        m->alpha_offset = pf ? (int)(pf->Ashift / 8) : 3;
-        if (pf) SDL_FreeFormat(pf);
-    }
+    m->alpha_offset = 3;
     m->valid        = 0;
     m->dirty        = 0;
     return 1;
@@ -225,41 +221,22 @@ static void marker_draw_circle(MarkerBatch* m, int cx, int cy, int radius, SDL_C
     }
 }
 
-static void marker_read_screen(MarkerBatch* m, SDL_Renderer* ren, SDL_Texture* canvas_tex) {
+static void marker_read_screen(MarkerBatch* m, SDL_Renderer* ren, SDL_Texture* canvas_tex __attribute__((unused))) {
     if (!m || !m->buf) return;
-    SDL_RenderReadPixels(ren, NULL, m->fmt, m->buf, m->buf_w * 4);
-
-    if (canvas_tex) {
-        int total = m->buf_w * m->buf_h;
-        Uint8* tmp = (Uint8*)malloc(total * 4);
-        if (tmp) {
-            SDL_BlendMode old;
-            SDL_GetTextureBlendMode(canvas_tex, &old);
-            SDL_SetTextureBlendMode(canvas_tex, SDL_BLENDMODE_NONE);
-            SDL_SetRenderTarget(ren, canvas_tex);
-            SDL_RenderReadPixels(ren, NULL, m->fmt, tmp, m->buf_w * 4);
-            SDL_SetRenderTarget(ren, NULL);
-            SDL_SetTextureBlendMode(canvas_tex, old);
-
-            int ao = m->alpha_offset;
-            for (int i = 0; i < total; i++) {
-                Uint8* dst = m->buf + i * 4;
-                Uint8* src = tmp    + i * 4;
-                int sa = src[ao];
-                if (sa == 0) continue;
-                if (sa == 255) {
-                    dst[0] = src[0]; dst[1] = src[1];
-                    dst[2] = src[2]; dst[3] = src[3];
-                    continue;
-                }
-                int inv = 255 - sa;
-                for (int c = 0; c < 4; c++) {
-                    if (c == ao) { dst[ao] = (Uint8)(sa + (dst[ao] * inv) / 255); continue; }
-                    dst[c] = (Uint8)((src[c] * sa + dst[c] * inv) / 255);
-                }
-            }
-            free(tmp);
+    
+    SDL_Surface* surf = SDL_RenderReadPixels(ren, NULL);
+    if (surf && surf->pixels && surf->w == m->buf_w && surf->h == m->buf_h) {
+        memcpy(m->buf, surf->pixels, m->buf_w * m->buf_h * 4);
+        m->fmt = surf->format;
+        
+        const SDL_PixelFormatDetails* fmt_details = SDL_GetPixelFormatDetails(surf->format);
+        if (fmt_details) {
+            m->alpha_offset = fmt_details->Ashift / 8;
+        } else {
+            m->alpha_offset = 3;
         }
+        
+        SDL_DestroySurface(surf);
     }
 
     if (m->cover) memset(m->cover, 0, m->buf_w * m->buf_h);
@@ -287,13 +264,6 @@ static void marker_flush(MarkerBatch* m, SDL_Renderer* ren, SDL_Texture* canvas_
         ((Uint32)or_bytes[1] <<  8)   |
         ((Uint32)or_bytes[2] << 16)   |
         ((Uint32)or_bytes[3] << 24);
-
-    SDL_PixelFormat* pf = SDL_AllocFormat(m->fmt);
-    Uint32 rmask = pf ? pf->Rmask : 0x000000FF;
-    Uint32 gmask = pf ? pf->Gmask : 0x0000FF00;
-    Uint32 bmask = pf ? pf->Bmask : 0x00FF0000;
-    Uint32 amask = pf ? pf->Amask : 0xFF000000;
-    if (pf) SDL_FreeFormat(pf);
 
     SDL_BlendMode old_tex;
     SDL_GetTextureBlendMode(canvas_tex, &old_tex);
@@ -349,17 +319,17 @@ static void marker_flush(MarkerBatch* m, SDL_Renderer* ren, SDL_Texture* canvas_
             }
         }
 
-        SDL_Surface* surf = SDL_CreateRGBSurfaceFrom(
-            out, dw, dh, 32, dw * 4,
-            rmask, gmask, bmask, amask);
+        SDL_Surface* surf = SDL_CreateSurfaceFrom(
+            dw, dh, m->fmt, out, dw * 4);
         if (!surf) { free(out); continue; }
 
         SDL_Texture* patch = SDL_CreateTextureFromSurface(ren, surf);
-        SDL_FreeSurface(surf);
+        SDL_DestroySurface(surf);
         if (!patch) { free(out); continue; }
 
         SDL_SetTextureBlendMode(patch, SDL_BLENDMODE_NONE);
-        SDL_RenderCopy(ren, patch, NULL, r);
+        SDL_FRect dst = { (float)r->x, (float)r->y, (float)r->w, (float)r->h };
+        SDL_RenderTexture(ren, patch, NULL, &dst);
         SDL_DestroyTexture(patch);
         free(out);
     }
@@ -542,9 +512,11 @@ static void draw_begin_stroke(DrawingState* ds, int x, int y,
 
     if (ds->current_tool == TOOL_MARKER) {
         if (ren && canvas_tex) {
-            int tw = 0, th = 0;
-            Uint32 tex_fmt = 0;
-            SDL_QueryTexture(canvas_tex, &tex_fmt, NULL, &tw, &th);
+            float tw_f = 0, th_f = 0;
+            SDL_GetTextureSize(canvas_tex, &tw_f, &th_f);
+            int tw = (int)tw_f;
+            int th = (int)th_f;
+            Uint32 tex_fmt = SDL_PIXELFORMAT_RGBA8888;
             marker_buf_ensure(&ds->marker, tw, th, tex_fmt);
             ds->marker.valid = 0;
         }
@@ -640,7 +612,7 @@ static void draw_circle_filled(SDL_Renderer* ren, int cx, int cy, int radius, SD
     for (int dy = -radius; dy <= radius; dy++) {
         for (int dx = -radius; dx <= radius; dx++) {
             if (dx * dx + dy * dy <= radius * radius)
-                SDL_RenderDrawPoint(ren, cx + dx, cy + dy);
+                SDL_RenderPoint(ren, (float)(cx + dx), (float)(cy + dy));
         }
     }
 }
@@ -651,14 +623,14 @@ static void draw_circle_outline(SDL_Renderer* ren, int cx, int cy, int radius, S
         int r = radius - w;
         int x = r, y = 0, err = 0;
         while (x >= y) {
-            SDL_RenderDrawPoint(ren, cx + x, cy + y);
-            SDL_RenderDrawPoint(ren, cx + y, cy + x);
-            SDL_RenderDrawPoint(ren, cx - y, cy + x);
-            SDL_RenderDrawPoint(ren, cx - x, cy + y);
-            SDL_RenderDrawPoint(ren, cx - x, cy - y);
-            SDL_RenderDrawPoint(ren, cx - y, cy - x);
-            SDL_RenderDrawPoint(ren, cx + y, cy - x);
-            SDL_RenderDrawPoint(ren, cx + x, cy - y);
+            SDL_RenderPoint(ren, (float)(cx + x), (float)(cy + y));
+            SDL_RenderPoint(ren, (float)(cx + y), (float)(cy + x));
+            SDL_RenderPoint(ren, (float)(cx - y), (float)(cy + x));
+            SDL_RenderPoint(ren, (float)(cx - x), (float)(cy + y));
+            SDL_RenderPoint(ren, (float)(cx - x), (float)(cy - y));
+            SDL_RenderPoint(ren, (float)(cx - y), (float)(cy - x));
+            SDL_RenderPoint(ren, (float)(cx + y), (float)(cy - x));
+            SDL_RenderPoint(ren, (float)(cx + x), (float)(cy - y));
             if (err <= 0) { y++; err += 2 * y + 1; }
             if (err > 0)  { x--; err -= 2 * x + 1; }
         }
@@ -676,7 +648,7 @@ static void draw_line_thick(SDL_Renderer* ren, int x1, int y1, int x2, int y2,
     while (1) {
         for (int ty = -thickness / 2; ty <= thickness / 2; ty++)
             for (int tx = -thickness / 2; tx <= thickness / 2; tx++)
-                SDL_RenderDrawPoint(ren, x1 + tx, y1 + ty);
+                SDL_RenderPoint(ren, (float)(x1 + tx), (float)(y1 + ty));
         if (x1 == x2 && y1 == y2) break;
         int e2 = 2 * err;
         if (e2 > -dy) { err -= dy; x1 += sx; }
@@ -722,7 +694,8 @@ static void draw_render_stroke(SDL_Renderer* ren, Stroke* stroke, DrawingState* 
             SDL_SetRenderDrawColor(ren, color.r, color.g, color.b, color.a);
             for (int i = 0; i < stroke->size; i++) {
                 SDL_Rect o = {r.x - i, r.y - i, r.w + i * 2, r.h + i * 2};
-                SDL_RenderDrawRect(ren, &o);
+                SDL_FRect frect = { (float)o.x, (float)o.y, (float)o.w, (float)o.h };
+                SDL_RenderRect(ren, &frect);
             }
             break;
         }
@@ -734,7 +707,8 @@ static void draw_render_stroke(SDL_Renderer* ren, Stroke* stroke, DrawingState* 
                 abs(stroke->end.y - stroke->start.y)
             };
             SDL_SetRenderDrawColor(ren, color.r, color.g, color.b, color.a);
-            SDL_RenderFillRect(ren, &r);
+            SDL_FRect frect = { (float)r.x, (float)r.y, (float)r.w, (float)r.h };
+            SDL_RenderFillRect(ren, &frect);
             break;
         }
         case TOOL_CIRCLE: {
@@ -789,8 +763,8 @@ static void draw_render_preview(SDL_Renderer* ren, DrawingState* ds, int mouse_x
     draw_circle_outline(ren, mouse_x, mouse_y, ds->brush_size / 2,
                         cursor_color, 1);
     SDL_SetRenderDrawColor(ren, cursor_color.r, cursor_color.g, cursor_color.b, 255);
-    SDL_RenderDrawLine(ren, mouse_x - 4, mouse_y, mouse_x + 4, mouse_y);
-    SDL_RenderDrawLine(ren, mouse_x, mouse_y - 4, mouse_x, mouse_y + 4);
+    SDL_RenderLine(ren, (float)(mouse_x - 4), (float)mouse_y, (float)(mouse_x + 4), (float)mouse_y);
+    SDL_RenderLine(ren, (float)mouse_x, (float)(mouse_y - 4), (float)mouse_x, (float)(mouse_y + 4));
 }
 
 static void draw_render_all(SDL_Renderer* ren, SDL_Texture* canvas_tex,
@@ -893,7 +867,8 @@ static void draw_render_all(SDL_Renderer* ren, SDL_Texture* canvas_tex,
     }
 
     SDL_SetRenderTarget(ren, NULL);
-    SDL_RenderCopy(ren, canvas_tex, NULL, &dst);
+    SDL_FRect dst_frect = { (float)dst.x, (float)dst.y, (float)dst.w, (float)dst.h };
+    SDL_RenderTexture(ren, canvas_tex, NULL, &dst_frect);
 }
 
 static void draw_render_palette(SDL_Renderer* ren, DrawingState* ds, int win_w, int win_h) {
@@ -910,7 +885,8 @@ static void draw_render_palette(SDL_Renderer* ren, DrawingState* ds, int win_w, 
     SDL_Rect bg = {palette_x, palette_y, palette_w, palette_h};
     SDL_SetRenderDrawColor(ren, THEME_TEXT_INPUT_BG_COLOR[0], THEME_TEXT_INPUT_BG_COLOR[1],
                            THEME_TEXT_INPUT_BG_COLOR[2], 200);
-    SDL_RenderFillRect(ren, &bg);
+    SDL_FRect bg_frect = { (float)bg.x, (float)bg.y, (float)bg.w, (float)bg.h };
+    SDL_RenderFillRect(ren, &bg_frect);
 
     for (int i = 0; i < 7; i++) {
         int col = i % cols, row = i / cols;
@@ -920,12 +896,14 @@ static void draw_render_palette(SDL_Renderer* ren, DrawingState* ds, int win_w, 
             swatch_size, swatch_size
         };
         SDL_SetRenderDrawColor(ren, draw_palette[i].r, draw_palette[i].g, draw_palette[i].b, 255);
-        SDL_RenderFillRect(ren, &swatch);
+        SDL_FRect swatch_fill_frect = { (float)swatch.x, (float)swatch.y, (float)swatch.w, (float)swatch.h };
+        SDL_RenderFillRect(ren, &swatch_fill_frect);
         if (ds->current_color.r == draw_palette[i].r &&
             ds->current_color.g == draw_palette[i].g &&
             ds->current_color.b == draw_palette[i].b) {
             SDL_SetRenderDrawColor(ren, 255, 255, 255, 255);
-            SDL_RenderDrawRect(ren, &swatch);
+            SDL_FRect swatch_frect = { (float)swatch.x, (float)swatch.y, (float)swatch.w, (float)swatch.h };
+            SDL_RenderRect(ren, &swatch_frect);
         }
     }
 
@@ -935,7 +913,8 @@ static void draw_render_palette(SDL_Renderer* ren, DrawingState* ds, int win_w, 
         swatch_size, swatch_size
     };
     SDL_SetRenderDrawColor(ren, ds->custom_color.r, ds->custom_color.g, ds->custom_color.b, 255);
-    SDL_RenderFillRect(ren, &custom_btn);
+    SDL_FRect custom_fill_frect = { (float)custom_btn.x, (float)custom_btn.y, (float)custom_btn.w, (float)custom_btn.h };
+    SDL_RenderFillRect(ren, &custom_fill_frect);
 
     float lum = (0.299f * ds->custom_color.r + 0.587f * ds->custom_color.g +
                  0.114f * ds->custom_color.b) / 255.0f;
@@ -944,16 +923,17 @@ static void draw_render_palette(SDL_Renderer* ren, DrawingState* ds, int win_w, 
     int cy = custom_btn.y + custom_btn.h / 2;
     int ps = 12;
     SDL_SetRenderDrawColor(ren, plus.r, plus.g, plus.b, 255);
-    SDL_RenderDrawLine(ren, cx - ps/2, cy,     cx + ps/2, cy);
-    SDL_RenderDrawLine(ren, cx - ps/2, cy + 1, cx + ps/2, cy + 1);
-    SDL_RenderDrawLine(ren, cx, cy - ps/2,     cx, cy + ps/2);
-    SDL_RenderDrawLine(ren, cx + 1, cy - ps/2, cx + 1, cy + ps/2);
+    SDL_RenderLine(ren, (float)(cx - ps/2), (float)cy,     (float)(cx + ps/2), (float)cy);
+    SDL_RenderLine(ren, (float)(cx - ps/2), (float)(cy + 1), (float)(cx + ps/2), (float)(cy + 1));
+    SDL_RenderLine(ren, (float)cx, (float)(cy - ps/2),     (float)cx, (float)(cy + ps/2));
+    SDL_RenderLine(ren, (float)(cx + 1), (float)(cy - ps/2), (float)(cx + 1), (float)(cy + ps/2));
 
     if (ds->current_color.r == ds->custom_color.r &&
         ds->current_color.g == ds->custom_color.g &&
         ds->current_color.b == ds->custom_color.b) {
         SDL_SetRenderDrawColor(ren, 255, 255, 255, 255);
-        SDL_RenderDrawRect(ren, &custom_btn);
+        SDL_FRect custom_frect = { (float)custom_btn.x, (float)custom_btn.y, (float)custom_btn.w, (float)custom_btn.h };
+        SDL_RenderRect(ren, &custom_frect);
     }
 }
 
@@ -1080,26 +1060,32 @@ static void draw_export(SDL_Renderer* ren,
     char path[1024], ext[8];
     if (!export_save_dialog(path, sizeof(path), ext, "drawing")) return;
 
-    SDL_Surface* export_surf = SDL_CreateRGBSurface(
-        0, win_w, win_h, 32,
-        0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000);
+    SDL_Surface* export_surf = SDL_CreateSurface(
+        win_w, win_h, SDL_PIXELFORMAT_RGBA32);
     if (!export_surf) return;
 
     SDL_Texture* export_tex = SDL_CreateTexture(
         ren, SDL_PIXELFORMAT_ARGB8888,
         SDL_TEXTUREACCESS_TARGET, win_w, win_h);
-    if (!export_tex) { SDL_FreeSurface(export_surf); return; }
+    if (!export_tex) { SDL_DestroySurface(export_surf); return; }
 
     SDL_SetRenderTarget(ren, export_tex);
     SDL_SetRenderDrawColor(ren, THEME_LETTERBOX_COLOR[0], THEME_LETTERBOX_COLOR[1],
                            THEME_LETTERBOX_COLOR[2], 0);
     SDL_RenderClear(ren);
-    if (include_video && video_tex)
-        SDL_RenderCopy(ren, video_tex, NULL, &video_dst);
-    SDL_RenderCopy(ren, canvas_tex, NULL, NULL);
+    if (include_video && video_tex) {
+        SDL_FRect video_dst_frect = { (float)video_dst.x, (float)video_dst.y, (float)video_dst.w, (float)video_dst.h };
+        SDL_RenderTexture(ren, video_tex, NULL, &video_dst_frect);
+    }
+    SDL_RenderTexture(ren, canvas_tex, NULL, NULL);
 
-    SDL_RenderReadPixels(ren, NULL, SDL_PIXELFORMAT_RGBA32,
-                         export_surf->pixels, export_surf->pitch);
+    SDL_Surface* pixels_surf = SDL_RenderReadPixels(ren, NULL);
+    if (pixels_surf) {
+        if (pixels_surf->pixels && pixels_surf->w == export_surf->w && pixels_surf->h == export_surf->h) {
+            memcpy(export_surf->pixels, pixels_surf->pixels, pixels_surf->w * pixels_surf->h * 4);
+        }
+        SDL_DestroySurface(pixels_surf);
+    }
 
     SDL_SetRenderTarget(ren, NULL);
 
@@ -1113,5 +1099,5 @@ static void draw_export(SDL_Renderer* ren,
         stbi_write_tga(path, win_w, win_h, 4, export_surf->pixels);
 
     SDL_DestroyTexture(export_tex);
-    SDL_FreeSurface(export_surf);
+    SDL_DestroySurface(export_surf);
 }

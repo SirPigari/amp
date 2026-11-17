@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.9.9
+
+- Ported SDL2 to SDL3
+- Added `DEBUG_THEME_VALUES` (default 1/true)
+
 ## 1.9.8
 
 - Made AV-Sync parameters (audio queue target, AV-sync delay cap, and FPS cap) to be derived from device parameters not hardcoded

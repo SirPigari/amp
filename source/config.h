@@ -2,7 +2,7 @@
 #define CONFIG_H
 
 /* Build config */
-#define AMP_VERSION 0x010908 /* 1.9.8 */
+#define AMP_VERSION 0x010909 /* 1.9.9 */
 
 #define THEMES_DIR "assets/themes/"
 
@@ -22,7 +22,8 @@
 #define INITIAL_WINDOW_WIDTH 960
 #define INITIAL_WINDOW_HEIGHT 540
 #define SAVE_FILE 1
-#define DEBUG_SAVE_STATE 1
+#define DEBUG_SAVE_STATE 0
+#define DEBUG_THEME_VALUES 1
 #ifndef DIST
 #define SAVE_FILE_PATH "./amp_save.dat"
 #else

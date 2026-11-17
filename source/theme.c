@@ -470,7 +470,7 @@ static void theme_set_string(ThemeDefines* defines, const char* name, char* targ
     }
 }
 
-static bool theme_load(const char* theme_path) {
+static bool theme_load(const char* theme_path, bool debug_theme_values) {
     ThemeDefines defines = { .hasheq = ht_cstr_hasheq };
     
 #ifdef _WIN32
@@ -510,74 +510,76 @@ static bool theme_load(const char* theme_path) {
         return false;
     }
     
-    nob_log(NOB_INFO, "Applying theme values:");
-    
-    theme_set_string(&defines, "THEME_NAME", THEME_NAME, sizeof(THEME_NAME));
-    theme_set_string(&defines, "THEME_FILE", THEME_FILE, sizeof(THEME_FILE));
-    
-    theme_set_int(&defines, "MENU_DROPDOWN_ITEM_HEIGHT", &THEME_MENU_DROPDOWN_ITEM_HEIGHT);
-    theme_set_int(&defines, "MENU_DROPDOWN_WIDTH", &THEME_MENU_DROPDOWN_WIDTH);
-    theme_set_int(&defines, "MENU_DROPDOWN_SCROLLBAR_WIDTH", &THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH);
-    theme_set_int(&defines, "MENU_DROPDOWN_TEXT_PADDING_X", &THEME_MENU_DROPDOWN_TEXT_PADDING_X);
-    theme_set_int(&defines, "MENU_DROPDOWN_TEXT_PADDING_Y", &THEME_MENU_DROPDOWN_TEXT_PADDING_Y);
-    theme_set_int(&defines, "MENU_MAX_VISIBLE_ITEMS", &THEME_MENU_MAX_VISIBLE_ITEMS);
-    
-    theme_set_int(&defines, "TIMELINE_HEIGHT", &THEME_TIMELINE_HEIGHT);
-    theme_set_int(&defines, "TIMELINE_HITBOX_PADDING", &THEME_TIMELINE_HITBOX_PADDING);
-    theme_set_int(&defines, "TIMELINE_THUMB_SIZE", &THEME_TIMELINE_THUMB_SIZE);
-    theme_set_int(&defines, "TIMELINE_CHAPTER_MARKER_WIDTH", &THEME_TIMELINE_CHAPTER_MARKER_WIDTH);
-    theme_set_int(&defines, "TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH", &THEME_TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH);
-    theme_set_int(&defines, "TIMELINE_BOOKMARK_MARKER_WIDTH", &THEME_TIMELINE_BOOKMARK_MARKER_WIDTH);
-    theme_set_int(&defines, "TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH", &THEME_TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH);
-    
-    theme_set_int(&defines, "HAMBURGER_LINE_HEIGHT", &THEME_HAMBURGER_LINE_HEIGHT);
-    theme_set_int(&defines, "HAMBURGER_LINE_MARGIN", &THEME_HAMBURGER_LINE_MARGIN);
-    theme_set_int(&defines, "SHADOW_OFFSET", &THEME_SHADOW_OFFSET);
-    theme_set_int(&defines, "DEFAULT_BOOKMARK_COLOR", &THEME_DEFAULT_BOOKMARK_COLOR);
-    theme_set_int(&defines, "AMBIENT_GLOW_ALPHA", &THEME_AMBIENT_GLOW_ALPHA);
-    theme_set_float(&defines, "AMBIENT_GLOW_ASCALE", &THEME_AMBIENT_GLOW_ASCALE);
-    theme_set_float(&defines, "AMBIENT_GLOW_AMAX", &THEME_AMBIENT_GLOW_AMAX);
-    
-    theme_set_color(&defines, "PANEL_COLOR", THEME_PANEL_COLOR);
-    theme_set_color(&defines, "TEXT_COLOR", THEME_TEXT_COLOR);
-    theme_set_color(&defines, "ACCENT_COLOR", THEME_ACCENT_COLOR);
-    theme_set_color(&defines, "MUTED_COLOR", THEME_MUTED_COLOR);
-    theme_set_color(&defines, "SHADOW_COLOR", THEME_SHADOW_COLOR);
-    theme_set_color(&defines, "LETTERBOX_COLOR", THEME_LETTERBOX_COLOR);
-    theme_set_color(&defines, "OVERLAY_COLOR", THEME_OVERLAY_COLOR);
-    theme_set_color(&defines, "CHAPTER_MARKER_COLOR", THEME_CHAPTER_MARKER_COLOR);
-    theme_set_color(&defines, "TIMELINE_THUMB_COLOR", THEME_TIMELINE_THUMB_COLOR);
-    theme_set_color(&defines, "MEDIA_TITLE_COLOR", THEME_MEDIA_TITLE_COLOR);
-    theme_set_color(&defines, "CHAPTER_HOVER_BG_COLOR", THEME_CHAPTER_HOVER_BG_COLOR);
-    theme_set_color(&defines, "BOOKMARK_HOVER_BG_COLOR", THEME_BOOKMARK_HOVER_BG_COLOR);
-    theme_set_color(&defines, "CONTEXT_MENU_BG_COLOR", THEME_CONTEXT_MENU_BG_COLOR);
-    theme_set_color(&defines, "CONTEXT_MENU_ITEM_HL", THEME_CONTEXT_MENU_ITEM_HL);
-    theme_set_color(&defines, "TEXT_INPUT_BG_COLOR", THEME_TEXT_INPUT_BG_COLOR);
-    theme_set_color(&defines, "TEXT_INPUT_PROMPT_COLOR", THEME_TEXT_INPUT_PROMPT_COLOR);
-    theme_set_color(&defines, "HAMBURGER_BG_COLOR", THEME_HAMBURGER_BG_COLOR);
-    theme_set_color(&defines, "MENU_PANEL_BG_COLOR", THEME_MENU_PANEL_BG_COLOR);
-    theme_set_color(&defines, "MENU_PANEL_ITEM_BG_COLOR", THEME_MENU_PANEL_ITEM_BG_COLOR);
-    theme_set_color(&defines, "LIST_BG_COLOR", THEME_LIST_BG_COLOR);
-    theme_set_color(&defines, "LIST_ITEM_BG_COLOR", THEME_LIST_ITEM_BG_COLOR);
-    theme_set_color(&defines, "SCROLLBAR_BG_COLOR", THEME_SCROLLBAR_BG_COLOR);
-    theme_set_color(&defines, "SCROLLBAR_THUMB_COLOR", THEME_SCROLLBAR_THUMB_COLOR);
-    theme_set_color(&defines, "SUBTITLE_VLIST_BG_COLOR", THEME_SUBTITLE_VLIST_BG_COLOR);
-    theme_set_color(&defines, "DRAW_PALETTE_BG_COLOR", THEME_DRAW_PALETTE_BG_COLOR);
-    theme_set_color(&defines, "DRAW_PALETTE_BORDER_COLOR", THEME_DRAW_PALETTE_BORDER_COLOR);
-    theme_set_color(&defines, "DRAW_CANVAS_CLEAR_COLOR", THEME_DRAW_CANVAS_CLEAR_COLOR);
-    theme_set_color(&defines, "PAUSED_TEXT_COLOR", THEME_PAUSED_TEXT_COLOR);
-    theme_set_color(&defines, "FLASH_TEXT_COLOR", THEME_FLASH_TEXT_COLOR);
-    theme_set_color(&defines, "ACOL_TEXT_COLOR", THEME_ACOL_TEXT_COLOR);
-    theme_set_int(&defines, "ACOL_TEXT_ALPHA", &THEME_ACOL_TEXT_ALPHA);
-    
-    theme_set_color(&defines, "DRAW_PALETTE_COLOR_1", THEME_DRAW_PALETTE_COLOR_1);
-    theme_set_color(&defines, "DRAW_PALETTE_COLOR_2", THEME_DRAW_PALETTE_COLOR_2);
-    theme_set_color(&defines, "DRAW_PALETTE_COLOR_3", THEME_DRAW_PALETTE_COLOR_3);
-    theme_set_color(&defines, "DRAW_PALETTE_COLOR_4", THEME_DRAW_PALETTE_COLOR_4);
-    theme_set_color(&defines, "DRAW_PALETTE_COLOR_5", THEME_DRAW_PALETTE_COLOR_5);
-    theme_set_color(&defines, "DRAW_PALETTE_COLOR_6", THEME_DRAW_PALETTE_COLOR_6);
-    theme_set_color(&defines, "DRAW_PALETTE_COLOR_7", THEME_DRAW_PALETTE_COLOR_7);
-    theme_set_int(&defines, "DRAW_PALETTE_COLOR_ALPHA", &THEME_DRAW_PALETTE_COLOR_ALPHA);
+    if (debug_theme_values && DEBUG_THEME_VALUES) {
+        nob_log(NOB_INFO, "Applying theme values:");
+        
+        theme_set_string(&defines, "THEME_NAME", THEME_NAME, sizeof(THEME_NAME));
+        theme_set_string(&defines, "THEME_FILE", THEME_FILE, sizeof(THEME_FILE));
+        
+        theme_set_int(&defines, "MENU_DROPDOWN_ITEM_HEIGHT", &THEME_MENU_DROPDOWN_ITEM_HEIGHT);
+        theme_set_int(&defines, "MENU_DROPDOWN_WIDTH", &THEME_MENU_DROPDOWN_WIDTH);
+        theme_set_int(&defines, "MENU_DROPDOWN_SCROLLBAR_WIDTH", &THEME_MENU_DROPDOWN_SCROLLBAR_WIDTH);
+        theme_set_int(&defines, "MENU_DROPDOWN_TEXT_PADDING_X", &THEME_MENU_DROPDOWN_TEXT_PADDING_X);
+        theme_set_int(&defines, "MENU_DROPDOWN_TEXT_PADDING_Y", &THEME_MENU_DROPDOWN_TEXT_PADDING_Y);
+        theme_set_int(&defines, "MENU_MAX_VISIBLE_ITEMS", &THEME_MENU_MAX_VISIBLE_ITEMS);
+        
+        theme_set_int(&defines, "TIMELINE_HEIGHT", &THEME_TIMELINE_HEIGHT);
+        theme_set_int(&defines, "TIMELINE_HITBOX_PADDING", &THEME_TIMELINE_HITBOX_PADDING);
+        theme_set_int(&defines, "TIMELINE_THUMB_SIZE", &THEME_TIMELINE_THUMB_SIZE);
+        theme_set_int(&defines, "TIMELINE_CHAPTER_MARKER_WIDTH", &THEME_TIMELINE_CHAPTER_MARKER_WIDTH);
+        theme_set_int(&defines, "TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH", &THEME_TIMELINE_CHAPTER_MARKER_HITBOX_WIDTH);
+        theme_set_int(&defines, "TIMELINE_BOOKMARK_MARKER_WIDTH", &THEME_TIMELINE_BOOKMARK_MARKER_WIDTH);
+        theme_set_int(&defines, "TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH", &THEME_TIMELINE_BOOKMARK_MARKER_HITBOX_WIDTH);
+        
+        theme_set_int(&defines, "HAMBURGER_LINE_HEIGHT", &THEME_HAMBURGER_LINE_HEIGHT);
+        theme_set_int(&defines, "HAMBURGER_LINE_MARGIN", &THEME_HAMBURGER_LINE_MARGIN);
+        theme_set_int(&defines, "SHADOW_OFFSET", &THEME_SHADOW_OFFSET);
+        theme_set_int(&defines, "DEFAULT_BOOKMARK_COLOR", &THEME_DEFAULT_BOOKMARK_COLOR);
+        theme_set_int(&defines, "AMBIENT_GLOW_ALPHA", &THEME_AMBIENT_GLOW_ALPHA);
+        theme_set_float(&defines, "AMBIENT_GLOW_ASCALE", &THEME_AMBIENT_GLOW_ASCALE);
+        theme_set_float(&defines, "AMBIENT_GLOW_AMAX", &THEME_AMBIENT_GLOW_AMAX);
+        
+        theme_set_color(&defines, "PANEL_COLOR", THEME_PANEL_COLOR);
+        theme_set_color(&defines, "TEXT_COLOR", THEME_TEXT_COLOR);
+        theme_set_color(&defines, "ACCENT_COLOR", THEME_ACCENT_COLOR);
+        theme_set_color(&defines, "MUTED_COLOR", THEME_MUTED_COLOR);
+        theme_set_color(&defines, "SHADOW_COLOR", THEME_SHADOW_COLOR);
+        theme_set_color(&defines, "LETTERBOX_COLOR", THEME_LETTERBOX_COLOR);
+        theme_set_color(&defines, "OVERLAY_COLOR", THEME_OVERLAY_COLOR);
+        theme_set_color(&defines, "CHAPTER_MARKER_COLOR", THEME_CHAPTER_MARKER_COLOR);
+        theme_set_color(&defines, "TIMELINE_THUMB_COLOR", THEME_TIMELINE_THUMB_COLOR);
+        theme_set_color(&defines, "MEDIA_TITLE_COLOR", THEME_MEDIA_TITLE_COLOR);
+        theme_set_color(&defines, "CHAPTER_HOVER_BG_COLOR", THEME_CHAPTER_HOVER_BG_COLOR);
+        theme_set_color(&defines, "BOOKMARK_HOVER_BG_COLOR", THEME_BOOKMARK_HOVER_BG_COLOR);
+        theme_set_color(&defines, "CONTEXT_MENU_BG_COLOR", THEME_CONTEXT_MENU_BG_COLOR);
+        theme_set_color(&defines, "CONTEXT_MENU_ITEM_HL", THEME_CONTEXT_MENU_ITEM_HL);
+        theme_set_color(&defines, "TEXT_INPUT_BG_COLOR", THEME_TEXT_INPUT_BG_COLOR);
+        theme_set_color(&defines, "TEXT_INPUT_PROMPT_COLOR", THEME_TEXT_INPUT_PROMPT_COLOR);
+        theme_set_color(&defines, "HAMBURGER_BG_COLOR", THEME_HAMBURGER_BG_COLOR);
+        theme_set_color(&defines, "MENU_PANEL_BG_COLOR", THEME_MENU_PANEL_BG_COLOR);
+        theme_set_color(&defines, "MENU_PANEL_ITEM_BG_COLOR", THEME_MENU_PANEL_ITEM_BG_COLOR);
+        theme_set_color(&defines, "LIST_BG_COLOR", THEME_LIST_BG_COLOR);
+        theme_set_color(&defines, "LIST_ITEM_BG_COLOR", THEME_LIST_ITEM_BG_COLOR);
+        theme_set_color(&defines, "SCROLLBAR_BG_COLOR", THEME_SCROLLBAR_BG_COLOR);
+        theme_set_color(&defines, "SCROLLBAR_THUMB_COLOR", THEME_SCROLLBAR_THUMB_COLOR);
+        theme_set_color(&defines, "SUBTITLE_VLIST_BG_COLOR", THEME_SUBTITLE_VLIST_BG_COLOR);
+        theme_set_color(&defines, "DRAW_PALETTE_BG_COLOR", THEME_DRAW_PALETTE_BG_COLOR);
+        theme_set_color(&defines, "DRAW_PALETTE_BORDER_COLOR", THEME_DRAW_PALETTE_BORDER_COLOR);
+        theme_set_color(&defines, "DRAW_CANVAS_CLEAR_COLOR", THEME_DRAW_CANVAS_CLEAR_COLOR);
+        theme_set_color(&defines, "PAUSED_TEXT_COLOR", THEME_PAUSED_TEXT_COLOR);
+        theme_set_color(&defines, "FLASH_TEXT_COLOR", THEME_FLASH_TEXT_COLOR);
+        theme_set_color(&defines, "ACOL_TEXT_COLOR", THEME_ACOL_TEXT_COLOR);
+        theme_set_int(&defines, "ACOL_TEXT_ALPHA", &THEME_ACOL_TEXT_ALPHA);
+        
+        theme_set_color(&defines, "DRAW_PALETTE_COLOR_1", THEME_DRAW_PALETTE_COLOR_1);
+        theme_set_color(&defines, "DRAW_PALETTE_COLOR_2", THEME_DRAW_PALETTE_COLOR_2);
+        theme_set_color(&defines, "DRAW_PALETTE_COLOR_3", THEME_DRAW_PALETTE_COLOR_3);
+        theme_set_color(&defines, "DRAW_PALETTE_COLOR_4", THEME_DRAW_PALETTE_COLOR_4);
+        theme_set_color(&defines, "DRAW_PALETTE_COLOR_5", THEME_DRAW_PALETTE_COLOR_5);
+        theme_set_color(&defines, "DRAW_PALETTE_COLOR_6", THEME_DRAW_PALETTE_COLOR_6);
+        theme_set_color(&defines, "DRAW_PALETTE_COLOR_7", THEME_DRAW_PALETTE_COLOR_7);
+        theme_set_int(&defines, "DRAW_PALETTE_COLOR_ALPHA", &THEME_DRAW_PALETTE_COLOR_ALPHA);
+    }
     
     char** font_value = ht_find(&defines, "FONT");
     if (font_value && *font_value) {
@@ -675,7 +677,7 @@ bool is_valid_theme_name(const char* name) {
     return file_exists(theme_path);
 }
 
-bool load_theme(const char* name) {
+bool load_theme(const char* name, bool debug_theme_values) {
     if (!name || !*name) {
         nob_log(NOB_ERROR, "Theme name cannot be empty");
         return false;
@@ -697,7 +699,7 @@ bool load_theme(const char* name) {
         }
     }
     
-    return theme_load(theme_path);
+    return theme_load(theme_path, debug_theme_values);
 }
 
 bool init_theme(void) {
@@ -706,7 +708,7 @@ bool init_theme(void) {
     memcpy(theme_name_saved, THEME_NAME, sizeof(theme_name_saved));
     char theme_file_saved[256];
     memcpy(theme_file_saved, THEME_FILE, sizeof(theme_file_saved));
-    if (!load_theme(DEFAULT_THEME)) {
+    if (!load_theme(DEFAULT_THEME, false)) {
         nob_minimal_log_level = NOB_INFO;
         nob_log(NOB_ERROR, "Failed to load default theme: %s", DEFAULT_THEME);
         return false;
@@ -754,7 +756,7 @@ bool load_theme_probe(const char* path) {
 
 bool load_theme_file(const char* path) {
     if (!path || !path[0]) return false;
-    return theme_load(path);
+    return theme_load(path, true);
 }
 
 int get_theme_list(char themes[][64], int max_count) {

@@ -1,6 +1,6 @@
 # amp - Media Player
 
-amp is a simple media player built using C and SDL2.
+amp is a simple media player built using C and SDL3.
 
 *Not to confuse with [Adenosine monophosphate (AMP)](https://en.wikipedia.org/wiki/Adenosine_monophosphate).*
 
@@ -17,8 +17,8 @@ amp is a simple media player built using C and SDL2.
 
 ## Dependencies
 
-- [SDL2](https://www.libsdl.org/)
-- [SDL2_ttf](https://github.com/libsdl-org/SDL_ttf)
+- [SDL3](https://www.libsdl.org/)
+- [SDL3_ttf](https://github.com/libsdl-org/SDL_ttf)
 - [FFmpeg](https://ffmpeg.org/)
 - [libass](https://github.com/libass/libass)
 

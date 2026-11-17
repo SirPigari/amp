@@ -7,7 +7,7 @@
 #include <limits.h>
 #include "config.h"
 #include "../thirdparty/nob.h"
-#include "../thirdparty/SDL2/SDL.h"
+#include "../thirdparty/SDL3/SDL.h"
 #include "../thirdparty/libavformat/avformat.h"
 #include "../thirdparty/libavcodec/avcodec.h"
 #include "../thirdparty/libavcodec/bsf.h"
@@ -58,6 +58,7 @@ typedef struct {
     int spdif_manual;
     SDL_AudioDeviceID audio_dev;
     SDL_AudioSpec audio_spec;
+    SDL_AudioStream* audio_stream;
     AVFrame* audio_frame;
     uint8_t* audio_buf;
     int audio_buf_size;
@@ -92,6 +93,7 @@ typedef struct {
 
     double  playback_speed;
     double  current_time;
+    double  last_video_time;
     Uint32  clock_start_ticks;
     Uint32  clock_pause_ticks;
     int64_t clock_pause_accum;
@@ -319,16 +321,18 @@ static int vr_audio_should_passthrough(VideoRenderer* vr) {
 }
 
 static double vr_get_audio_queue_seconds(VideoRenderer* vr) {
-    if (!vr || !vr->audio_dev || vr->audio_spec.freq <= 0) return 0.0;
-    uint32_t queued = SDL_GetQueuedAudioSize(vr->audio_dev);
+    if (!vr || !vr->audio_stream || vr->audio_spec.freq <= 0) return 0.0;
+    int queued = SDL_GetAudioStreamQueued(vr->audio_stream);
     int bytes_per_sample = (SDL_AUDIO_BITSIZE(vr->audio_spec.format) / 8) * (int)vr->audio_spec.channels;
     if (bytes_per_sample <= 0) return 0.0;
     int queued_samples = (int)(queued / bytes_per_sample);
-    return (double)queued_samples / (double)vr->audio_spec.freq;
+    double result = (double)queued_samples / (double)vr->audio_spec.freq;
+    
+    return result;
 }
 
 static double vr_get_audio_clock(VideoRenderer* vr) {
-    if (!vr || !vr->audio_dev || !vr->audio_clock_valid) return 0.0;
+    if (!vr || !vr->audio_stream || !vr->audio_clock_valid) return 0.0;
     double queued_seconds = vr_get_audio_queue_seconds(vr);
     double queued_media = queued_seconds * vr->playback_speed;
     double t = vr->audio_clock_pts - queued_media;
@@ -397,12 +401,11 @@ static void vr_reset_stream(VideoRenderer* vr) {
         vr->video_ctx = NULL;
     }
 
-    if (vr->audio_dev) {
-        SDL_PauseAudioDevice(vr->audio_dev, 1);
-        Uint32 drain_start = SDL_GetTicks();
-        while (SDL_GetQueuedAudioSize(vr->audio_dev) > 0 && SDL_GetTicks() - drain_start < 200)
-            SDL_Delay(5);
-        SDL_ClearQueuedAudio(vr->audio_dev);
+    if (vr->audio_stream) {
+        SDL_PauseAudioStreamDevice(vr->audio_stream);
+        SDL_ClearAudioStream(vr->audio_stream);
+        SDL_DestroyAudioStream(vr->audio_stream);
+        vr->audio_stream = NULL;
     }
     if (vr->audio_frame) {
         av_frame_free(&vr->audio_frame);
@@ -494,6 +497,7 @@ static void vr_reset_stream(VideoRenderer* vr) {
     vr->height = 0;
     vr->video_ready = 0;
     vr->current_time = 0.0;
+    vr->last_video_time = 0.0;
     vr->last_time = 0.0;
     vr->subtitle_offset_ms = 0;
     vr->zoom_percent = 100;
@@ -616,7 +620,8 @@ static void subtitle_inject_tags_into_dialogue(const char* ass_line, const char*
 }
 
 static void vr_queue_audio(VideoRenderer* vr, AVFrame* frame) {
-    if (!vr || !vr->audio_dev || !vr->swr_ctx) return;
+    if (!vr || !vr->audio_stream || !vr->swr_ctx) return;
+    
     int out_samples = (int)av_rescale_rnd(
         swr_get_delay(vr->swr_ctx, vr->audio_ctx->sample_rate) + frame->nb_samples,
         vr->audio_spec.freq, vr->audio_ctx->sample_rate, AV_ROUND_UP);
@@ -640,6 +645,8 @@ static void vr_queue_audio(VideoRenderer* vr, AVFrame* frame) {
 
     int bytes = av_samples_get_buffer_size(NULL, out_channels, converted, AV_SAMPLE_FMT_S16, 1);
     if (bytes <= 0) return;
+    
+
 
     int16_t* samples = (int16_t*)vr->audio_buf;
     int sample_count = bytes / sizeof(int16_t);
@@ -679,8 +686,9 @@ static void vr_queue_audio(VideoRenderer* vr, AVFrame* frame) {
         samples[i] = (int16_t)(s * 32767.0f);
     }
 
-    SDL_QueueAudio(vr->audio_dev, vr->audio_buf, bytes);
-    SDL_PauseAudioDevice(vr->audio_dev, 0);
+    SDL_PutAudioStreamData(vr->audio_stream, vr->audio_buf, bytes);
+    
+    SDL_ResumeAudioStreamDevice(vr->audio_stream);
     if (vr->audio_time_base.num != 0 && vr->audio_time_base.den != 0) {
         int64_t pts = frame->best_effort_timestamp;
         if (pts != AV_NOPTS_VALUE) {
@@ -695,6 +703,7 @@ static void vr_queue_audio(VideoRenderer* vr, AVFrame* frame) {
                 vr->audio_base_samples = vr->audio_samples_written;
                 vr->audio_clock_valid = 1;
             }
+            
             double delay_sec = 0.0;
             int64_t delay = swr_get_delay(vr->swr_ctx, vr->audio_ctx->sample_rate);
             if (delay > 0) delay_sec = (double)delay / (double)vr->audio_ctx->sample_rate;
@@ -705,7 +714,7 @@ static void vr_queue_audio(VideoRenderer* vr, AVFrame* frame) {
 }
 
 static void vr_queue_passthrough_packet(VideoRenderer* vr, const AVPacket* pkt) {
-    if (!vr || !pkt || !vr->audio_dev) return;
+    if (!vr || !pkt || !vr->audio_stream) return;
 
     if (vr->spdif_bsf) {
         int send_ret = av_bsf_send_packet(vr->spdif_bsf, (AVPacket*)pkt);
@@ -714,9 +723,8 @@ static void vr_queue_passthrough_packet(VideoRenderer* vr, const AVPacket* pkt) 
         AVPacket* out_pkt = av_packet_alloc();
         if (!out_pkt) return;
         while (av_bsf_receive_packet(vr->spdif_bsf, out_pkt) == 0) {
-            if (out_pkt->size > 0) {
-                SDL_QueueAudio(vr->audio_dev, out_pkt->data, (Uint32)out_pkt->size);
-            }
+            if (out_pkt->size > 0)
+                SDL_PutAudioStreamData(vr->audio_stream, out_pkt->data, (int)out_pkt->size);
             av_packet_unref(out_pkt);
         }
         av_packet_free(&out_pkt);
@@ -728,11 +736,11 @@ static void vr_queue_passthrough_packet(VideoRenderer* vr, const AVPacket* pkt) 
                 vr->audio_ctx ? vr->audio_ctx->codec_id : AV_CODEC_ID_NONE,
                 pkt->data, pkt->size, frame, max_frame);
             if (fsz > 0)
-                SDL_QueueAudio(vr->audio_dev, frame, (Uint32)fsz);
+                SDL_PutAudioStreamData(vr->audio_stream, frame, (int)fsz);
             free(frame);
         }
     } else if (pkt->size > 0) {
-        SDL_QueueAudio(vr->audio_dev, pkt->data, (Uint32)pkt->size);
+        SDL_PutAudioStreamData(vr->audio_stream, pkt->data, (int)pkt->size);
     }
 
     if (vr->audio_time_base.num != 0 && vr->audio_time_base.den != 0) {
@@ -749,7 +757,7 @@ static void vr_queue_passthrough_packet(VideoRenderer* vr, const AVPacket* pkt) 
             vr->audio_clock_valid = 1;
         }
     }
-    SDL_PauseAudioDevice(vr->audio_dev, 0);
+    SDL_ResumeAudioStreamDevice(vr->audio_stream);
 }
 
 static void vr_process_subtitle(VideoRenderer* vr, const AVPacket* pkt) {
@@ -840,6 +848,7 @@ VideoRenderer* vr_create(SDL_Window* window, SDL_Renderer* renderer) {
     vr->renderer = renderer;
     vr->playback_speed = 1.0;
     vr->current_time = 0.0;
+    vr->last_video_time = 0.0;
     vr->audio_volume = 1.0f;
     vr->os_passthrough = 0;
     vr->passthrough_active = 0;
@@ -1015,16 +1024,21 @@ static int try_init_hw_decoder(VideoRenderer* vr, AVCodecContext* ctx, const AVC
 }
 
 static void vr_measure_device_params(VideoRenderer* vr) {
-    if (!vr) return;
+    if (!vr || !vr->audio_stream) return;
 
-    double callback_sec = 0.0;
-    if (vr->audio_spec.freq > 0 && vr->audio_spec.samples > 0) {
-        callback_sec = (double)vr->audio_spec.samples / (double)vr->audio_spec.freq;
+    SDL_AudioDeviceID device = SDL_GetAudioStreamDevice(vr->audio_stream);
+    SDL_AudioSpec device_spec;
+    int sample_frames = 0;
+    
+    double callback_sec = 0.05;
+    if (device != 0 && SDL_GetAudioDeviceFormat(device, &device_spec, &sample_frames)) {
+        if (device_spec.freq > 0 && sample_frames > 0) {
+            callback_sec = (double)sample_frames / (double)device_spec.freq;
+        }
     }
+    
     double target = callback_sec * 6.0;
     if (target < 0.35) target = 0.35;
-    if (target > 1.50) target = 1.50;
-    vr->audio_queue_target_sec = target;
 
     double frame_dur_ms = 33.3;
     if (vr->fmt_ctx && vr->video_stream_index >= 0) {
@@ -1040,10 +1054,11 @@ static void vr_measure_device_params(VideoRenderer* vr) {
     if (cap > 50) cap = 50;
     vr->avsync_delay_cap_ms = cap;
 
-    SDL_DisplayMode dm;
     int refresh = 60;
-    if (SDL_GetCurrentDisplayMode(0, &dm) == 0 && dm.refresh_rate > 0) {
-        refresh = dm.refresh_rate;
+    SDL_DisplayID display_id = SDL_GetDisplayForWindow(vr->window);
+    const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(display_id);
+    if (dm && dm->refresh_rate > 0) {
+        refresh = (int)dm->refresh_rate;
     }
     vr->target_frame_ms = (Uint32)(1000 / refresh);
     if (vr->target_frame_ms < 8)  vr->target_frame_ms = 8;
@@ -1231,7 +1246,7 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
                 continue;
             }
             
-            SDL_SetTextureScaleMode(vr->texture, SDL_ScaleModeLinear);
+            SDL_SetTextureScaleMode(vr->texture, SDL_SCALEMODE_LINEAR);
 
             vr->sws_ctx = sws_getContext(
                 vr->width, vr->height, vr->video_ctx->pix_fmt,
@@ -1326,25 +1341,23 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
             SDL_AudioSpec want;
             SDL_zero(want);
             want.freq = vr->passthrough_active ? 48000 : vr->audio_ctx->sample_rate;
-            want.format = AUDIO_S16SYS;
+            want.format = SDL_AUDIO_S16;
             want.channels = 2;
-            want.samples = vr->passthrough_active ? 2048 : 1024;
-            want.callback = NULL;
-            if (vr->audio_dev && vr->audio_spec.freq == want.freq) {
-                SDL_ClearQueuedAudio(vr->audio_dev);
-            } else {
-                if (vr->audio_dev) {
-                    SDL_PauseAudioDevice(vr->audio_dev, 1);
-                    SDL_CloseAudioDevice(vr->audio_dev);
-                    vr->audio_dev = 0;
-                }
-                vr->audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &vr->audio_spec,
-                                                     SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
-                if (!vr->audio_dev) {
-                    nob_log(NOB_ERROR, "SDL_OpenAudioDevice failed: %s", SDL_GetError());
-                }
+            
+            if (vr->audio_stream) {
+                SDL_DestroyAudioStream(vr->audio_stream);
+                vr->audio_stream = NULL;
             }
-            if (vr->audio_dev) SDL_PauseAudioDevice(vr->audio_dev, 0);
+            
+            vr->audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &want, NULL, NULL);
+            if (!vr->audio_stream) {
+                nob_log(NOB_ERROR, "SDL_OpenAudioDeviceStream failed: %s", SDL_GetError());
+            } else {
+                vr->audio_spec = want;
+                nob_log(NOB_INFO, "Audio device opened: channels=%d freq=%d", 
+                        vr->audio_spec.channels, vr->audio_spec.freq);
+                SDL_ResumeAudioStreamDevice(vr->audio_stream);
+            }
 
             if (vr->passthrough_active) {
                 const AVBitStreamFilter* spdif = av_bsf_get_by_name("spdif");
@@ -1420,7 +1433,7 @@ int vr_load(VideoRenderer* vr, const char* filename, const char* hw_opt) {
 
     vr_measure_device_params(vr);
 
-    nob_log(NOB_INFO, "vr_load total: %u ms", SDL_GetTicks() - load_start);
+    nob_log(NOB_INFO, "vr_load total: %llu ms", (long long unsigned int)(SDL_GetTicks() - load_start));
     return 1;
 }
 
@@ -1493,7 +1506,7 @@ static void vr_demux_packets(VideoRenderer* vr) {
 }
 
 static void vr_decode_audio(VideoRenderer* vr) {
-    if (!vr || !vr->audio_ctx || !vr->audio_dev) return;
+    if (!vr || !vr->audio_ctx || !vr->audio_stream) return;
     if (!vr->audio_frame) {
         nob_log(NOB_ERROR, "Audio decode frame is NULL");
         return;
@@ -1907,13 +1920,16 @@ double vr_get_video_time(VideoRenderer* vr) {
 }
 
 double vr_get_audio_time(VideoRenderer* vr) {
-    if (!vr || !vr->audio_dev || !vr->audio_clock_valid) return vr ? vr->current_time : 0.0;
+    if (!vr || !vr->audio_stream || !vr->audio_clock_valid) return vr ? vr->current_time : 0.0;
     return vr_get_audio_clock(vr);
 }
 
 void vr_resync_audio(VideoRenderer* vr, double target_time) {
-    if (!vr || !vr->audio_dev) return;
-    SDL_ClearQueuedAudio(vr->audio_dev);
+    if (!vr || !vr->audio_stream) return;
+    
+    SDL_ClearAudioStream(vr->audio_stream);
+    pkt_queue_clear(&vr->audio_pktq);
+    
     if (vr->audio_ctx && !vr->passthrough_active) avcodec_flush_buffers(vr->audio_ctx);
     if (vr->spdif_bsf) av_bsf_flush(vr->spdif_bsf);
     vr->audio_clock_base      = target_time;
@@ -1929,8 +1945,8 @@ int vr_render_subtitles(VideoRenderer* vr, double seconds) {
     if (!vr->ass_track) return 0;
 
     int changed = 0;
-    ASS_Image* img = ass_render_frame(vr->ass_renderer, vr->ass_track,
-                                      (long long)(seconds * 1000.0 + vr->subtitle_offset_ms), &changed);
+    long long subtitle_ms = (long long)(seconds * 1000.0 + vr->subtitle_offset_ms);
+    ASS_Image* img = ass_render_frame(vr->ass_renderer, vr->ass_track, subtitle_ms, &changed);
     if (!img) return 0;
 
     if (!vr->subtitle_texture) {
@@ -1938,7 +1954,7 @@ int vr_render_subtitles(VideoRenderer* vr, double seconds) {
             SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING,
             vr->width, vr->height);
         SDL_SetTextureBlendMode(vr->subtitle_texture, SDL_BLENDMODE_BLEND);
-        SDL_SetTextureScaleMode(vr->subtitle_texture, SDL_ScaleModeLinear);
+        SDL_SetTextureScaleMode(vr->subtitle_texture, SDL_SCALEMODE_LINEAR);
         vr->subtitle_texture_valid = 0;
     }
 
@@ -1948,7 +1964,7 @@ int vr_render_subtitles(VideoRenderer* vr, double seconds) {
 
     void* pixels = NULL;
     int pitch = 0;
-    if (SDL_LockTexture(vr->subtitle_texture, NULL, &pixels, &pitch) != 0) return 0;
+    if (!SDL_LockTexture(vr->subtitle_texture, NULL, &pixels, &pitch)) return 0;
     memset(pixels, 0, (size_t)pitch * vr->height);
 
     for (ASS_Image* p = img; p; p = p->next) {
@@ -2022,7 +2038,7 @@ void vr_seek(VideoRenderer* vr, double seconds) {
     avcodec_flush_buffers(vr->video_ctx);
     if (vr->audio_ctx)    avcodec_flush_buffers(vr->audio_ctx);
     if (vr->subtitle_ctx) avcodec_flush_buffers(vr->subtitle_ctx);
-    if (vr->audio_dev)    SDL_ClearQueuedAudio(vr->audio_dev);
+    if (vr->audio_stream) SDL_ClearAudioStream(vr->audio_stream);
 
     vr->subtitle_texture_valid = 0;
 
@@ -2058,6 +2074,7 @@ void vr_seek(VideoRenderer* vr, double seconds) {
     pkt_queue_clear(&vr->audio_pktq);
 
     vr->current_time          = seconds;
+    vr->last_video_time       = seconds;
     vr->last_time             = seconds;
     vr->seeking               = 1;
     vr->audio_clock_valid     = 0;
@@ -2077,7 +2094,7 @@ double vr_get_time(VideoRenderer* vr) {
     if (!vr) return 0.0;
 
     double t;
-    if (vr->audio_dev && vr->audio_clock_valid) {
+    if (vr->audio_stream && vr->audio_clock_valid) {
         double audio_time = vr_get_audio_clock(vr);
         double master     = vr_get_master_time(vr);
         t = (master - audio_time > 1.0) ? master : audio_time;
@@ -2305,7 +2322,7 @@ void vr_select_audio_track(VideoRenderer* vr, int idx) {
     }
     pkt_queue_clear(&vr->audio_pktq);
 
-    if (vr->audio_dev) { SDL_CloseAudioDevice(vr->audio_dev); vr->audio_dev = 0; }
+    if (vr->audio_stream) { SDL_DestroyAudioStream(vr->audio_stream); vr->audio_stream = NULL; }
     if (vr->audio_ctx) { avcodec_free_context(&vr->audio_ctx); vr->audio_ctx = NULL; }
     if (vr->swr_ctx)   { swr_free(&vr->swr_ctx); vr->swr_ctx = NULL; }
     if (vr->spdif_bsf) { av_bsf_free(&vr->spdif_bsf); vr->spdif_bsf = NULL; }
@@ -2333,17 +2350,32 @@ void vr_select_audio_track(VideoRenderer* vr, int idx) {
     SDL_zero(want);
     vr->passthrough_active = vr_audio_should_passthrough(vr);
     want.freq = vr->passthrough_active ? 48000 : vr->audio_ctx->sample_rate;
-    want.format = AUDIO_S16SYS;
+    want.format = SDL_AUDIO_S16;
     want.channels = 2;
-    want.samples = vr->passthrough_active ? 2048 : 1024;
-    want.callback = NULL;
-    vr->audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &vr->audio_spec,
-                                         SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
-    if (!vr->audio_dev) {
-        nob_log(NOB_ERROR, "SDL_OpenAudioDevice failed: %s", SDL_GetError());
+    if (vr->audio_stream) {
+        SDL_DestroyAudioStream(vr->audio_stream);
+        vr->audio_stream = NULL;
+    }
+    vr->audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &want, NULL, NULL);
+    if (!vr->audio_stream) {
+        nob_log(NOB_ERROR, "SDL_OpenAudioDeviceStream failed: %s", SDL_GetError());
         return;
     }
-    SDL_PauseAudioDevice(vr->audio_dev, 0);
+    
+    SDL_AudioSpec actual_input, actual_output;
+    SDL_zero(actual_input);
+    SDL_zero(actual_output);
+    if (SDL_GetAudioStreamFormat(vr->audio_stream, &actual_input, &actual_output) == 0) {
+        vr->audio_spec = actual_input;
+        nob_log(NOB_INFO, "Audio stream format: input=(fmt=%d freq=%d ch=%d) output=(fmt=%d freq=%d ch=%d)",
+            actual_input.format, actual_input.freq, actual_input.channels,
+            actual_output.format, actual_output.freq, actual_output.channels);
+    } else {
+        vr->audio_spec = want;
+        nob_log(NOB_WARNING, "Could not query audio stream format, using requested format");
+    }
+    
+    SDL_ResumeAudioStreamDevice(vr->audio_stream);
 
     if (vr->passthrough_active) {
         const AVBitStreamFilter* spdif = av_bsf_get_by_name("spdif");
@@ -2495,8 +2527,12 @@ void vr_select_subtitle_track(VideoRenderer* vr, int idx) {
 
 void vr_set_paused(VideoRenderer* vr, int paused) {
     if (!vr) return;
-    if (vr->audio_dev) {
-        SDL_PauseAudioDevice(vr->audio_dev, paused ? 1 : 0);
+    if (vr->audio_stream) {
+        if (paused) {
+            SDL_PauseAudioStreamDevice(vr->audio_stream);
+        } else {
+            SDL_ResumeAudioStreamDevice(vr->audio_stream);
+        }
     }
     if (paused && !vr->clock_paused) {
         vr->clock_pause_ticks = SDL_GetTicks();
@@ -2511,11 +2547,6 @@ void vr_set_paused(VideoRenderer* vr, int paused) {
 void vr_free(VideoRenderer* vr) {
     if (!vr) return;
     vr_reset_stream(vr);
-    if (vr->audio_dev) {
-        SDL_PauseAudioDevice(vr->audio_dev, 1);
-        SDL_CloseAudioDevice(vr->audio_dev);
-        vr->audio_dev = 0;
-    }
     pkt_queue_free(&vr->video_pktq);
     pkt_queue_free(&vr->audio_pktq);
     free(vr);
